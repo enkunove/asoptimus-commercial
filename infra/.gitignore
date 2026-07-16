@@ -1,0 +1,5 @@
+# Never commit a real env file (the superproject root also ignores these) …
+.env
+.env.local
+# … but DO track the template (root .gitignore's `.env.*` would otherwise hide it).
+!.env.example

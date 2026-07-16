@@ -1,0 +1,123 @@
+# ASOptimus client — build binaries + signed/notarized macOS .dmg.
+# Belongs in: asoptimus-client/.github/workflows/client-release.yml
+# (kept in the superproject at infra/ci/ — see infra/ci/README.md).
+#
+# `bun build --compile` cross-compiles all four targets from one host, so the
+# raw binaries build on Ubuntu; the macOS runner only does signing/notarization.
+
+name: client-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # attach artifacts to the GitHub Release
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive          # nested `shared`
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile || bun install
+      - run: bun test
+
+  # All four self-contained binaries (BUILD-PLAN D6): macos arm64/x64, linux x64, windows x64.
+  binaries:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile || bun install
+      - run: bun run src/build.ts          # → dist/asoptimus-{macos-arm64,macos-x64,linux-x64,windows-x64.exe}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: client/dist/*
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: client/dist/*
+
+  # macOS-only signed .dmg (BUILD-PLAN §9). Skipped if Apple secrets are absent.
+  macos-dmg:
+    needs: test
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile || bun install
+
+      - name: Build macOS arm64 binary
+        run: bun run src/build.ts macos-arm64   # → client/dist/asoptimus-macos-arm64
+
+      - name: Import Developer ID certificate
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+      - name: Codesign, package .dmg, notarize + staple
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        run: |
+          set -euo pipefail
+          BIN=client/dist/asoptimus-macos-arm64
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
+          # Stage a .app-less layout and build a .dmg around the signed binary.
+          STAGE="$RUNNER_TEMP/dmg"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/ASOptimus"
+          hdiutil create -volname ASOptimus -srcfolder "$STAGE" -ov -format UDZO \
+            client/dist/ASOptimus-macos-arm64.dmg
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp \
+            client/dist/ASOptimus-macos-arm64.dmg
+          xcrun notarytool submit client/dist/ASOptimus-macos-arm64.dmg \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple client/dist/ASOptimus-macos-arm64.dmg
+
+      # ── Phase 2 (BUILD-PLAN D6): when client/src-tauri/ exists, replace the two
+      # steps above with the Tauri build, which signs + notarizes the .dmg itself:
+      #   - uses: tauri-apps/tauri-action@v0
+      #     env:
+      #       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      #       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #       APPLE_ID: ${{ secrets.APPLE_ID }}
+      #       APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      #       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #     with: { args: "--target aarch64-apple-darwin" }
+
+      - name: Attach .dmg to release
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          files: client/dist/ASOptimus-macos-arm64.dmg
