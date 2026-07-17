@@ -1,0 +1,13 @@
+# Docker-контекст = корень репо, но серверному образу нужны только server/ и shared/.
+# Всё остальное исключаем, чтобы контекст не раздувался.
+.git
+.gitignore
+.DS_Store
+_legacy/
+**/node_modules/
+**/dist/
+**/target/
+client/
+infra/
+spec/
+*.md
