@@ -1,0 +1,8 @@
+# Docker build-контекст: НЕ тащим тяжёлое/секретное. shared/ НЕ исключаем — контракт нужен в образе.
+node_modules
+.git
+dist
+*.log
+.DS_Store
+.env
+.env.*

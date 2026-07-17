@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Base capability. The localhost UI talks to 127.0.0.1 over plain fetch (not Tauri IPC), and all privileged actions (spawn sidecar, tray, window) run in Rust — so the webview needs only core defaults.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

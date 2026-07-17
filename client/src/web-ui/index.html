@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="aso-token" content="__ASO_TOKEN__">
+  <title>ASOptimus</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="#/runs">🛠️ ASOptimus</a>
+    <nav id="topnav">
+      <a href="#/runs">Прогоны</a>
+      <a href="#/balance">Баланс</a>
+    </nav>
+    <div class="spacer"></div>
+    <div id="balance-widget" class="balance-widget" hidden>
+      <span class="bal-label">Баланс</span>
+      <span id="bal-credits" class="bal-credits">—</span>
+      <button id="bal-topup" class="small primary">Пополнить</button>
+      <button id="bal-logout" class="small" title="Выйти">⎋</button>
+    </div>
+  </header>
+  <main id="app"><div class="loading">Загрузка…</div></main>
+  <script src="/app.js"></script>
+</body>
+</html>

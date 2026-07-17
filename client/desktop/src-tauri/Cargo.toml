@@ -1,0 +1,28 @@
+[package]
+name = "asoptimus-desktop"
+version = "0.1.0"
+description = "ASOptimus macOS desktop shell"
+authors = ["ASOptimus"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[[bin]]
+name = "asoptimus-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon: native menu-bar tray (Connected/Disconnected, balance, Open/Top up/Quit).
+tauri = { version = "2", features = ["tray-icon"] }
+# shell: run the compiled Bun client as a sidecar (bundle.externalBin).
+tauri-plugin-shell = "2"
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

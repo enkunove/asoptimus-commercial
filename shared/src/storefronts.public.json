@@ -1,0 +1,22 @@
+{
+  "us": { "id": 143441, "primaryLanguage": "en" },
+  "gb": { "id": 143444, "primaryLanguage": "en" },
+  "de": { "id": 143443, "primaryLanguage": "de" },
+  "fr": { "id": 143442, "primaryLanguage": "fr" },
+  "it": { "id": 143450, "primaryLanguage": "it" },
+  "es": { "id": 143454, "primaryLanguage": "es" },
+  "ca": { "id": 143455, "primaryLanguage": "en" },
+  "ru": { "id": 143469, "primaryLanguage": "ru" },
+  "nl": { "id": 143452, "primaryLanguage": "nl" },
+  "se": { "id": 143456, "primaryLanguage": "sv" },
+  "jp": { "id": 143462, "primaryLanguage": "ja" },
+  "kr": { "id": 143466, "primaryLanguage": "ko" },
+  "cn": { "id": 143465, "primaryLanguage": "zh" },
+  "br": { "id": 143503, "primaryLanguage": "pt" },
+  "mx": { "id": 143468, "primaryLanguage": "es" },
+  "au": { "id": 143460, "primaryLanguage": "en" },
+  "in": { "id": 143467, "primaryLanguage": "en" },
+  "tr": { "id": 143480, "primaryLanguage": "tr" },
+  "ua": { "id": 143492, "primaryLanguage": "uk" },
+  "pl": { "id": 143478, "primaryLanguage": "pl" }
+}

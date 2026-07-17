@@ -1,0 +1,20 @@
+{
+  "name": "@aso/client",
+  "version": "0.1.0",
+  "description": "ASOptimus локальная программа: localhost-UI + Apple-fetch по джобам сервера (тонкий клиент)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "build": "bun run src/build.ts",
+    "sidecar": "bun run src/build.ts --sidecar",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.6.0"
+  }
+}

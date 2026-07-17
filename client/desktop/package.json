@@ -1,0 +1,16 @@
+{
+  "name": "asoptimus-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ASOptimus macOS desktop shell (Tauri 2.x): native window over the localhost UI + tray; the compiled Bun client runs as a sidecar.",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "bash scripts/build-dmg.sh",
+    "icons": "bash scripts/make-icons.sh",
+    "sidecar": "bun ../src/build.ts --sidecar"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
