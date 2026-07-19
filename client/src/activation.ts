@@ -42,7 +42,8 @@ export function deviceFingerprint(): string {
 
 /** Activation key format: asop_live_… (or asop_test_… for testing). */
 export function isActivationKey(key: string): boolean {
-  return /^asop_(live|test)_[A-Za-z0-9]{8,}$/.test(key.trim());
+  // Key body is base64url (server: randomBytes(24).toString("base64url")) — allow - and _.
+  return /^asop_(live|test)_[A-Za-z0-9_-]{8,}$/.test(key.trim());
 }
 
 /**
