@@ -37,5 +37,9 @@ export function createApp(): App {
   const allowLoopback = IS_DEV && process.env.REQUIRE_CLIENT !== "1";
   const manager = new RunManager(store, billing, client, hub, { allowLoopback });
 
+  // Top-up grants push the fresh balance to the user's connected clients immediately —
+  // the header ticks live instead of waiting for a tab switch.
+  payments.onGrant = (userId, credits) => hub.broadcast(userId, { t: "balance", credits });
+
   return { store, billing, auth, payments, email, hub, manager };
 }

@@ -51,6 +51,9 @@ export class PaddleService {
   private apiKey: string;
   private webhookSecret: string;
   readonly mock: boolean;
+  /** Wired by the composition root to hub.broadcast: pushes the fresh balance to the user's
+   *  connected clients right after a grant — the header must tick live, not on tab switch. */
+  onGrant: ((userId: string, balance: number) => void) | null = null;
 
   constructor(private store: Store, private billing: BillingService, private email: EmailService) {
     const key = process.env.PADDLE_API_KEY;
@@ -278,10 +281,12 @@ export class PaddleService {
     if (eventId) await this.store.tryMarkProcessed(eventId); // audit trail only, post-success
 
     if (granted) {
+      const balance = await this.billing.balance(userId);
+      // Live balance push to connected clients (same channel run debits use).
+      try { this.onGrant?.(userId, balance); } catch { /* push must not fail the webhook */ }
       // Payment receipt (best-effort: a failed email does not roll back the grant).
       try {
         const user = await this.store.getUserById(userId);
-        const balance = await this.billing.balance(userId);
         if (user?.email) await this.email.sendReceipt(user.email, credits, chargeUsd!, balance);
       } catch (e: any) {
         log.warn("[paddle] receipt not sent (grant succeeded)", { userId, err: String(e?.message ?? e) });

@@ -155,6 +155,23 @@ describe("PaddleService grant flow (DEV mock — unsigned bodies)", () => {
     expect(await billing.balance("u1")).toBe(36); // 10 + 26
   });
 
+  test("a grant pushes the fresh balance via onGrant (live header tick); duplicates don't", async () => {
+    const pushes: Array<[string, number]> = [];
+    svc.onGrant = (userId, balance) => pushes.push([userId, balance]);
+    await svc.devComplete("u1", { customCredits: 5 });
+    expect(pushes.length).toBe(1);
+    expect(pushes[0][0]).toBe("u1");
+    expect(pushes[0][1]).toBe(await billing.balance("u1"));
+    // idempotent re-delivery must not re-push
+    const before = pushes.length;
+    await svc.handleWebhook(JSON.stringify({
+      event_id: "evt_dup_push", event_type: "transaction.completed",
+      data: { id: "txn_1", custom_data: { userId: "u1", packageId: "p10" } },
+    }), null);
+    expect(pushes.length).toBe(before);
+    svc.onGrant = null;
+  });
+
   test("mock checkout returns the dev completion URL", async () => {
     const { checkoutUrl } = await svc.createCheckout("u1", "u1@test.dev", { packageId: "p10" }, "http://x.test");
     expect(checkoutUrl).toContain("/checkout/success?dev=1&package=p10&user=u1");
