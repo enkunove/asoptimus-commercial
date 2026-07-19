@@ -8,6 +8,7 @@
 // Signature spec: `Paddle-Signature: ts=<unix>;h1=<hex>` where h1 = HMAC-SHA256(secret, `${ts}:${rawBody}`).
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { TopupRequest, TopupCustomRange } from "@aso/shared";
 import type { Store } from "../db/index.ts";
 import { BillingService } from "../billing/service.ts";
 import type { EmailService } from "../email/service.ts";
@@ -94,6 +95,22 @@ export class PaddleService {
     return data;
   }
 
+  /** Checked once per process: the ONE-credit catalog price must be exactly $1.00 USD —
+   *  the UI advertises "$1 per credit" and the receipt states chargeUsd = credits, so a
+   *  mispriced (or dashboard-edited) price would silently diverge charged vs advertised
+   *  vs receipted amounts. */
+  private creditPriceVerified = false;
+  private async verifyCreditPrice(priceId: string): Promise<void> {
+    if (this.creditPriceVerified) return;
+    const res = await this.api("GET", `/prices/${priceId}`);
+    const amount = res?.data?.unit_price?.amount;
+    const currency = res?.data?.unit_price?.currency_code;
+    if (amount !== "100" || currency !== "USD") {
+      throw new Error(`PADDLE_CREDIT_PRICE_ID must be exactly $1.00 USD per credit (Paddle has ${amount ?? "?"} ${currency ?? "?"}) — fix the catalog price or the env`);
+    }
+    this.creditPriceVerified = true;
+  }
+
   /** Find-or-create the Paddle customer for a user (id cached in users.paddle_customer_id). */
   private async customerFor(userId: string, email: string): Promise<string> {
     const user = await this.store.getUserById(userId);
@@ -115,23 +132,80 @@ export class PaddleService {
     return customerId;
   }
 
+  /** Custom-amount config (flat $1/credit, no bonus). Enabled in mock always; live — only
+   *  when PADDLE_CREDIT_PRICE_ID (the catalog price of ONE credit, charged via quantity) is
+   *  set. null → the UI hides the custom input. */
+  customRange(): TopupCustomRange | null {
+    if (!this.mock && !optionalEnv("PADDLE_CREDIT_PRICE_ID")) return null;
+    // NaN-proof env parsing: a typo ("abc", "1,000") must fall back to the default, NOT
+    // become NaN bounds — every NaN comparison is false, which silently turns the money
+    // guard into a no-op (any integer passes, including 0 and negatives).
+    const envInt = (name: string, def: number): number => {
+      const raw = optionalEnv(name);
+      if (!raw) return def;
+      const v = Number(raw);
+      if (!Number.isFinite(v)) {
+        log.warn(`[paddle] ${name}="${raw}" is not a number — using default ${def}`);
+        return def;
+      }
+      return Math.round(v);
+    };
+    const min = Math.max(1, envInt("TOPUP_CUSTOM_MIN", 5));
+    // Absolute ceiling 1M keeps the webhook sanity clamp (10M) strictly above any amount a
+    // checkout can accept — the two bounds must never cross (charged-but-never-credited).
+    const max = Math.min(1_000_000, Math.max(min, envInt("TOPUP_CUSTOM_MAX", 500)));
+    return { minCredits: min, maxCredits: max, usdPerCredit: 1 };
+  }
+
+  /** Validate a top-up selection → normalized shape. Throws a user-facing error message. */
+  private resolveSelection(sel: TopupRequest): { packageId: string } | { customCredits: number } {
+    const hasPkg = typeof sel.packageId === "string" && sel.packageId.length > 0;
+    const hasCustom = sel.customCredits !== undefined && sel.customCredits !== null;
+    if (hasPkg === hasCustom) throw new Error("pass exactly one of packageId / customCredits");
+    if (hasPkg) {
+      if (!packages()[sel.packageId!]) throw new Error(`unknown package: ${sel.packageId}`);
+      return { packageId: sel.packageId! };
+    }
+    const range = this.customRange();
+    if (!range) throw new Error("custom top-ups are not configured on this server");
+    const n = Number(sel.customCredits);
+    if (!Number.isInteger(n) || n < range.minCredits || n > range.maxCredits) {
+      throw new Error(`customCredits must be a whole number between ${range.minCredits} and ${range.maxCredits}`);
+    }
+    return { customCredits: n };
+  }
+
   /** Create a transaction → hosted checkout URL to open in the system browser. */
-  async createCheckout(userId: string, email: string, packageId: string, origin: string): Promise<{ checkoutUrl: string }> {
-    const pkg = packages()[packageId];
-    if (!pkg) throw new Error(`unknown package: ${packageId}`);
+  async createCheckout(userId: string, email: string, selection: TopupRequest, origin: string): Promise<{ checkoutUrl: string }> {
+    const sel = this.resolveSelection(selection);
     if (this.mock) {
       // DEV: no Paddle — placeholder; granting happens via /api/dev/complete-checkout.
-      return { checkoutUrl: `${origin}/checkout/success?dev=1&package=${packageId}&user=${userId}` };
+      const q = "packageId" in sel ? `package=${sel.packageId}` : `credits=${sel.customCredits}`;
+      return { checkoutUrl: `${origin}/checkout/success?dev=1&${q}&user=${userId}` };
     }
-    if (!pkg.paddlePriceId) {
-      throw new Error(`package ${packageId} has no paddlePriceId — set it in TOPUP_PACKAGES_JSON (pri_… from the Paddle catalog)`);
+    let item: { price_id: string; quantity: number };
+    let customData: Record<string, unknown>;
+    if ("packageId" in sel) {
+      const pkg = packages()[sel.packageId];
+      if (!pkg.paddlePriceId) {
+        throw new Error(`package ${sel.packageId} has no paddlePriceId — set it in TOPUP_PACKAGES_JSON (pri_… from the Paddle catalog)`);
+      }
+      item = { price_id: pkg.paddlePriceId, quantity: 1 };
+      customData = { userId, packageId: sel.packageId };
+    } else {
+      // Flat $1/credit: the ONE-credit catalog price × quantity. The price's quantity maximum
+      // in the Paddle catalog must be ≥ TOPUP_CUSTOM_MAX or Paddle rejects the transaction.
+      const priceId = optionalEnv("PADDLE_CREDIT_PRICE_ID");
+      await this.verifyCreditPrice(priceId);
+      item = { price_id: priceId, quantity: sel.customCredits };
+      customData = { userId, customCredits: sel.customCredits };
     }
     const customerId = await this.customerFor(userId, email);
     const txn = await this.api("POST", "/transactions", {
-      items: [{ price_id: pkg.paddlePriceId, quantity: 1 }],
+      items: [item],
       customer_id: customerId,
       // custom_data comes back verbatim in transaction.completed — the grant routing key.
-      custom_data: { userId, packageId },
+      custom_data: customData,
     });
     // Hosted checkout link (requires a default payment link configured in Paddle → Checkout
     // settings). PADDLE_CHECKOUT_URL overrides the base for custom checkout pages.
@@ -172,8 +246,24 @@ export class PaddleService {
     const txn = event.data ?? {};
     const userId = txn.custom_data?.userId as string | undefined;
     const packageId = txn.custom_data?.packageId as string | undefined;
+    const rawCustom = txn.custom_data?.customCredits;
     const pkg = packageId ? packages()[packageId] : undefined;
-    if (!userId || !pkg) {
+    // Grant amount: a known package OR a custom amount (set by OUR transaction create; the
+    // signature already proves origin). Sanity ceiling 10M sits strictly ABOVE the 1M cap
+    // customRange() enforces at checkout — the clamps must never cross, or an amount a
+    // checkout accepted (and Paddle charged) would be refused at grant time.
+    const customCredits = Number.isInteger(Number(rawCustom)) && Number(rawCustom) > 0 && Number(rawCustom) <= 10_000_000
+      ? Number(rawCustom) : undefined;
+    const credits = pkg?.credits ?? customCredits;
+    const chargeUsd = pkg?.chargeUsd ?? customCredits; // custom = flat $1/credit
+    if (!userId || credits === undefined) {
+      if (userId && (rawCustom !== undefined || packageId !== undefined)) {
+        // OUR transaction (userId present) with an unresolvable amount — a PAID charge must
+        // never be silently ACKed away. Fail so Paddle retries and the endpoint's failure
+        // stats alert the operator.
+        log.error("[paddle] paid transaction with unresolvable custom_data — refusing to ACK", { eventId, txnId: txn.id, packageId, rawCustom });
+        return { ok: false, note: "paid transaction with unresolvable custom_data (unknown package or invalid customCredits)" };
+      }
       // Not ours (dashboard invoice, another product on the same Paddle account). ACK with
       // 200: a 4xx would count as a delivery failure and push the endpoint toward Paddle's
       // auto-deactivation threshold while retrying an event that can never be routed.
@@ -184,7 +274,7 @@ export class PaddleService {
     // Ledger idempotency key = TRANSACTION id: the same purchase must never grant twice even
     // if Paddle re-issues the event under a fresh event_id.
     const grantKey = String(txn.id ?? eventId);
-    const granted = await this.billing.grant(userId, pkg.credits, grantKey);
+    const granted = await this.billing.grant(userId, credits, grantKey);
     if (eventId) await this.store.tryMarkProcessed(eventId); // audit trail only, post-success
 
     if (granted) {
@@ -192,24 +282,29 @@ export class PaddleService {
       try {
         const user = await this.store.getUserById(userId);
         const balance = await this.billing.balance(userId);
-        if (user?.email) await this.email.sendReceipt(user.email, pkg.credits, pkg.chargeUsd, balance);
+        if (user?.email) await this.email.sendReceipt(user.email, credits, chargeUsd!, balance);
       } catch (e: any) {
         log.warn("[paddle] receipt not sent (grant succeeded)", { userId, err: String(e?.message ?? e) });
       }
     }
-    return { ok: true, note: granted ? `granted ${pkg.credits} credits` : "grant already existed (idempotent)" };
+    return { ok: true, note: granted ? `granted ${credits} credits` : "grant already existed (idempotent)" };
   }
 
   /** DEV helper: simulate a completed transaction (DEV=1 only). Feeds processEvent directly —
    *  it must keep working when a sandbox PADDLE_API_KEY is set (mock=false) and the signed
    *  webhook path would rightly reject an unsigned body. */
-  async devComplete(userId: string, packageId: string): Promise<{ ok: boolean; note: string }> {
+  async devComplete(userId: string, selection: TopupRequest): Promise<{ ok: boolean; note: string }> {
     if (!IS_DEV) return { ok: false, note: "dev-complete is only available with DEV=1" };
+    const sel = this.resolveSelection(selection); // same bounds as a real checkout
+    const tag = "packageId" in sel ? sel.packageId : `c${sel.customCredits}`;
     const stamp = Date.now();
     return this.processEvent({
-      event_id: `evt_dev_${userId}_${packageId}_${stamp}`,
+      event_id: `evt_dev_${userId}_${tag}_${stamp}`,
       event_type: "transaction.completed",
-      data: { id: `txn_dev_${userId}_${packageId}_${stamp}`, custom_data: { userId, packageId } },
+      data: {
+        id: `txn_dev_${userId}_${tag}_${stamp}`,
+        custom_data: { userId, ...("packageId" in sel ? { packageId: sel.packageId } : { customCredits: sel.customCredits }) },
+      },
     });
   }
 }

@@ -179,49 +179,89 @@ async function openTopup() {
     <h2>Top up balance</h2>
     <p class="muted small">1 credit = $1. Payment happens on a secure Paddle page.</p>
     <div class="topup-grid" id="topup-grid"><div class="muted small">loading packages…</div></div>
+    <div id="topup-custom"></div>
     <div id="topup-msg" class="small muted" style="margin-top:10px"></div>`);
   const grid = modal.querySelector("#topup-grid");
-  let pkgs = [];
+  const msg = modal.querySelector("#topup-msg");
+
+  // One checkout launcher for packages AND custom amounts.
+  const launchCheckout = async (selection) => {
+    msg.textContent = "creating a payment link…";
+    try {
+      const res = await api("/api/topup", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selection),
+      });
+      if (res.checkoutUrl) {
+        // The desktop webview has no working window.open — the local app opens the system browser.
+        try {
+          await api("/api/open-external", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: res.checkoutUrl }),
+          });
+        } catch {
+          window.open(res.checkoutUrl, "_blank", "noopener");
+        }
+        msg.innerHTML = `<span class="check-ok">✓ opened the payment page in the browser</span>`;
+        setTimeout(refreshBalance, 1200);
+      } else {
+        msg.textContent = "the server did not return a payment link";
+      }
+    } catch (e) { msg.innerHTML = `<span class="check-fail">✗ ${esc(e.message)}</span>`; }
+  };
+
+  let cat;
   try {
-    pkgs = await getPackages();
+    cat = await getPackages();
   } catch (e) {
     grid.innerHTML = `<span class="check-fail">failed to load packages: ${esc(e.message)}</span>`;
     return;
   }
-  if (!pkgs.length) { grid.innerHTML = `<span class="muted small">packages unavailable</span>`; return; }
-  grid.innerHTML = pkgs.map((p) => `
+  const pkgs = cat.packages;
+  grid.innerHTML = pkgs.length ? pkgs.map((p) => `
     <button class="topup-pkg" data-pkg="${esc(p.id)}">
       <div class="topup-credits">${Number(p.credits).toLocaleString()} cr</div>
       ${p.bonusPct ? `<div class="topup-bonus">+${p.bonusPct}% bonus</div>` : ""}
       <div class="topup-price">$${Number(p.priceUsd).toLocaleString()}</div>
       ${p.label ? `<div class="topup-label small muted">${esc(p.label)}</div>` : ""}
-    </button>`).join("");
+    </button>`).join("") : `<span class="muted small">packages unavailable</span>`;
   grid.querySelectorAll(".topup-pkg").forEach((b) =>
-    b.addEventListener("click", async () => {
-      const msg = modal.querySelector("#topup-msg");
-      msg.textContent = "creating a payment link…";
-      try {
-        const res = await api("/api/topup", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ packageId: b.dataset.pkg }),
-        });
-        if (res.checkoutUrl) {
-          // The desktop webview has no working window.open — the local app opens the system browser.
-          try {
-            await api("/api/open-external", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url: res.checkoutUrl }),
-            });
-          } catch {
-            window.open(res.checkoutUrl, "_blank", "noopener");
-          }
-          msg.innerHTML = `<span class="check-ok">✓ opened the payment page in the browser</span>`;
-          setTimeout(refreshBalance, 1200);
-        } else {
-          msg.textContent = "the server did not return a payment link";
-        }
-      } catch (e) { msg.innerHTML = `<span class="check-fail">✗ ${esc(e.message)}</span>`; }
-    }));
+    b.addEventListener("click", () => launchCheckout({ packageId: b.dataset.pkg })));
+
+  // Custom amount (server-configured; hidden when the server disables it).
+  const customBox = modal.querySelector("#topup-custom");
+  if (cat.custom) {
+    const { minCredits, maxCredits, usdPerCredit } = cat.custom;
+    customBox.innerHTML = `
+      <div class="topup-custom">
+        <div class="topup-or"><span>or your own amount</span></div>
+        <div class="row" style="flex-wrap:nowrap">
+          <input type="number" id="custom-credits" min="${minCredits}" max="${maxCredits}" step="1"
+            value="${minCredits}" inputmode="numeric" style="max-width:130px">
+          <button class="primary" id="custom-buy">Buy</button>
+        </div>
+        <p class="hint" style="margin-top:6px">$${usdPerCredit} per credit, no bonus · ${minCredits}–${maxCredits.toLocaleString()} credits · packages above are the better deal</p>
+        <div class="field-error" id="custom-error"></div>
+      </div>`;
+    const input = customBox.querySelector("#custom-credits");
+    const buy = customBox.querySelector("#custom-buy");
+    const errEl = customBox.querySelector("#custom-error");
+    const parse = () => {
+      const n = Number(input.value);
+      const ok = Number.isInteger(n) && n >= minCredits && n <= maxCredits;
+      errEl.textContent = ok || input.value === "" ? "" : `whole number between ${minCredits} and ${maxCredits}`;
+      buy.disabled = !ok;
+      buy.textContent = ok ? `Buy ${n.toLocaleString()} cr — $${(n * usdPerCredit).toLocaleString()}` : "Buy";
+      return ok ? n : null;
+    };
+    input.addEventListener("input", parse);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && parse() != null) buy.click(); });
+    buy.addEventListener("click", () => {
+      const n = parse();
+      if (n != null) launchCheckout({ customCredits: n });
+    });
+    parse();
+  }
 }
 
 // Generic modal (overlay + card). Returns the content root.
@@ -338,10 +378,13 @@ async function getModels() {
   return modelsCache;
 }
 async function getPackages() {
-  // Top-up catalog comes from the server (query kind="packages") — do NOT hardcode.
+  // TopupCatalog (packages + custom range) comes from the server — do NOT hardcode.
   if (!packagesCache) {
     const res = await api("/api/packages");
-    packagesCache = Array.isArray(res.packages) ? res.packages : [];
+    packagesCache = {
+      packages: Array.isArray(res.packages) ? res.packages : [],
+      custom: res.custom || null, // null → custom top-ups disabled on this server
+    };
   }
   return packagesCache;
 }

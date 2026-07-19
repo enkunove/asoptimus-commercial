@@ -178,8 +178,12 @@ export interface LlmLogPublic {
   error?: string;
 }
 
+/** Exactly one of packageId / customCredits. Custom top-ups charge flat $1/credit
+ *  (packages carry the bonuses); the server validates customCredits against the
+ *  TopupCustomRange it advertises in the catalog. */
 export interface TopupRequest {
-  packageId: string;
+  packageId?: string;
+  customCredits?: number;
 }
 export interface TopupResponse {
   checkoutUrl: string; // Paddle hosted checkout — the browser redirects to the Paddle domain
@@ -361,7 +365,21 @@ export interface TopupPackage {
   bonusPct?: number;
 }
 
+/** Custom-amount bounds (flat $1/credit, integer credits, no bonus). null in the catalog →
+ *  custom top-ups are not configured on this server and the UI hides the input. */
+export interface TopupCustomRange {
+  minCredits: number;
+  maxCredits: number;
+  usdPerCredit: number; // 1 (kept explicit so the UI never hardcodes money math)
+}
+
+/** kind="packages" result: fixed packages + the custom-amount config. */
+export interface TopupCatalog {
+  packages: TopupPackage[];
+  custom: TopupCustomRange | null;
+}
+
 // Mapping of query kind → data type in query.result:
 //   runs→RunSummary[] · run→RunSnapshot · keywords→KeywordPage · keyword→{item:KeywordEntry|null}
-//   llm-log→LlmLogPage · balance→BalanceView · models→ModelInfo[] · packages→TopupPackage[]
+//   llm-log→LlmLogPage · balance→BalanceView · models→ModelInfo[] · packages→TopupCatalog
 //   keywords-lite→KeywordsLiteView · competitors→CompetitorsView · export→ExportArtifact

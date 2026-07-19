@@ -141,7 +141,7 @@ describe("PaddleService grant flow (DEV mock — unsigned bodies)", () => {
       expect(rejected.ok).toBe(false);
       expect(await billing2.balance("u3")).toBe(0);
       // The documented dev grant path bypasses the signature (DEV-gated) and keeps working.
-      const dev = await sandbox.devComplete("u3", "p10");
+      const dev = await sandbox.devComplete("u3", { packageId: "p10" });
       expect(dev.ok).toBe(true);
       expect(await billing2.balance("u3")).toBe(10);
     } finally {
@@ -150,13 +150,87 @@ describe("PaddleService grant flow (DEV mock — unsigned bodies)", () => {
   });
 
   test("devComplete grants through the same webhook path", async () => {
-    const r = await svc.devComplete("u1", "p25");
+    const r = await svc.devComplete("u1", { packageId: "p25" });
     expect(r.ok).toBe(true);
     expect(await billing.balance("u1")).toBe(36); // 10 + 26
   });
 
   test("mock checkout returns the dev completion URL", async () => {
-    const { checkoutUrl } = await svc.createCheckout("u1", "u1@test.dev", "p10", "http://x.test");
+    const { checkoutUrl } = await svc.createCheckout("u1", "u1@test.dev", { packageId: "p10" }, "http://x.test");
     expect(checkoutUrl).toContain("/checkout/success?dev=1&package=p10&user=u1");
+  });
+
+  test("custom amounts: catalog range, checkout URL, webhook grant, bounds enforced", async () => {
+    const range = svc.customRange();
+    expect(range).toEqual({ minCredits: 5, maxCredits: 500, usdPerCredit: 1 });
+
+    const { checkoutUrl } = await svc.createCheckout("u1", "u1@test.dev", { customCredits: 42 }, "http://x.test");
+    expect(checkoutUrl).toContain("credits=42");
+
+    const before = await billing.balance("u1");
+    const r = await svc.devComplete("u1", { customCredits: 42 });
+    expect(r.ok).toBe(true);
+    expect(await billing.balance("u1")).toBe(before + 42);
+
+    // bounds: below min, above max, non-integer, both/neither selection
+    await expect(svc.createCheckout("u1", "e", { customCredits: 4 }, "http://x")).rejects.toThrow("between");
+    await expect(svc.createCheckout("u1", "e", { customCredits: 501 }, "http://x")).rejects.toThrow("between");
+    await expect(svc.createCheckout("u1", "e", { customCredits: 10.5 }, "http://x")).rejects.toThrow("between");
+    await expect(svc.createCheckout("u1", "e", { packageId: "p10", customCredits: 10 }, "http://x")).rejects.toThrow("exactly one");
+    await expect(svc.createCheckout("u1", "e", {}, "http://x")).rejects.toThrow("exactly one");
+  });
+
+  test("customRange survives env typos (NaN must not disable the money guard) and caps max at 1M", async () => {
+    process.env.TOPUP_CUSTOM_MIN = "abc";
+    process.env.TOPUP_CUSTOM_MAX = "1,000";
+    try {
+      expect(svc.customRange()).toEqual({ minCredits: 5, maxCredits: 500, usdPerCredit: 1 });
+      // With NaN bounds every comparison is false — the old code accepted ANY integer here.
+      await expect(svc.createCheckout("u1", "e", { customCredits: 1_000_000 }, "http://x")).rejects.toThrow("between");
+      await expect(svc.createCheckout("u1", "e", { customCredits: 0 }, "http://x")).rejects.toThrow("between");
+      process.env.TOPUP_CUSTOM_MAX = "99999999";
+      expect(svc.customRange()!.maxCredits).toBe(1_000_000); // stays below the webhook's 10M sanity ceiling
+    } finally {
+      delete process.env.TOPUP_CUSTOM_MIN;
+      delete process.env.TOPUP_CUSTOM_MAX;
+    }
+  });
+
+  test("paid transaction with unresolvable custom_data is NOT silently ACKed (Paddle must retry)", async () => {
+    const before = await billing.balance("u1");
+    // userId present + garbage amount → our transaction, refuse the ACK.
+    const garbage = await svc.handleWebhook(JSON.stringify({
+      event_id: "evt_bad1", event_type: "transaction.completed",
+      data: { id: "txn_bad1", custom_data: { userId: "u1", customCredits: "garbage" } },
+    }), null);
+    expect(garbage.ok).toBe(false);
+    // userId present + unknown packageId → same refusal.
+    const unknown = await svc.handleWebhook(JSON.stringify({
+      event_id: "evt_bad2", event_type: "transaction.completed",
+      data: { id: "txn_bad2", custom_data: { userId: "u1", packageId: "p_gone" } },
+    }), null);
+    expect(unknown.ok).toBe(false);
+    expect(await billing.balance("u1")).toBe(before);
+  });
+
+  test("a checkout-accepted amount above the old 100k clamp still grants (ceilings never cross)", async () => {
+    const before = await billing.balance("u1");
+    const r = await svc.handleWebhook(JSON.stringify({
+      event_id: "evt_big", event_type: "transaction.completed",
+      data: { id: "txn_big", custom_data: { userId: "u1", customCredits: 150_000 } },
+    }), null);
+    expect(r.ok).toBe(true);
+    expect(await billing.balance("u1")).toBe(before + 150_000);
+  });
+
+  test("webhook grants a custom transaction via custom_data.customCredits", async () => {
+    const before = await billing.balance("u1");
+    const r = await svc.handleWebhook(JSON.stringify({
+      event_id: "evt_custom", event_type: "transaction.completed",
+      data: { id: "txn_custom", custom_data: { userId: "u1", customCredits: 7 } },
+    }), null);
+    expect(r.ok).toBe(true);
+    expect(r.note).toContain("granted 7");
+    expect(await billing.balance("u1")).toBe(before + 7);
   });
 });

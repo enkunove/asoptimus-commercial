@@ -4,8 +4,8 @@
 // Real data will arrive over WSS from @aso/server. The prod build never enters here (makeCloudLink).
 
 import type {
-  RunSummary, RunAction, BalanceView, TopupResponse, RunState, ModelInfo, TopupPackage,
-  BusinessContext, KeywordEntry, LlmLogPublic, AssemblyResult,
+  RunSummary, RunAction, BalanceView, TopupRequest, TopupResponse, RunState, ModelInfo, TopupPackage,
+  TopupCatalog, BusinessContext, KeywordEntry, LlmLogPublic, AssemblyResult,
   KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
 } from "@aso/shared";
 import type { RelayEvent } from "./cloud-link";
@@ -42,8 +42,8 @@ export interface StubBackend {
   deleteRun(runId: string): Promise<void>;
   getBalance(): Promise<BalanceView>;
   getModels(): Promise<ModelInfo[]>;
-  getPackages(): Promise<TopupPackage[]>;
-  topup(packageId: string): Promise<TopupResponse>;
+  getPackages(): Promise<TopupCatalog>;
+  topup(selection: TopupRequest): Promise<TopupResponse>;
   // spec 09 (mock projections — real aggregation lives on the server)
   keywordsLite(runId: string): Promise<KeywordsLiteView>;
   competitors(runId: string): Promise<CompetitorsView>;
@@ -56,6 +56,9 @@ const DEV_PACKAGES: TopupPackage[] = [
   { id: "medium", credits: 1500, priceUsd: 1500, label: "Pro", bonusPct: 5 },
   { id: "large", credits: 5000, priceUsd: 5000, label: "Studio", bonusPct: 12 },
 ];
+
+// Custom top-up bounds the stub advertises AND enforces (mirrors the server defaults).
+const STUB_CUSTOM = { minCredits: 5, maxCredits: 500, usdPerCredit: 1 };
 
 // Synthetic model registry for the offline run form (source of truth — server query kind="models").
 const DEV_MODELS: ModelInfo[] = [
@@ -330,16 +333,33 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
 
     async getModels() { return DEV_MODELS.map((m) => ({ ...m })); },
 
-    async getPackages() { return DEV_PACKAGES.map((p) => ({ ...p })); },
+    async getPackages(): Promise<TopupCatalog> {
+      return {
+        packages: DEV_PACKAGES.map((p) => ({ ...p })),
+        custom: { ...STUB_CUSTOM },
+      };
+    },
 
-    async topup(packageId) {
-      // DEV: the real Paddle checkout URL comes from the server over HTTPS; this one is fake.
-      const pkg = DEV_PACKAGES.find((p) => p.id === packageId);
-      const grant = pkg ? Math.round(pkg.credits * (1 + (pkg.bonusPct ?? 0) / 100)) : 500;
+    async topup(selection) {
+      // DEV: the real Paddle checkout URL comes from the server over HTTPS; this one is fake —
+      // but validation MIRRORS the server (resolveSelection), so stub-mode testing of the
+      // modal's edge cases fails the same way the real server would instead of masking bugs.
+      let grant: number;
+      if (selection.packageId) {
+        const pkg = DEV_PACKAGES.find((p) => p.id === selection.packageId);
+        if (!pkg) throw new Error(`unknown package: ${selection.packageId}`);
+        grant = Math.round(pkg.credits * (1 + (pkg.bonusPct ?? 0) / 100));
+      } else {
+        const n = Number(selection.customCredits);
+        if (!Number.isInteger(n) || n < STUB_CUSTOM.minCredits || n > STUB_CUSTOM.maxCredits) {
+          throw new Error(`customCredits must be a whole number between ${STUB_CUSTOM.minCredits} and ${STUB_CUSTOM.maxCredits}`);
+        }
+        grant = n;
+      }
       credits += grant;
       ledger.push({ ts: now(), type: "grant", delta: grant });
       emit({ type: "balance", credits });
-      return { checkoutUrl: `https://sandbox-buy.paddle.com/dev-stub?package=${encodeURIComponent(packageId)}&grant=${grant}` };
+      return { checkoutUrl: `https://sandbox-buy.paddle.com/dev-stub?grant=${grant}` };
     },
   };
 

@@ -309,6 +309,11 @@ details.llm-call pre {
 .topup-pkg .topup-bonus { display: inline-block; margin-top: 3px; font-size: 11px; font-weight: 700;
   color: var(--orange-deep); background: var(--orange-soft); border: 1.5px solid var(--orange-deep); border-radius: 6px; padding: 1px 6px; }
 .topup-pkg .topup-label { margin-top: 4px; }
+.topup-custom { margin-top: 16px; }
+.topup-or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+.topup-or::before, .topup-or::after { content: ""; flex: 1; border-top: 2px solid var(--line-soft); }
+.topup-custom input[type="number"] { font-family: var(--mono); font-weight: 700; font-size: 15px; text-align: right; }
 
 /* ══ spec 09: insights & exports ══════════════════════════════════════════ */
 

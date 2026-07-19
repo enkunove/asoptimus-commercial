@@ -13,8 +13,8 @@
 
 import { createHmac, randomBytes } from "node:crypto";
 import type {
-  RunSummary, RunAction, BalanceView, TopupResponse, Job, JobResult, ModelInfo, TopupPackage,
-  ServerToClient, ClientToServer, SignedEnvelope, QueryKind,
+  RunSummary, RunAction, BalanceView, TopupRequest, TopupResponse, Job, JobResult, TopupCatalog,
+  ServerToClient, ClientToServer, SignedEnvelope, QueryKind, ModelInfo,
   KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
 } from "@aso/shared";
 import type { AppleHttp } from "./apple/http";
@@ -58,8 +58,9 @@ export interface CloudLink {
   deleteRun(runId: string): Promise<void>;
   getBalance(): Promise<BalanceView>;
   getModels(): Promise<ModelInfo[]>;
-  getPackages(): Promise<TopupPackage[]>;
-  topup(packageId: string): Promise<TopupResponse>;
+  getPackages(): Promise<TopupCatalog>;
+  /** selection = {packageId} XOR {customCredits} (validated server-side). */
+  topup(selection: TopupRequest): Promise<TopupResponse>;
   // spec 09: insights & exports (server-side re-projections; no new Apple/LLM calls)
   keywordsLite(runId: string): Promise<KeywordsLiteView>;
   competitors(runId: string): Promise<CompetitorsView>;
@@ -294,7 +295,7 @@ class WssCloudLink implements CloudLink {
     }
   }
 
-  async topup(packageId: string): Promise<TopupResponse> {
+  async topup(selection: TopupRequest): Promise<TopupResponse> {
     // top-up goes over HTTPS (§4), not over WSS: the server (POST /api/topup) returns a Paddle checkout URL.
     const res = await fetch(new URL("/api/topup", httpsBase()), {
       method: "POST",
@@ -302,7 +303,7 @@ class WssCloudLink implements CloudLink {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.deps.session.sessionToken}`,
       },
-      body: JSON.stringify({ packageId }),
+      body: JSON.stringify(selection),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<TopupResponse> & { error?: string };
     if (!res.ok) throw new Error(data?.error || `Top-up failed (HTTP ${res.status}).`);
@@ -351,7 +352,7 @@ class StubCloudLink implements CloudLink {
   getBalance() { return this.backend.getBalance(); }
   getModels() { return this.backend.getModels(); }
   getPackages() { return this.backend.getPackages(); }
-  topup(packageId: string) { return this.backend.topup(packageId); }
+  topup(selection: TopupRequest) { return this.backend.topup(selection); }
   keywordsLite(runId: string) { return this.backend.keywordsLite(runId); }
   competitors(runId: string) { return this.backend.competitors(runId); }
   exportArtifact(runId: string, format: ExportFormat, ann: { pinned?: string[]; notes?: Record<string, string> } = {}) {

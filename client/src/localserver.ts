@@ -189,12 +189,15 @@ async function handleApi(
     return json({ models: await cloud.getModels() });
   }
   if (path === "/api/packages" && req.method === "GET") {
-    // Top-up catalog — from the cloud (query kind="packages"), NOT hardcoded.
-    return json({ packages: await cloud.getPackages() });
+    // TopupCatalog (packages + custom range) — from the cloud (query kind="packages"), NOT hardcoded.
+    return json(await cloud.getPackages());
   }
   if (path === "/api/topup" && req.method === "POST") {
-    const body = await req.json().catch(() => ({}));
-    return json(await cloud.topup(String((body as any).packageId ?? "small")));
+    const body = await req.json().catch(() => ({})) as { packageId?: string; customCredits?: number };
+    const selection = body.customCredits !== undefined
+      ? { customCredits: Number(body.customCredits) }
+      : { packageId: String(body.packageId ?? "") };
+    return json(await cloud.topup(selection));
   }
 
   if (path === "/api/runs" && req.method === "GET") {

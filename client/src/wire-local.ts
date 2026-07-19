@@ -23,7 +23,7 @@ import type {
   LlmLogPublic,
   BalanceView,
   ModelInfo,
-  TopupPackage,
+  TopupCatalog,
   QueryKind,
   KeywordsLiteView,
   CompetitorsView,
@@ -81,7 +81,7 @@ export interface QueryData {
   "llm-log": LlmLogPage;
   balance: BalanceView;
   models: ModelInfo[];
-  packages: TopupPackage[];
+  packages: TopupCatalog;
   // spec 09: insights & exports
   "keywords-lite": KeywordsLiteView;
   competitors: CompetitorsView;

@@ -116,6 +116,17 @@ describe("DEV integration: signup → gates → run to done → insights & expor
     expect(s.assembly).not.toBeNull();
   }, 180_000);
 
+  test("custom top-up: dev complete grants the exact custom amount", async () => {
+    const userId = (app.auth.verifySession(token))!.userId;
+    const before = await app.billing.balance(userId);
+    const r = await http("POST", "/api/dev/complete-checkout", { customCredits: 7 }, token);
+    expect(r.status).toBe(200);
+    expect(await app.billing.balance(userId)).toBeCloseTo(before + 7, 6);
+    // catalog advertises the custom range so the UI can render the input
+    const cat = await (await http("GET", "/api/packages")).json();
+    expect(cat.custom).toEqual({ minCredits: 5, maxCredits: 500, usdPerCredit: 1 });
+  });
+
   test("snapshot carries creditsSpent equal to the ledger's per-run debits", async () => {
     const snapRes = await http("GET", `/api/runs/${runId}/snapshot`, undefined, token);
     expect(snapRes.status).toBe(200);

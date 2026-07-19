@@ -186,7 +186,7 @@ async function handleQuery(app: App, ws: WsLike, userId: string, q: Extract<Clie
       data = modelInfos(); // ModelInfo[]
       break;
     case "packages":
-      data = topupCatalog(); // TopupPackage[]
+      data = { packages: topupCatalog(), custom: app.payments.customRange() }; // TopupCatalog
       break;
     default:
       throw new Error(`unknown query kind: ${(q as any).kind}`);
