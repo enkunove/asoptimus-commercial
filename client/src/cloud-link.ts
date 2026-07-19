@@ -255,12 +255,12 @@ class WssCloudLink implements CloudLink {
   }
 
   async listRuns() { return this.query("runs"); }
-  async getRun(runId: string) { return this.query("run", { run_id: runId }); }
+  async getRun(runId: string) { return this.query("run", { runId }); }
   async listKeywords(runId: string, q: Record<string, string>) {
-    return this.query("keywords", { run_id: runId, ...q, page: Number(q.page ?? 0) });
+    return this.query("keywords", { runId, ...q, page: Number(q.page ?? 0) });
   }
-  async getKeyword(runId: string, keyword: string) { return this.query("keyword", { run_id: runId, keyword }); }
-  async getLlmLog(runId: string, page: number) { return this.query("llm-log", { run_id: runId, page }); }
+  async getKeyword(runId: string, keyword: string) { return this.query("keyword", { runId, keyword }); }
+  async getLlmLog(runId: string, page: number) { return this.query("llm-log", { runId, page }); }
   async getBalance() { return this.query("balance"); }
   async getModels() { return this.query("models"); }
   async getPackages() { return this.query("packages"); }

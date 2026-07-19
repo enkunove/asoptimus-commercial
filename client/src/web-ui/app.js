@@ -161,8 +161,16 @@ async function openTopup() {
           body: JSON.stringify({ packageId: b.dataset.pkg }),
         });
         if (res.checkoutUrl) {
-          window.open(res.checkoutUrl, "_blank", "noopener");
-          msg.innerHTML = `<span class="check-ok">✓ opened the payment page in a new tab</span>`;
+          // The desktop webview has no working window.open — the local app opens the system browser.
+          try {
+            await api("/api/open-external", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: res.checkoutUrl }),
+            });
+          } catch {
+            window.open(res.checkoutUrl, "_blank", "noopener");
+          }
+          msg.innerHTML = `<span class="check-ok">✓ opened the payment page in the browser</span>`;
           setTimeout(refreshBalance, 1200);
         } else {
           msg.textContent = "the server did not return a payment link";
@@ -561,6 +569,11 @@ async function updateRun(slug) {
   runUpdating = true;
   try {
     const data = await api(`/api/runs/${encodeURIComponent(slug)}`);
+    if (!data) {
+      const body = document.getElementById("tab-body");
+      if (body) body.innerHTML = `<div class="banner error">Run not found — it may have been deleted, or the cloud restarted. <a href="#/runs">Back to runs</a></div>`;
+      return;
+    }
     lastRunData = data;
     renderRunTop(slug, data);
     await renderTab(slug, data);

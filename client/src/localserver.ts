@@ -157,6 +157,20 @@ async function handleApi(
     return json({ storefronts: STOREFRONTS, defaults: publicDefaults() });
   }
 
+  // ── Open a URL in the system browser (the Tauri webview has no working window.open) ─
+  if (path === "/api/open-external" && req.method === "POST") {
+    const body = await req.json().catch(() => ({}));
+    let target: URL;
+    try { target = new URL(String((body as any).url ?? "")); } catch { return json({ error: "invalid url" }, 400); }
+    if (target.protocol !== "http:" && target.protocol !== "https:") return json({ error: "only http/https" }, 400);
+    const cmd = process.platform === "darwin" ? ["open", target.href]
+      : process.platform === "win32" ? ["cmd", "/c", "start", "", target.href]
+      : ["xdg-open", target.href];
+    const proc = Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
+    if (proc.exitCode !== 0) return json({ error: "could not open the browser" }, 500);
+    return json({ ok: true });
+  }
+
   // Everything below requires an active cloud-link.
   const cloud = deps.getCloud();
   if (!cloud) return json({ error: "not activated" }, 401);

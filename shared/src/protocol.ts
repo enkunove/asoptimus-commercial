@@ -241,11 +241,16 @@ export interface RunQuote {
 // ── Data projections for query.result by kind (reconcile v5) ───────────────────
 // Close the `query.result.data` sub-contract — exactly what arrives for each QueryKind.
 
-/** kind="run": superset of RunState for the run screen's first load (push-only SSE does not
- *  deliver config/events/counters on first open). */
-export interface RunSnapshot extends RunState {
+/** kind="run": everything the run screen needs on first load (push-only SSE does not
+ *  deliver config/events/counters on first open). `state` carries RunState minus the keyword
+ *  list (kind="keywords" pages it server-side); context/assembly are surfaced top-level
+ *  for the UI, which reads them directly. */
+export interface RunSnapshot {
+  state: Omit<RunState, "keywords">;
   config: RunConfig;
+  context: RunState["context"];
   events: ProgressEvent[];
+  assembly: RunState["assembly"];
   keywordCount: number;
   sampleCount: number;
 }

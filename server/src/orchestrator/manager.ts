@@ -229,12 +229,15 @@ export class RunManager {
     const row = await this.store.getRun(runId);
     if (!row) return null;
     const events = (await this.store.listRunEvents(runId, 0)).map((e) => e.event);
+    const { keywords, ...stateNoKeywords } = state;
     return {
-      ...state,
+      state: stateNoKeywords,
       config: row.config,
+      context: state.context,
       events,
-      keywordCount: state.keywords.length,
-      sampleCount: sampleCount(state.keywords),
+      assembly: state.assembly,
+      keywordCount: keywords.length,
+      sampleCount: sampleCount(keywords),
     };
   }
 

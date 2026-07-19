@@ -25,6 +25,20 @@ function bearer(req: Request): string | null {
   return h?.startsWith("Bearer ") ? h.slice(7) : null;
 }
 
+/** Tiny self-contained brand page for Stripe checkout redirects (no assets, inline styles). */
+function checkoutPage(title: string, note: string): Response {
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${title} — ASOptimus</title></head>
+<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#FDF3DA;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#191D3A">
+<div style="max-width:440px;background:#fff;border:2.5px solid #191D3A;border-radius:16px;box-shadow:6px 6px 0 #191D3A;padding:32px 36px;margin:20px;text-align:center">
+<div style="width:52px;height:52px;margin:0 auto;background:#F86C1A;border:2.5px solid #191D3A;border-radius:14px;box-shadow:3px 3px 0 #191D3A;color:#fff;font-weight:800;font-size:28px;line-height:48px">A</div>
+<h1 style="font-size:24px;margin:14px 0 8px;letter-spacing:-0.01em">${title}</h1>
+<p style="color:#565B76;margin:0">${note}</p>
+<p style="color:#565B76;margin:14px 0 0">You can close this tab and return to <b>ASOptimus</b>.</p>
+</div></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
 function balanceView(credits: number, ledger: Awaited<ReturnType<App["store"]["listLedger"]>>): BalanceView {
   return {
     credits,
@@ -41,6 +55,27 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
 
   // ── health ───────────────────────────────────────────────────────────────
   if (path === "/health") return json({ ok: true, ts: new Date().toISOString() });
+
+  // ── Stripe Checkout return pages (success_url/cancel_url point here).
+  //    Prod: granting happens in the webhook — this page only tells the user to go back.
+  //    DEV (dev=1): no Stripe, so the "payment" is completed right here. ──
+  if (path === "/checkout/success" && method === "GET") {
+    let note = "Credits will appear in the app within a few seconds.";
+    if (IS_DEV && url.searchParams.get("dev") === "1") {
+      const user = url.searchParams.get("user") ?? "";
+      const pkg = url.searchParams.get("package") ?? "";
+      if (user && packages()[pkg]) {
+        const r = await app.stripe.devComplete(user, pkg);
+        note = `DEV checkout: ${r.note ?? "granted"}.`;
+      } else {
+        note = "DEV checkout: unknown package or user — nothing granted.";
+      }
+    }
+    return checkoutPage("Payment received", note);
+  }
+  if (path === "/checkout/cancel" && method === "GET") {
+    return checkoutPage("Payment canceled", "No charge was made.");
+  }
 
   // ── public (landing) ────────────────────────────────────────────────────
   if (path === "/signup" && method === "POST") {
