@@ -92,8 +92,12 @@ export async function handleAdmin(app: App, req: Request, url: URL, path: string
   if (!token) return new Response("not found", { status: 404 }); // admin surface disabled
 
   if (!path.startsWith("/admin/api/")) {
-    const rel = path === "/admin" ? "" : path.slice("/admin/".length);
-    return serveStatic(rel);
+    // No-trailing-slash trap: at `/admin` the browser resolves `./app.js` to `/app.js`
+    // (admin looks like a file, base = `/`) — every asset 404s. Canonicalize first.
+    if (path === "/admin") {
+      return new Response(null, { status: 301, headers: { location: "/admin/" } });
+    }
+    return serveStatic(path.slice("/admin/".length));
   }
 
   const denied = checkAdminAuth(req, token);
