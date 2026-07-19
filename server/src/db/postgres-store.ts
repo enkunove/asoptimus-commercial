@@ -1,6 +1,6 @@
 // @aso/server/db — Postgres Store implementation via the `postgres` package. SQL per schema.sql.
 // Wallet atomicity (D4 v4): debit/grant in a transaction with FOR UPDATE (wallet serialization,
-// including across instances) + UNIQUE indexes (ledger_run_keyword_uq, ledger_stripe_event_uq,
+// including across instances) + UNIQUE indexes (ledger_run_keyword_uq, ledger_paddle_event_uq,
 // ON CONFLICT DO NOTHING) — idempotent debits/grants. NB: not exercised against a live DB in the
 // offline build environment (no network) — exercised by `bun run migrate` + happy-path on deploy.
 
@@ -16,24 +16,24 @@ export class PostgresStore implements Store {
   }
 
   async createUser(u: UserRow) {
-    await this.sql`INSERT INTO users (id, email, stripe_customer_id)
-      VALUES (${u.id}, ${u.email}, ${u.stripe_customer_id})
+    await this.sql`INSERT INTO users (id, email, paddle_customer_id)
+      VALUES (${u.id}, ${u.email}, ${u.paddle_customer_id})
       ON CONFLICT (email) DO NOTHING`;
   }
   async getUserByEmail(email: string) {
-    const [r] = await this.sql<UserRow[]>`SELECT id, email, stripe_customer_id FROM users WHERE email = ${email}`;
+    const [r] = await this.sql<UserRow[]>`SELECT id, email, paddle_customer_id FROM users WHERE email = ${email}`;
     return r ?? null;
   }
   async getUserById(id: string) {
-    const [r] = await this.sql<UserRow[]>`SELECT id, email, stripe_customer_id FROM users WHERE id = ${id}`;
+    const [r] = await this.sql<UserRow[]>`SELECT id, email, paddle_customer_id FROM users WHERE id = ${id}`;
     return r ?? null;
   }
-  async getUserByStripeCustomer(customerId: string) {
-    const [r] = await this.sql<UserRow[]>`SELECT id, email, stripe_customer_id FROM users WHERE stripe_customer_id = ${customerId}`;
+  async getUserByPaddleCustomer(customerId: string) {
+    const [r] = await this.sql<UserRow[]>`SELECT id, email, paddle_customer_id FROM users WHERE paddle_customer_id = ${customerId}`;
     return r ?? null;
   }
-  async setStripeCustomer(userId: string, customerId: string) {
-    await this.sql`UPDATE users SET stripe_customer_id = ${customerId} WHERE id = ${userId}`;
+  async setPaddleCustomer(userId: string, customerId: string) {
+    await this.sql`UPDATE users SET paddle_customer_id = ${customerId} WHERE id = ${userId}`;
   }
 
   async createLicense(l: LicenseRow) {
@@ -77,10 +77,10 @@ export class PostgresStore implements Store {
       return { charged: true, alreadyCharged: false, balance: balance - price };
     });
   }
-  async grantCredits(userId: string, credits: number, stripeEventId: string | null) {
+  async grantCredits(userId: string, credits: number, paddleEventId: string | null) {
     return this.sql.begin(async (sql) => {
-      const inserted = await sql`INSERT INTO ledger (user_id, delta, type, stripe_event_id)
-        VALUES (${userId}, ${credits}, 'grant', ${stripeEventId}) ON CONFLICT DO NOTHING RETURNING id`;
+      const inserted = await sql`INSERT INTO ledger (user_id, delta, type, paddle_event_id)
+        VALUES (${userId}, ${credits}, 'grant', ${paddleEventId}) ON CONFLICT DO NOTHING RETURNING id`;
       if (inserted.length === 0) {
         const [w] = await sql<{ balance_credits: number }[]>`SELECT balance_credits FROM wallet WHERE user_id = ${userId}`;
         return { granted: false, balance: w ? Number(w.balance_credits) : 0 };
@@ -91,7 +91,7 @@ export class PostgresStore implements Store {
     });
   }
   async listLedger(userId: string, limit = 100) {
-    return await this.sql<LedgerRowDb[]>`SELECT id, user_id, delta, type, run_id, keyword, step_seq, stripe_event_id, ts
+    return await this.sql<LedgerRowDb[]>`SELECT id, user_id, delta, type, run_id, keyword, step_seq, paddle_event_id, ts
       FROM ledger WHERE user_id = ${userId} ORDER BY id DESC LIMIT ${limit}`;
   }
   async sumDebitsForRun(runId: string) {
@@ -123,8 +123,8 @@ export class PostgresStore implements Store {
   }
 
   async tryMarkProcessed(eventId: string) {
-    const rows = await this.sql`INSERT INTO processed_events (stripe_event_id) VALUES (${eventId})
-      ON CONFLICT DO NOTHING RETURNING stripe_event_id`;
+    const rows = await this.sql`INSERT INTO processed_events (paddle_event_id) VALUES (${eventId})
+      ON CONFLICT DO NOTHING RETURNING paddle_event_id`;
     return rows.length > 0;
   }
 

@@ -177,7 +177,7 @@ function bindHeader() {
 async function openTopup() {
   const modal = openModal(`
     <h2>Top up balance</h2>
-    <p class="muted small">1 credit = $1. Payment happens on a secure Stripe page.</p>
+    <p class="muted small">1 credit = $1. Payment happens on a secure Paddle page.</p>
     <div class="topup-grid" id="topup-grid"><div class="muted small">loading packages…</div></div>
     <div id="topup-msg" class="small muted" style="margin-top:10px"></div>`);
   const grid = modal.querySelector("#topup-grid");

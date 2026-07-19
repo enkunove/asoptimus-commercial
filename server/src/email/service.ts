@@ -1,5 +1,5 @@
 // @aso/server/email — provider-agnostic SMTP service (BUILD-PLAN §9). Transactional emails:
-// activation key (on /signup) and payment receipts (on Stripe webhook). Config — env ONLY:
+// activation key (on /signup) and payment receipts (on Paddle webhook). Config — env ONLY:
 // SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (any transactional SMTP relay).
 // In PROD, missing SMTP → hard failure (we don't silently drop emails). DEV=1 without SMTP → log-only.
 

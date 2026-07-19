@@ -127,7 +127,7 @@ The win and its honest limits:
 usage-based — **you pay exactly for what was used; credits are debited in real time as the
 run proceeds**. The unit = a verified keyphrase from the sample. The user sets sampleSize (slider)
 and the model — and IMMEDIATELY sees a cost **estimate**. **1 credit = $1. NO free tier. Top-up of
-credits only** (Stripe, $1/credit, packages in config).
+credits only** (Paddle, $1/credit, packages in config).
 
 - **The debit unit is a verified keyphrase** (the sample counter of spec 04.1: rated/selected/bench with
   R≥1). Price = `pricePerKeyphrase[model]` credits; **stronger model → pricier keyphrase**
@@ -316,7 +316,7 @@ asoptimus/                        ← SUPERPROJECT (git): plans, infra, .gitmodu
 │      ├── llm-proxy/             # prompt assembly + Anthropic api_key + metering of EVERY attempt (D4)
 │      ├── billing/               # wallet+ledger, micro-reserve/settle (D4), live price, per-run floor
 │      ├── auth/                  # key→session-token, device-bind, HMAC, revocation, rate/user
-│      ├── stripe/               # Checkout top-up, webhooks (idempotent), Meter
+│      ├── paddle/               # transaction top-up, webhooks (idempotent)
 │      ├── db/                    # schema, migrations, repositories, pg-boss/graphile-worker
 │      ├── api/                   # REST (activation/balance/top-up) + progress SSE + WSS router
 │      └── main.ts                # Bun.serve (HTTP+WSS), graceful shutdown
@@ -386,7 +386,7 @@ without the full arrays in `fetched` the harvest is impossible). `job.error{thro
 back-pressure (the analog of `runWave`'s "break on throttle" from `expander.ts`).
 
 **Browser ↔ localhost** (relay, D1, as in `spec/07.2`): the same `/api/runs`, `/api/runs/:id[/keywords|/control]`,
-`/api/events`(SSE), `/api/balance`, `/api/topup`(→ Stripe Checkout URL) — but the program does not
+`/api/events`(SSE), `/api/balance`, `/api/topup`(→ Paddle checkout URL) — but the program does not
 execute them locally; it translates them into WSS and streams the response back.
 
 ---
@@ -395,12 +395,12 @@ execute them locally; it translates them into WSS and streams the response back.
 
 | Table | Key fields | Purpose |
 |---|---|---|
-| `users` | `id, email, stripe_customer_id` | identity |
+| `users` | `id, email, paddle_customer_id` | identity |
 | `licenses` | `key_hash, user_id, device_fp, status, revoked_at` | key→user, device-bind, revocation |
 | `wallet` | `user_id PK, balance_credits` | balance — **source of truth** (D4); debit under `FOR UPDATE` |
-| `ledger` | `id, user_id, delta, type, run_id, step_seq, stripe_event_id, ts`, **`UNIQUE(run_id, step_seq)` (for debit/settle)**, `stripe_event_id UNIQUE` | immutable journal; idempotency of debits and grants |
+| `ledger` | `id, user_id, delta, type, run_id, step_seq, paddle_event_id, ts`, **`UNIQUE(run_id, step_seq)` (for debit/settle)**, `paddle_event_id UNIQUE` | immutable journal; idempotency of debits and grants |
 | `llm_steps` | `run_id, logical_step, step_seq, request_hash, result_json\|null, valid bool, usage, ts`, `PK(run_id, step_seq)` | every billable attempt = a row (incl. invalid ones); **advance/replay by the last `valid` row of the logical step** — Anthropic is not called again (D7) |
-| `processed_events` | `stripe_event_id UNIQUE` | webhook idempotency |
+| `processed_events` | `paddle_event_id UNIQUE` | webhook idempotency |
 | `runs` | `id, user_id, phase, config, context, final, usage` | run header |
 | `run_events` | `run_id, seq, ts, event` | **event-sourced** log (replay, SSE, `Last-Event-ID`) |
 | `jobs` | `job_id, run_id, kind, payload, status, result, deadline` | Apple job queue, idempotency (D7) |
@@ -429,7 +429,7 @@ D4. The job queue — `FOR UPDATE SKIP LOCKED`. One instance at launch → no st
    Progress: run.progress/phase → relayed into the browser SSE (authoritative run_events.seq).
 6. improving (04.2) → assembling: @aso/core greedy+place, 2 buckets; phrase calls; validate
    (T/S/K/X/W/X4). → done.
-7. SETTLE: return the floor remainder, final ledger row, report to Stripe Meter.
+7. SETTLE: return the floor remainder, final ledger row, the ledger stays authoritative (no provider metering).
 ```
 
 Not a single step is possible without the server: it sends the Apple jobs, only it has the LLM
@@ -479,7 +479,7 @@ client forging the bill.
   client`) stand. The server holds **ALL** the logic: `core` (metrics/assembly/expander/prompts) +
   orchestrator (job dispatch, §7 inversion) + llm-proxy (Anthropic api_key, metering of every
   attempt, D4) + billing (wallet+ledger with `UNIQUE(run_id,step_seq)`, micro-reserve/settle,
-  llm_steps) + auth (key→session-token) + apple-dispatch (D3 cache, job queue) + one Stripe
+  llm_steps) + auth (key→session-token) + apple-dispatch (D3 cache, job queue) + one Paddle
   Checkout+webhook. The client: apple-exec (D2) + cloud-link + localserver (guard D8) + web-ui
   (login/balance/top-up) + activation. **No Tauri** — just a localhost binary.
   **Billing invariant:** the only billing authority is the server — the server issues `run_id`/
@@ -494,9 +494,9 @@ client forging the bill.
 **Phase 1 DoD:** new key → activation → brief → a run that is **physically impossible without
 the server** (the server sends the Apple jobs, only the server has the LLM key, the server approves
 the credits); **the server debits incrementally by ITS OWN usage, serialized, with no races and no
-undercounts**; at zero — an honest `paused`; top-up via Stripe replenishes; a server restart
+undercounts**; at zero — an honest `paused`; top-up via Paddle replenishes; a server restart
 mid-LLM-call does not double COGS (llm_steps); a cracked-open client contains neither formulas nor
-prompts (D5). One VPS + Postgres, Stripe test→live.
+prompts (D5). One VPS + Postgres, Paddle sandbox→live.
 
 ---
 

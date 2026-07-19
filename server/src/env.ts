@@ -1,5 +1,5 @@
 // @aso/server — central environment handling: DEV flag and required secrets in prod.
-// Rule (BUILD-PLAN §6/§9): mock Store/LLM/Stripe/Apple loopback and dev helpers work
+// Rule (BUILD-PLAN §6/§9): mock Store/LLM/Paddle/Apple loopback and dev helpers work
 // ONLY with DEV=1. In prod (DEV unset) a missing required secret is a hard failure,
 // not a silent mock. Secret values are never logged here — only their presence.
 

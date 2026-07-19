@@ -12,7 +12,7 @@ import type { ClientToServer, ServerToClient, SignedEnvelope, BalanceView } from
 import type { ClientConnection } from "../apple-dispatch/hub.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
 import { modelInfos } from "../billing/prices.ts";
-import { topupCatalog } from "../stripe/service.ts";
+import { topupCatalog } from "../billing/packages.ts";
 import { IS_DEV } from "../env.ts";
 import { log } from "../log.ts";
 

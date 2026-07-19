@@ -7,7 +7,7 @@ import type { JobKind, Job, JobResult, ProgressEvent } from "@aso/shared";
 export interface UserRow {
   id: string;
   email: string;
-  stripe_customer_id: string | null;
+  paddle_customer_id: string | null;
 }
 
 export interface LicenseRow {
@@ -28,7 +28,7 @@ export interface LedgerRowDb {
   /** Keyword (D4 v4): one debit row per checked keyphrase; UNIQUE(run_id, keyword). */
   keyword: string | null;
   step_seq: number | null;
-  stripe_event_id: string | null;
+  paddle_event_id: string | null;
   ts?: string;
 }
 
@@ -99,8 +99,8 @@ export interface Store {
   createUser(u: UserRow): Promise<void>;
   getUserByEmail(email: string): Promise<UserRow | null>;
   getUserById(id: string): Promise<UserRow | null>;
-  getUserByStripeCustomer(customerId: string): Promise<UserRow | null>;
-  setStripeCustomer(userId: string, customerId: string): Promise<void>;
+  getUserByPaddleCustomer(customerId: string): Promise<UserRow | null>;
+  setPaddleCustomer(userId: string, customerId: string): Promise<void>;
 
   // licenses
   createLicense(l: LicenseRow): Promise<void>;
@@ -115,8 +115,8 @@ export interface Store {
    *  (run_id, keyword). Returns: charged — debited now; alreadyCharged — row already existed;
    *  otherwise (balance < price) — not debited → hard-stop at the caller. Never goes negative. */
   debitForKeyphrase(userId: string, runId: string, keyword: string, price: number): Promise<{ charged: boolean; alreadyCharged: boolean; balance: number }>;
-  /** Atomic: grant credits, idempotent by stripe_event_id (grant/top-up). */
-  grantCredits(userId: string, credits: number, stripeEventId: string | null): Promise<{ granted: boolean; balance: number }>;
+  /** Atomic: grant credits, idempotent by paddle_event_id (grant/top-up). */
+  grantCredits(userId: string, credits: number, paddleEventId: string | null): Promise<{ granted: boolean; balance: number }>;
 
   // ledger (immutable log; read for BalanceView/account)
   listLedger(userId: string, limit?: number): Promise<LedgerRowDb[]>;
@@ -131,7 +131,7 @@ export interface Store {
   /** All attempts of a run (for the D9 LlmLogPublic log — outputs+numbers only, NOT prompts). */
   listLlmSteps(runId: string): Promise<LlmStepRow[]>;
 
-  // processed_events (Stripe idempotency)
+  // processed_events (payment-webhook idempotency)
   tryMarkProcessed(eventId: string): Promise<boolean>;
 
   // runs

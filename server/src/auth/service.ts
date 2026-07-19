@@ -39,7 +39,7 @@ export class AuthService {
       return { key: "", userId: existing.id, existed: true };
     }
     const userId = `usr_${randomBytes(9).toString("base64url")}`;
-    await this.store.createUser({ id: userId, email, stripe_customer_id: null });
+    await this.store.createUser({ id: userId, email, paddle_customer_id: null });
     await this.store.ensureWallet(userId, 0); // D4 v4: NO free tier — starting balance 0
     const key = generateKey();
     await this.store.createLicense({

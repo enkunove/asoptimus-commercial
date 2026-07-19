@@ -8,7 +8,7 @@ Source Serif 4 + IBM Plex Mono) — everything new must fit into it. Implement a
 
 ### 1. Signup instead of waitlist (email → activation key)
 - Email field + "Get your key" button. Submit → `POST {API}/signup {email}`.
-- Backend (`server` repo): create `User` + Stripe `Customer` + `wallet` (opt. N free credits),
+- Backend (`server` repo): create `User` + Paddle `Customer` + `wallet` (opt. N free credits),
   generate an `asop_live_…` key, send it by email. Response — "check your inbox".
 - Anti-abuse (BUILD-PLAN §9): free credits only on verified email; optionally — later.
 - Submitting the same email twice — idempotent (do not multiply Customers).
@@ -24,8 +24,8 @@ Source Serif 4 + IBM Plex Mono) — everything new must fit into it. Implement a
 - Explain the model: **1 credit = $0.01** (if you pick the monetary model) or packages.
 - Top-up packages (e.g. $10/$25/$50 with a volume bonus — margin is baked into the purchase price, D4).
 - A "what one run costs" reference point (an honest range based on COGS).
-- CTA "Buy credits" → `POST {API}/checkout {packageId, email|customer}` → redirect to Stripe
-  Checkout (Stripe's domain). Return — to `/checkout/success` and `/checkout/cancel`.
+- CTA "Buy credits" → `POST {API}/checkout {packageId, email|customer}` → redirect to Paddle
+  hosted checkout (Paddle's domain). Return — to `/checkout/success` and `/checkout/cancel`.
 
 ### 4. Post-checkout and activation
 - `/checkout/success` — "credits granted" (the actual grant happens via the server webhook, not via
@@ -52,8 +52,8 @@ So one can buy/check the balance without launching the program:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/signup` | email → create User+Customer+wallet, send the key |
-| POST | `/checkout` | create a Stripe Checkout Session for a package → `{checkoutUrl}` |
-| POST | `/webhooks/stripe` | `checkout.session.completed` → grant in the ledger (idempotent) |
+| POST | `/checkout` | create a Paddle transaction for a package → `{checkoutUrl}` |
+| POST | `/webhooks/paddle` | `transaction.completed` → grant in the ledger (idempotent) |
 | GET | `/account` | (magic-link token) balance + ledger |
 | POST | `/account/resend-key` | resend the key to the email |
 | GET | `/download/manifest` | versions/links/checksums of artifacts per OS |

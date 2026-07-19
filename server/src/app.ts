@@ -1,12 +1,12 @@
-// @aso/server — composition root: wires all services (store, auth, billing, stripe, email,
+// @aso/server — composition root: wires all services (store, auth, billing, paddle, email,
 // llm-client, hub, run-manager) behind interfaces. External dependencies (Postgres, Anthropic,
-// Stripe, SMTP) are required in prod; their mock/loopback work ONLY with DEV=1 (otherwise the
+// Paddle, SMTP) are required in prod; their mock/loopback work ONLY with DEV=1 (otherwise the
 // factories throw ProdConfigError). Construction order = secret-validation order at startup.
 
 import { createStore, type Store } from "./db/index.ts";
 import { BillingService } from "./billing/service.ts";
 import { AuthService } from "./auth/service.ts";
-import { StripeService } from "./stripe/service.ts";
+import { PaddleService } from "./paddle/service.ts";
 import { createLlmClient } from "./llm-proxy/client.ts";
 import { ClientHub } from "./apple-dispatch/hub.ts";
 import { RunManager } from "./orchestrator/manager.ts";
@@ -17,7 +17,7 @@ export interface App {
   store: Store;
   billing: BillingService;
   auth: AuthService;
-  stripe: StripeService;
+  payments: PaddleService;
   email: EmailService;
   hub: ClientHub;
   manager: RunManager;
@@ -28,7 +28,7 @@ export function createApp(): App {
   const billing = new BillingService(store);
   const auth = new AuthService(store);
   const email = createEmailService();
-  const stripe = new StripeService(store, billing, email);
+  const payments = new PaddleService(store, billing, email);
   const hub = new ClientHub();
   const client = createLlmClient();
 
@@ -37,5 +37,5 @@ export function createApp(): App {
   const allowLoopback = IS_DEV && process.env.REQUIRE_CLIENT !== "1";
   const manager = new RunManager(store, billing, client, hub, { allowLoopback });
 
-  return { store, billing, auth, stripe, email, hub, manager };
+  return { store, billing, auth, payments, email, hub, manager };
 }

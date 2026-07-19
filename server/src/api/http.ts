@@ -5,7 +5,7 @@
 
 import type { App } from "../app.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
-import { packages, topupCatalog } from "../stripe/service.ts";
+import { packages, topupCatalog } from "../billing/packages.ts";
 import { modelInfos, quoteFor, pricePerKeyphrase, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
 import { IS_DEV, optionalEnv } from "../env.ts";
 import { log } from "../log.ts";
@@ -25,7 +25,7 @@ function bearer(req: Request): string | null {
   return h?.startsWith("Bearer ") ? h.slice(7) : null;
 }
 
-/** Tiny self-contained brand page for Stripe checkout redirects (no assets, inline styles). */
+/** Tiny self-contained brand page for Paddle checkout redirects (no assets, inline styles). */
 function checkoutPage(title: string, note: string): Response {
   const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${title} — ASOptimus</title></head>
@@ -56,16 +56,16 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   // ── health ───────────────────────────────────────────────────────────────
   if (path === "/health") return json({ ok: true, ts: new Date().toISOString() });
 
-  // ── Stripe Checkout return pages (success_url/cancel_url point here).
+  // ── Paddle checkout return pages (success/cancel redirects point here).
   //    Prod: granting happens in the webhook — this page only tells the user to go back.
-  //    DEV (dev=1): no Stripe, so the "payment" is completed right here. ──
+  //    DEV (dev=1): no Paddle, so the "payment" is completed right here. ──
   if (path === "/checkout/success" && method === "GET") {
     let note = "Credits will appear in the app within a few seconds.";
     if (IS_DEV && url.searchParams.get("dev") === "1") {
       const user = url.searchParams.get("user") ?? "";
       const pkg = url.searchParams.get("package") ?? "";
       if (user && packages()[pkg]) {
-        const r = await app.stripe.devComplete(user, pkg);
+        const r = await app.payments.devComplete(user, pkg);
         note = `DEV checkout: ${r.note ?? "granted"}.`;
       } else {
         note = "DEV checkout: unknown package or user — nothing granted.";
@@ -115,14 +115,14 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     let email = b.email;
     if (!userId && email) { const u = await app.store.getUserByEmail(String(email).toLowerCase()); userId = u?.id; email = u?.email; }
     if (!userId) return err("userId or a known email is required");
-    const r = await app.stripe.createCheckout(userId, email ?? "", pkg, url.origin);
+    const r = await app.payments.createCheckout(userId, email ?? "", pkg, url.origin);
     return json(r);
   }
 
-  if (path === "/webhooks/stripe" && method === "POST") {
+  if (path === "/webhooks/paddle" && method === "POST") {
     const raw = await req.text();
-    const sig = req.headers.get("stripe-signature");
-    const r = await app.stripe.handleWebhook(raw, sig);
+    const sig = req.headers.get("paddle-signature");
+    const r = await app.payments.handleWebhook(raw, sig);
     return json(r, r.ok ? 200 : 400);
   }
 
@@ -197,7 +197,7 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     const b = await body(req);
     if (!packages()[String(b.packageId ?? "")]) return err(`unknown package; available: ${Object.keys(packages()).join(", ")}`);
     const user = await app.store.getUserById(sess.userId);
-    const r = await app.stripe.createCheckout(sess.userId, user?.email ?? "", String(b.packageId ?? ""), url.origin);
+    const r = await app.payments.createCheckout(sess.userId, user?.email ?? "", String(b.packageId ?? ""), url.origin);
     return json(r);
   }
 
@@ -206,7 +206,7 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     if (!IS_DEV) return err("unavailable outside DEV=1", 404);
     if (!sess) return err("unauthorized", 401);
     const b = await body(req);
-    const r = await app.stripe.devComplete(sess.userId, String(b.packageId ?? "p10"));
+    const r = await app.payments.devComplete(sess.userId, String(b.packageId ?? "p10"));
     return json(r);
   }
 

@@ -1,7 +1,7 @@
 // @aso/server/billing — wallet (D4 v4: usage-based, REAL-TIME debiting).
 //
 // Model:
-//  • 1 credit = $1. NO free tier. Top-up only (Stripe, $1/credit).
+//  • 1 credit = $1. NO free tier. Top-up only (Paddle, $1/credit).
 //  • The moment a keyword becomes a verified keyphrase (rated, R≥1, part of the sample) —
 //    pricePerKeyphrase[model] is debited atomically RIGHT THEN: `UPDATE wallet SET balance=balance-:p WHERE
 //    balance>=:p`. Idempotent by (run_id, keyword) in the ledger (type=debit). After every debit
@@ -44,9 +44,9 @@ export class BillingService {
     return this.store.debitForKeyphrase(userId, runId, keyword, price);
   }
 
-  /** Credit grant (Stripe top-up), idempotent by stripe_event_id (D4/§webhooks). */
-  async grant(userId: string, credits: number, stripeEventId: string | null): Promise<boolean> {
-    const r = await this.store.grantCredits(userId, credits, stripeEventId);
+  /** Credit grant (Paddle top-up), idempotent by paddle_event_id = transaction id (D4/§webhooks). */
+  async grant(userId: string, credits: number, paddleEventId: string | null): Promise<boolean> {
+    const r = await this.store.grantCredits(userId, credits, paddleEventId);
     return r.granted;
   }
 }

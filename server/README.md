@@ -1,13 +1,13 @@
 # asoptimus-server (brain + till) — PRIVATE
 
 The ASOptimus cloud server: all proprietary logic (`core/` — metrics/assembly/expander/locales/prompts)
-+ orchestrator + llm-proxy + billing + auth + apple-dispatch + email + stripe + db + api. The contract —
++ orchestrator + llm-proxy + billing + auth + apple-dispatch + email + paddle + db + api. The contract —
 from `@aso/shared` (nested in `./shared`; a submodule in the superproject). Architecture — `../BUILD-PLAN.md`
 (D1–D9). Notes/contract gaps — `NOTES.md`.
 
 ## Prod mode (default)
 Without `DEV=1` the server runs in prod: a missing required secret (`DATABASE_URL`,
-`ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SMTP_HOST`) → **hard refusal at
+`ANTHROPIC_API_KEY`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `SMTP_HOST`) → **hard refusal at
 startup** (no silent mock). Fill in `.env` (see `.env.example`) — nothing else needs writing.
 
 ```bash
@@ -25,7 +25,7 @@ The `Dockerfile` (Bun base, `EXPOSE 8787`) is built from `infra/docker-compose.y
 ```bash
 DEV=1 bun run dev
 ```
-Enables the in-memory Store + Mock LLM + mock Stripe + loopback Apple + DEV-log email. The happy path
+Enables the in-memory Store + Mock LLM + mock Paddle + loopback Apple + DEV-log email. The happy path
 flows entirely without network. Only under DEV=1 are `POST /api/dev/complete-checkout` and bare WSS
 (without SignedEnvelope) available.
 
@@ -35,14 +35,14 @@ bun test    # core metrics/assembly/expander (numeric examples from spec/03,05) 
 ```
 
 ## Billing (D4 v4 — usage-based, real-time)
-1 credit = $1, NO free tier, top-up only (Stripe, $1/credit). As soon as a keyword becomes a
+1 credit = $1, NO free tier, top-up only (Paddle, $1/credit). As soon as a keyword becomes a
 verified keyphrase (rated, R≥1) — `pricePerKeyphrase[model]` is debited **immediately** (atomic,
 idempotent by `(run_id, keyword)`); the balance drains live. Overshoot up to +10% is charged; at zero —
 `paused` (resumable). Adjust the per-keyphrase price via `PRICE_PER_KEYPHRASE_JSON` (defaults are a placeholder).
 
 ## Env — see `.env.example`
 `DEV · PORT · DATABASE_URL · ANTHROPIC_API_KEY · MODEL_PRICES_JSON · PRICE_PER_KEYPHRASE_JSON ·`
-`STRIPE_SECRET_KEY · STRIPE_WEBHOOK_SECRET · TOPUP_PACKAGES_JSON · SMTP_HOST/PORT/USER/PASS/FROM ·`
+`PADDLE_API_KEY · PADDLE_WEBHOOK_SECRET · TOPUP_PACKAGES_JSON · SMTP_HOST/PORT/USER/PASS/FROM ·`
 `REQUIRE_CLIENT · CLIENT_DOWNLOAD_MANIFEST_JSON`
 
 ## Happy-path demo (DEV, HTTP)

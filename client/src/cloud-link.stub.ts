@@ -333,13 +333,13 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     async getPackages() { return DEV_PACKAGES.map((p) => ({ ...p })); },
 
     async topup(packageId) {
-      // DEV: the real Stripe Checkout URL comes from the server over HTTPS; this one is fake.
+      // DEV: the real Paddle checkout URL comes from the server over HTTPS; this one is fake.
       const pkg = DEV_PACKAGES.find((p) => p.id === packageId);
       const grant = pkg ? Math.round(pkg.credits * (1 + (pkg.bonusPct ?? 0) / 100)) : 500;
       credits += grant;
       ledger.push({ ts: now(), type: "grant", delta: grant });
       emit({ type: "balance", credits });
-      return { checkoutUrl: `https://checkout.stripe.com/dev-stub?package=${encodeURIComponent(packageId)}&grant=${grant}` };
+      return { checkoutUrl: `https://sandbox-buy.paddle.com/dev-stub?package=${encodeURIComponent(packageId)}&grant=${grant}` };
     },
   };
 

@@ -32,7 +32,7 @@ colima start --cpu 2 --memory 4
 cd infra
 cp .env.example .env
 $EDITOR .env            # at minimum set POSTGRES_PASSWORD; for real runs also
-                        # ANTHROPIC_API_KEY (api-key!), STRIPE_*, SMTP_*, secrets
+                        # ANTHROPIC_API_KEY (api-key!), PADDLE_*, SMTP_*, secrets
 
 # 3. Build + start. Order is automatic: postgres (healthy) → migrate (exits 0)
 #    → server. Migrations run every `up`; schema.sql is idempotent.
@@ -45,7 +45,7 @@ docker compose logs -f server            # follow logs
 ```
 
 The server prints its mode on boot, e.g.
-`llm=anthropic db=postgres stripe=live apple=client-only` — a quick check that
+`llm=anthropic db=postgres paddle=live apple=client-only` — a quick check that
 your `.env` took effect (`mock`/`memory` mean that dependency is unset).
 
 ### Migrations
@@ -117,7 +117,7 @@ A starter `fly.toml` is in `deploy/fly.toml`. From the `server/` repo:
 ```bash
 fly launch --no-deploy --copy-config --dockerfile Dockerfile   # uses server/Dockerfile
 fly postgres create && fly postgres attach                     # sets DATABASE_URL
-fly secrets set ANTHROPIC_API_KEY=… STRIPE_SECRET_KEY=… STRIPE_WEBHOOK_SECRET=… \
+fly secrets set ANTHROPIC_API_KEY=… PADDLE_API_KEY=… PADDLE_WEBHOOK_SECRET=… \
                 SMTP_HOST=… SMTP_PORT=587 SMTP_USER=… SMTP_PASS=… SMTP_FROM=… \
                 JWT_SECRET=$(openssl rand -hex 32) HMAC_SECRET=$(openssl rand -hex 32) \
                 REQUIRE_CLIENT=1
@@ -157,7 +157,7 @@ needs buffering disabled — `proxy_buffering off;` in nginx). Point DNS
 See `.env.example` — every key is grouped and marked `[prod-required]`,
 `[optional]`, `[dev-mock]`, or `(not-yet-wired)`. The values the server code
 reads today: `PORT`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `MODEL_PRICES_JSON`,
-`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `SIGNUP_FREE_CREDITS`,
+`PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `SIGNUP_FREE_CREDITS`,
 `REQUIRE_CLIENT`. The SMTP / `PUBLIC_*` / `JWT_SECRET` / `HMAC_SECRET` keys are
 staged for the features that consume them (§9 email, HMAC sessions) — set them
 now so a real deploy is complete.

@@ -3,7 +3,7 @@
 # context root, next to server/Dockerfile) and edit `app` + `primary_region`.
 #   fly launch --no-deploy --copy-config --dockerfile Dockerfile
 #   fly postgres create && fly postgres attach     # injects DATABASE_URL
-#   fly secrets set ANTHROPIC_API_KEY=… STRIPE_SECRET_KEY=… …  (see infra/README.md)
+#   fly secrets set ANTHROPIC_API_KEY=… PADDLE_API_KEY=… …  (see infra/README.md)
 #   fly deploy
 
 app = "asoptimus-server"
@@ -33,6 +33,6 @@ primary_region = "iad"
     timeout = "5s"
     grace_period = "15s"
 
-# Secrets (NOT here — set via `fly secrets set`): ANTHROPIC_API_KEY, STRIPE_SECRET_KEY,
-# STRIPE_WEBHOOK_SECRET, SMTP_HOST/PORT/USER/PASS/FROM, JWT_SECRET, HMAC_SECRET,
+# Secrets (NOT here — set via `fly secrets set`): ANTHROPIC_API_KEY, PADDLE_API_KEY,
+# PADDLE_WEBHOOK_SECRET, TOPUP_PACKAGES_JSON, SMTP_HOST/PORT/USER/PASS/FROM, JWT_SECRET, HMAC_SECRET,
 # MODEL_PRICES_JSON. DATABASE_URL is injected by `fly postgres attach`.

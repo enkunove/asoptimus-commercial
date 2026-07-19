@@ -8,7 +8,7 @@ their repos. Boundaries hold: `client` contains no formulas/prompts (verified by
 - **server** (`asoptimus-server`): core (metrics/assembly/expander/locales/prompts) + orchestrator
   (control-flow inverted) + llm-proxy (per-attempt debit, step_seq, llm_steps, idem-key) + billing
   (atomic micro-reserve, UNIQUE(run_id,step_seq)) + auth + apple-dispatch (D3 cache, queue) +
-  stripe + db (Postgres + Memory fallback) + api. Starts offline on mocks. Pure logic: 28/28
+  paddle + db (Postgres + Memory fallback) + api. Starts offline on mocks. Pure logic: 28/28
   metrics, 27/27 assembly/expander/store (ran through a shim; no bun in the environment).
   `popularity.ts` rewritten as `prefill ∪ fetched` (D2/D3 blocker closed, noted in a code comment).
 - **client** (`asoptimus-client`): apple/{http,hints,search,probe} + apple-exec + cloud-link (WSS)
@@ -41,8 +41,8 @@ sides pick those up in the next iteration (everything needs compiling after `bun
 3. **HMAC envelope** enabled on both sides (SignedEnvelope) + the `/activate` HTTPS leg live.
 4. **Port the aso-util test suite** into the repo (the `core` tests were run via a temporary shim, not
    committed as `.test.ts`).
-5. **Live verification** against Postgres + Anthropic api_key + Stripe test (PostgresStore/Anthropic/
-   Stripe are written but never ran against live services).
+5. **Live verification** against Postgres + Anthropic api_key + Paddle sandbox (PostgresStore/Anthropic/
+   Paddle are written but never ran against live services).
 6. **Client**: secure store for win/linux (currently a chmod-600 fallback); partial-ProbeJob streaming
    for the cache on reconnect (D7 optimization).
 

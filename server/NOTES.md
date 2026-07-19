@@ -2,7 +2,7 @@
 
 The server is brought to prod-readiness: all TODOs/stubs on the prod path are closed; the only thing left
 to the user is filling in the secrets in `.env` (and, optionally, finalizing prices/packages with numbers). Mocks
-(Store/LLM/Stripe/Apple-loopback/DEV-log-email, dev helpers) work **only under DEV=1** — in prod
+(Store/LLM/Paddle/Apple-loopback/DEV-log-email, dev helpers) work **only under DEV=1** — in prod
 their factories throw `ProdConfigError` at startup.
 
 ## Verified live (bun 1.3.14, DEV mode, this env)
@@ -22,7 +22,7 @@ their factories throw `ProdConfigError` at startup.
 ## What was closed (was TODO/stub → prod)
 - **D4 v4 billing** rewritten to usage-based real-time debiting (`billing/service.ts`,
   `debitForKeyphrase`/`grantCredits` atomically in a transaction with FOR UPDATE; idempotency via
-  `UNIQUE(run_id, keyword)` and `stripe_event_id`). NO upfront reserve/settle. The internal per-attempt
+  `UNIQUE(run_id, keyword)` and `paddle_event_id`). NO upfront reserve/settle. The internal per-attempt
   token COGS remains (llm_steps) — a safety fuse/calibration only, never touches the wallet.
 - **Event-sourced replay** (`orchestrator.replayFromLogs`, `apple-dispatch/gateway.setReplay`,
   `proxy.replay`, `replay.ts::ReplayFrontier`): cold-resume reconstructs state from logs, not from
@@ -32,10 +32,10 @@ their factories throw `ProdConfigError` at startup.
   `ProbeJob.childPrefill` on cache hit.
 - **/activate** → `ActivateResponse{session_token, expires_at, hmac_secret}`; `/session/refresh`
   (rotation), device binding, revocation (+session invalidation), per-user rate limit.
-- **Stripe** live-ready: Checkout ($1/credit, packages in config) + idempotent webhook → grant + receipt email.
+- **Paddle** live-ready: hosted checkout ($1/credit, packages in config, MoR handles tax) + idempotent webhook → grant + receipt email.
 - **SMTP email service** (`email/service.ts`, nodemailer): activation key on /signup, receipts on webhook;
   in prod without SMTP — hard refusal.
-- **DEV gating** (`env.ts`): Postgres/Anthropic/Stripe/SMTP required in prod; mocks only under DEV=1.
+- **DEV gating** (`env.ts`): Postgres/Anthropic/Paddle/SMTP required in prod; mocks only under DEV=1.
 - **Dockerfile** (`server/Dockerfile`, Bun, EXPOSE 8787) — for `infra/docker-compose.yml`.
 - **Tests** from aso-util core ported (`src/core/**/*.test.ts`) + `billing.test.ts`.
 - **Prod hygiene:** `env.ts`/`log.ts` (structured JSON log with secret redaction), fail-fast startup,
@@ -44,7 +44,7 @@ their factories throw `ProdConfigError` at startup.
   (task/model/stage/output/tokens/costUsd/durationMs) — **prompts are physically absent** (llm_steps does not contain them).
 
 ## Left to the user (secrets/numbers only — the code is ready)
-- `.env` secrets: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+- `.env` secrets: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`,
   `SMTP_HOST/PORT/USER/PASS/FROM`.
 - Opt. final numbers: `PRICE_PER_KEYPHRASE_JSON` (defaults are a placeholder, `prices.ts` stresses this),
   `TOPUP_PACKAGES_JSON`, `CLIENT_DOWNLOAD_MANIFEST_JSON` (URL+sha of the signed .dmg when the client ships).

@@ -17,7 +17,7 @@ if (typeof Bun === "undefined") {
 const PORT = Number(process.env.PORT ?? 8787);
 
 // createApp() constructs all services; in prod their factories throw ProdConfigError when
-// a required secret is missing (DATABASE_URL / ANTHROPIC_API_KEY / STRIPE_* / SMTP_*).
+// a required secret is missing (DATABASE_URL / ANTHROPIC_API_KEY / PADDLE_* / SMTP_*).
 let app: ReturnType<typeof createApp>;
 try {
   app = createApp();
@@ -60,7 +60,7 @@ log.info("[main] ASOptimus server listening", {
   mode: IS_DEV ? "DEV (mocks allowed)" : "PROD",
   llm: process.env.ANTHROPIC_API_KEY ? "anthropic" : "mock",
   db: process.env.DATABASE_URL ? "postgres" : "memory",
-  stripe: process.env.STRIPE_SECRET_KEY ? "live" : "mock",
+  paddle: process.env.PADDLE_API_KEY ? "live" : "mock",
   smtp: process.env.SMTP_HOST ? "smtp" : "dev-log",
   apple: process.env.REQUIRE_CLIENT === "1" ? "client-only" : (IS_DEV ? "loopback-fallback" : "client-only"),
 });

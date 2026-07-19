@@ -295,7 +295,7 @@ class WssCloudLink implements CloudLink {
   }
 
   async topup(packageId: string): Promise<TopupResponse> {
-    // top-up goes over HTTPS (§4), not over WSS: the server (POST /api/topup) returns a Stripe Checkout URL.
+    // top-up goes over HTTPS (§4), not over WSS: the server (POST /api/topup) returns a Paddle checkout URL.
     const res = await fetch(new URL("/api/topup", httpsBase()), {
       method: "POST",
       headers: {

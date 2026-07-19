@@ -182,7 +182,7 @@ export interface TopupRequest {
   packageId: string;
 }
 export interface TopupResponse {
-  checkoutUrl: string; // Stripe Checkout, the browser redirects to the Stripe domain
+  checkoutUrl: string; // Paddle hosted checkout — the browser redirects to the Paddle domain
 }
 
 export interface BalanceView {

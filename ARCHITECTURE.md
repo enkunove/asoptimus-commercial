@@ -1,6 +1,6 @@
 # ASOptimus — commercial version architecture
 
-Planning document. Based on live research 2026-07 (Tauri/signing, Stripe billing,
+Planning document. Based on live research 2026-07 (Tauri/signing, Paddle billing,
 licensing, backend patterns). Technical terms in English; reasoning originally in Russian.
 
 > **The current source of truth for the build is `BUILD-PLAN.md`** ("variant β" topology,
@@ -67,13 +67,13 @@ Three corrections to your plan, in descending order of importance:
    architecture (reserve-then-settle, margin on purchase, hard-stop at zero), and the plan
    gives it as much space as protection.
 
-3. **Stripe credits ≠ real-time wallet.** Native Stripe Billing Credits are debited at
-   invoice finalization (at the billing-cycle boundary), NOT synchronously per run.
-   The source of truth for the balance must be **your DB**; Stripe is only for taking money
-   and reporting.
+3. **Paddle is a merchant of record, not a wallet.** Paddle takes the money (and, as MoR,
+   owns sales tax/VAT, invoicing and payment disputes), but it knows nothing about credits
+   and cannot gate a run. The source of truth for the balance must be **your DB**; Paddle
+   is only for taking money.
 
 Everything else in your plan is right: activation key as identifier, balance in the
-app, top-up from the app and from the landing page via Stripe, hard-stop at zero, "the
+app, top-up from the app and from the landing page via Paddle, hard-stop at zero, "the
 frontend can do nothing without the backend".
 
 ---
@@ -119,7 +119,7 @@ Three consequences follow, to be accepted as given:
 │                hard-stop at zero
 │  Auth:         key activation → short-lived session-token
 │  Postgres:     wallet, ledger, users, licenses, run event-log, job queue
-│  Stripe:       top-up intake, webhooks, reporting
+│  Paddle:       top-up intake (MoR: tax/disputes), webhooks
 └───────────────────────────────────────────────────────────────────────┘
         Apple (autocomplete + search) ◄─── requests go out from the USER'S IP
 ```
@@ -156,7 +156,7 @@ the **strategy** of those requests stays on the server.
       calls the LLM with its own key, meters input+output tokens
 6. Progress streams to the UI via SSE (Last-Event-ID, replay-then-tail on disconnect)
 7. Finish: SETTLE — debit the actual cost, return the reserve difference,
-           write to the ledger, report to Stripe Meter (for reconciliation)
+           write to the ledger (the ledger is authoritative — no provider metering)
 ```
 
 Key point: **the frontend physically cannot do anything without the server** — every run
@@ -167,17 +167,18 @@ key), plus credit approval. No connection / no balance → the worker sits idle.
 
 ## 4. Billing: usage-based credits (the most financially dangerous part)
 
-**The source of truth is your DB, not Stripe.** Stripe Billing Credits apply automatically
-only at invoice finalization, not synchronously — you cannot gate a run with them.
+**The source of truth is your DB, not Paddle.** Paddle (merchant of record) has no notion
+of a spendable credit balance — you cannot gate a run with it.
 
 ### Object map
-- **Stripe**: `Customer` (1:1 with the user, store `cus_...`), `Checkout Session` mode=payment
-  for each top-up package with `metadata={user_id, activation_key, credits}` +
-  `client_reference_id=user_id`; optionally a `Meter` (event `run_cost`) for reporting.
+- **Paddle**: `Customer` (1:1 with the user, store `ctm_...`), one catalog `Price` (pri_…)
+  per top-up package; a `Transaction` per purchase with
+  `custom_data={userId, packageId}` — that custom_data comes back verbatim in the webhook
+  and routes the grant.
 - **Your tables**:
   - `wallet(user_id, balance_cents)`
-  - `ledger(id, user_id, delta_cents, type[grant|reserve|settle|refund|chargeback], run_id, stripe_event_id UNIQUE, created_at)` — immutable journal
-  - `processed_events(stripe_event_id UNIQUE)` — webhook idempotency
+  - `ledger(id, user_id, delta_cents, type[grant|reserve|settle|refund|chargeback], run_id, paddle_event_id UNIQUE, created_at)` — immutable journal
+  - `processed_events(event_id UNIQUE)` — webhook idempotency
 
 ### Credit definition and margin
 - **1 credit = a fixed monetary unit** (e.g. $0.01), so credits map cleanly onto COGS.
@@ -199,26 +200,27 @@ only at invoice finalization, not synchronously — you cannot gate a run with t
    The idempotency key for each reserve/settle is `run_id`, so retries/duplicate webhooks are no-ops.
 
 ### Top-up webhook
-`checkout.session.completed` → verify the Stripe signature → `payment_status==='paid'` →
-`INSERT processed_events(event.id)` (already there → 200 and exit) → credit a `grant` row to
-the ledger atomically → 200 within seconds, heavy work in the background. Test with `stripe listen` +
-test mode; keep live/test webhook secrets strictly separate.
+`transaction.completed` → verify `Paddle-Signature` (HMAC-SHA256 over `ts:rawBody` with the
+endpoint secret, ±5 min tolerance) → `INSERT processed_events(event_id)` (already there → 200
+and exit) → credit a `grant` row to the ledger atomically, idempotency key = the TRANSACTION
+id (Paddle may re-deliver the same event under fresh notification ids) → 200 within seconds,
+heavy work in the background. Test with the sandbox + the dashboard's webhook simulator; keep
+live/sandbox endpoint secrets strictly separate.
 
 ### Financial holes (must be closed)
-- **Chargeback after spend = double loss on you.** User topped up → spent (you already
-  paid the LLM provider) → disputed the payment. Stripe returns the money + charges a
-  non-refundable dispute fee; nobody rolls back the credits/COGS. Mitigation: **Stripe Radar**
-  (pass before crediting), a cap on top-up size for new users, delayed spendability of large
-  first top-ups. Residual risk is yours.
+- **Chargeback after spend still hurts.** User topped up → spent (you already paid the
+  LLM provider) → disputed the payment. As MoR, Paddle runs the dispute process and its own
+  fraud screening, but the disputed amount (plus their dispute fee) is clawed back from your
+  payout; nobody rolls back the credits/COGS. Mitigation: a cap on top-up size for new
+  users, delayed spendability of large first top-ups. Residual risk is yours.
 - **Negative balance from a reserve race.** Only atomic `WHERE balance>=reserve`
   or `FOR UPDATE`.
 - **Underestimating input tokens** (especially with large context) understates the debit
   severalfold — meter input AND output.
 - **Model price drift** silently makes runs unprofitable — peg the debit to current
   rates, don't hardcode.
-- Backstop option: Stripe offers a managed **"Billing for LLM tokens"** (syncs
-  OpenAI/Anthropic/Google token prices, markup %, can reject requests at zero credits) —
-  usable as a second server-side fuse, but the source of truth is still your ledger.
+- No provider-side token metering exists on Paddle — the ledger plus the per-run COGS
+  ceiling (estimate fuse) is the only fuse, and that is already the design.
 
 ---
 
@@ -338,14 +340,14 @@ The full end-state is a big refactor. Don't build it all at once. Order:
   build commerce until there's a demand signal.
 - **Phase 1 — thin vertical slice (MVP-money).** Goal: prove that money is gated.
   - Server: auth (key→session-token), wallet+ledger, **LLM-proxy** (move the run's LLM calls
-    there), reserve/settle, hard-stop, one Stripe Checkout top-up + webhook.
+    there), reserve/settle, hard-stop, one Paddle checkout top-up + webhook.
   - Client: no Tauri yet — the same local program, but the LLM goes through your server by
     key; Apple fetch and orchestration temporarily stay local.
   - **Deliberate MVP compromise:** metrics/expander are still local at this stage (exposed),
     but **the money is already under control** — every run is impossible without the server's
     LLM + credit approval. This gates COGS (the main risk) and lets you sell. The proprietary
     logic hides in a compiled Bun binary (literally "buying time").
-  - One VPS, Postgres, Stripe test→live. Licensing — Keygen or a simple home-rolled key scheme.
+  - One VPS, Postgres, Paddle sandbox→live. Licensing — Keygen or a simple home-rolled key scheme.
 - **Phase 2 — desktop wrapper.** Tauri shell + sidecar, signing/notarization for 3 OSes,
   updater, download buttons on the landing page, key email on download, balance and top-up
   screens inside the app.
@@ -380,7 +382,7 @@ The full end-state is a big refactor. Don't build it all at once. Order:
 ## 11. Risk summary (descending)
 
 1. **LLM economics + chargebacks** — you can go into the red. Cured by margin-on-purchase,
-   reserve/settle with an atomic gate, per-run floor, Radar, a top-up cap for new users.
+   reserve/settle with an atomic gate, per-run floor, MoR fraud screening, a top-up cap for new users.
 2. **Dependence on an undocumented Apple endpoint** — can die any day.
    Insurance: an ASA provider (official popularity) as a second leg (Phase 4).
 3. **Logic protection** — fundamentally incomplete; softened by the inversion (Phase 3), but

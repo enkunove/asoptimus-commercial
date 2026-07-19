@@ -47,7 +47,7 @@ gating — only the Apple fetch and bare UI rendering. Crack it open — there's
 │  Billing (wallet+ledger — source of truth, reserve/settle, hard-stop)│
 │  Auth (key → session-token, device-bound)                           │
 │  Postgres (users, wallet, ledger, licenses, run-log, job-queue)      │
-│  Stripe (top-up, webhooks)                                           │
+│  Paddle (top-up, webhooks, MoR)                                           │
 └──────────────────────────────────────────────────────────────────────┘
       Apple (autocomplete + search) ◄── requests from the USER's IP (via the program)
 ```
@@ -56,7 +56,7 @@ gating — only the Apple fetch and bare UI rendering. Crack it open — there's
 |---|---|---|
 | **Local UI** | the localhost site the user sees | same UI as aso-util (`server/public/*`), but it pulls data from the cloud API, not from local logic |
 | **Local program** | the "program" from the download | Bun process: serves the UI on localhost + holds a WSS to the server + **fetches Apple from the user's IP** + secure-stores the key. NO business logic |
-| **Server** | brain + cash register | long-lived process (Railway/Fly/VPS) + Postgres + Stripe. Section 7 in ARCHITECTURE.md |
+| **Server** | brain + cash register | long-lived process (Railway/Fly/VPS) + Postgres + Paddle. Section 7 in ARCHITECTURE.md |
 
 Why the program does the Apple fetch, not the browser: browser JS can't hit the Apple hints
 (CORS + the ban on `User-Agent`/preflight for `X-Apple-Store-Front`) — decision #0. A native
@@ -80,7 +80,7 @@ Sees the banner/offer → "Get started free" → enters email.
 
 **B. Registration and key.**
 An **activation key** (`asop_live_…`) arrives by email — it doubles as the user identifier
-and the balance anchor. A Stripe Customer and wallet are created right away (with N free credits for
+and the balance anchor. A Paddle customer and wallet are created right away (with N free credits for
 the first run, if you decide to offer a free tier).
 
 **C. Downloading the program.**
@@ -108,7 +108,7 @@ Finished title/subtitle/keyword field (two buckets), keyword table, coverage, ex
 
 **H. Top-up.**
 Balance at zero → the run won't start, an honest "top up" notice. A "Top up" button (on the web AND in
-the agent's tray) → Stripe Checkout → pick a credit package → payment → the webhook credits the balance.
+the agent's tray) → Paddle checkout → pick a credit package → payment → the webhook credits the balance.
 
 ---
 
@@ -137,7 +137,7 @@ server (orchestrator):
    LLM needed           → server assembles the prompt(stage) itself → HARD-STOP if balance=0
                           → calls the LLM with its own key → meters tokens
    progress             → SSE → web UI (Last-Event-ID, replay on disconnect)
-finish → SETTLE the actual cost → ledger → report to Stripe Meter
+finish → SETTLE the actual cost → ledger → the ledger stays authoritative (no provider metering)
 ```
 
 Bottom line: both the web UI and the agent are useless on their own — a run is impossible without the server
@@ -151,11 +151,11 @@ can do nothing without the back", achieved by architecture, not by client-side c
 | Event | Where | What happens |
 |---|---|---|
 | Registration | site | Customer + wallet created (+ optional free tier) |
-| Top-up | site OR agent tray | Stripe Checkout → webhook → `grant` in the ledger |
+| Top-up | site OR agent tray | Paddle checkout → webhook → `grant` in the ledger |
 | Run start | server | `reserve` of the estimated cost, refusal if the balance is too low |
 | Expensive stage | server | hard-stop at zero |
 | Run finish | server | `settle` of the actual cost, refund of the difference |
-| Chargeback/refund | Stripe→webhook | `chargeback`/`refund` in the ledger (the risk is on you — section 4 of ARCHITECTURE) |
+| Chargeback/refund | Paddle→webhook | `chargeback`/`refund` in the ledger (the risk is on you — section 4 of ARCHITECTURE) |
 
 ---
 
@@ -168,7 +168,7 @@ can do nothing without the back", achieved by architecture, not by client-side c
 | Orchestrator/metrics/expander/prompts | move to the server from aso-util (ready-made pure functions) |
 | Agent (Apple fetch) | take `http.ts`+`apple/*` from aso-util, trim down to a headless binary |
 | Auth/licenses | **buy** (Keygen self-host) or a simple home-grown key scheme at the start |
-| Billing | Stripe Checkout + your own ledger in Postgres (Stripe is not the source of truth) |
+| Billing | Paddle checkout + your own ledger in Postgres (Paddle is not the source of truth) |
 | Server hosting | one Railway/Fly/VPS container + Postgres |
 | Agent signing | Apple $99 + Windows (Azure Trusted Signing/OV) + Linux $0 |
 

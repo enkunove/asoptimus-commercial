@@ -1,5 +1,5 @@
 // Billing D4 v4: atomic real-time debiting, idempotency by (run_id,keyword),
-// hard-stop at zero (never go negative), grant idempotency by stripe_event_id.
+// hard-stop at zero (never go negative), grant idempotency by paddle_event_id (transaction id).
 
 import { describe, expect, test } from "bun:test";
 import { MemoryStore } from "../db/memory-store.ts";
@@ -9,13 +9,13 @@ import { quoteFor, pricePerKeyphrase } from "./prices.ts";
 describe("wallet: keyphrase debit (D4 v4)", () => {
   const setup = async () => {
     const store = new MemoryStore();
-    await store.createUser({ id: "u1", email: "a@b.c", stripe_customer_id: null });
+    await store.createUser({ id: "u1", email: "a@b.c", paddle_customer_id: null });
     await store.ensureWallet("u1", 0);
     const billing = new BillingService(store);
     return { store, billing };
   };
 
-  test("grant credits; repeating the same stripe_event_id is idempotent", async () => {
+  test("grant credits; repeating the same paddle_event_id is idempotent", async () => {
     const { billing } = await setup();
     expect(await billing.grant("u1", 10, "evt_1")).toBe(true);
     expect(await billing.grant("u1", 10, "evt_1")).toBe(false); // duplicate

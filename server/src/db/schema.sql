@@ -2,10 +2,27 @@
 -- Applied via src/db/migrate.ts. Billing invariant: UNIQUE(run_id, step_seq) on ledger
 -- and llm_steps rules out double debit/double COGS on replay (D4/D7).
 
+-- Migration guard (Stripe → Paddle, 2026-07-19): a database created under the pre-Paddle
+-- schema keeps stripe_* columns, and CREATE TABLE IF NOT EXISTS below would no-op past them.
+-- Rename in place when the legacy columns exist; fresh databases skip this block.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='stripe_customer_id') THEN
+    ALTER TABLE users RENAME COLUMN stripe_customer_id TO paddle_customer_id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='ledger' AND column_name='stripe_event_id') THEN
+    ALTER TABLE ledger RENAME COLUMN stripe_event_id TO paddle_event_id;
+    ALTER INDEX IF EXISTS ledger_stripe_event_uq RENAME TO ledger_paddle_event_uq;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='processed_events' AND column_name='stripe_event_id') THEN
+    ALTER TABLE processed_events RENAME COLUMN stripe_event_id TO paddle_event_id;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS users (
   id                  TEXT PRIMARY KEY,
   email               TEXT UNIQUE NOT NULL,
-  stripe_customer_id  TEXT,
+  paddle_customer_id  TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -27,7 +44,7 @@ CREATE TABLE IF NOT EXISTS wallet (
 ALTER TABLE wallet ALTER COLUMN balance_credits TYPE NUMERIC(14,4);
 
 -- Immutable log. D4 v4: one debit row per checked keyphrase —
--- UNIQUE(run_id, keyword) makes debits idempotent. stripe_event_id UNIQUE — grants.
+-- UNIQUE(run_id, keyword) makes debits idempotent. paddle_event_id UNIQUE — grants.
 CREATE TABLE IF NOT EXISTS ledger (
   id               BIGSERIAL PRIMARY KEY,
   user_id          TEXT NOT NULL REFERENCES users(id),
@@ -36,15 +53,15 @@ CREATE TABLE IF NOT EXISTS ledger (
   run_id           TEXT,
   keyword          TEXT,                   -- keyphrase (for UNIQUE(run_id, keyword), D4 v4)
   step_seq         INTEGER,                -- (legacy; unused in v4)
-  stripe_event_id  TEXT,
+  paddle_event_id  TEXT,
   ts               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE ledger ADD COLUMN IF NOT EXISTS keyword TEXT;
 ALTER TABLE ledger ALTER COLUMN delta TYPE NUMERIC(14,4);
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_run_keyword_uq ON ledger (run_id, keyword)
   WHERE run_id IS NOT NULL AND keyword IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ledger_stripe_event_uq ON ledger (stripe_event_id)
-  WHERE stripe_event_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_paddle_event_uq ON ledger (paddle_event_id)
+  WHERE paddle_event_id IS NOT NULL;
 
 -- Every billable attempt = a row (including invalid ones). advance/replay uses the last
 -- valid row of the logical step; Anthropic is not called again (D7).
@@ -67,7 +84,7 @@ ALTER TABLE llm_steps ADD COLUMN IF NOT EXISTS model TEXT;
 ALTER TABLE llm_steps ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
 
 CREATE TABLE IF NOT EXISTS processed_events (
-  stripe_event_id TEXT PRIMARY KEY,
+  paddle_event_id TEXT PRIMARY KEY,
   ts              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
