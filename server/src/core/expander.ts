@@ -1,20 +1,21 @@
-// @aso/core — движок расширения suggest-графа. ПРОПРИЕТАРНО (стратегия = moat).
+// @aso/core — suggest-graph expansion engine. PROPRIETARY (the strategy = moat).
 //
-// planWave — чистая функция, порт 1:1 из aso-util (детерминированный генератор РЕАЛЬНЫХ
-// запросов). runWave БОЛЬШЕ НЕ ХОДИТ В СЕТЬ (BUILD-PLAN §7): вместо inline-fetch она
-// разбита на (1) planWave → задачи, (2) оркестратор ЭМИТИТ HintsJob на каждую задачу,
-// (3) harvestWaveResults — чистый разбор вернувшегося сырья в discovered + done.
-// «break on throttle» из старого runWave → серверный back-pressure в apple-dispatch.
+// planWave — pure function, 1:1 port from aso-util (deterministic generator of REAL
+// queries). runWave NO LONGER TOUCHES THE NETWORK (BUILD-PLAN §7): instead of inline
+// fetch it is split into (1) planWave → tasks, (2) the orchestrator EMITS a HintsJob
+// per task, (3) harvestWaveResults — pure parsing of the returned raw data into
+// discovered + done. "break on throttle" from the old runWave → server-side
+// back-pressure in apple-dispatch.
 
 import { normalizeKeyword } from "@aso/shared";
 import type { RawHints } from "@aso/shared";
 
 export interface ExpansionTask {
-  /** Терм, который дёргаем: сам root, root+" ", root+" a"… → HintsJob.term. */
+  /** Term to hit: the root itself, root+" ", root+" a"… → HintsJob.term. */
   term: string;
-  /** Ключ операции для журнала done: "complete" | "children" | "soup:x" | "spice:for". */
+  /** Operation key for the done journal: "complete" | "children" | "soup:x" | "spice:for". */
   opKey: string;
-  /** Корень, породивший задачу (для метки done). */
+  /** Root that spawned the task (for the done marker). */
   root: string;
 }
 
@@ -24,12 +25,12 @@ export interface ExpansionResult {
   done: { root: string; opKey: string }[];
 }
 
-// Связки-квалификаторы после головы (эмпирика: "vpn for ..." раскрывает пласт long-tail).
+// Qualifier connectors after the head (empirical: "vpn for ..." uncovers a long-tail layer).
 export const SPICE_TOKENS = ["for", "free", "with", "app", "kids", "pro"];
 
 const CLEAN_RE = /^[\p{L}\p{N} ]+$/u;
 
-/** Чистый поисковый запрос: буквы/цифры/пробелы, 1–4 слова, без названий-приложений. */
+/** Clean search query: letters/digits/spaces, 1–4 words, no app names. */
 export function isCleanQuery(term: string): boolean {
   if (!CLEAN_RE.test(term) || term.length > 40) return false;
   const words = term.split(" ");
@@ -39,9 +40,9 @@ export function isCleanQuery(term: string): boolean {
 }
 
 /**
- * Составить очередь задач волны из приоритизированных корней (чистая, 1:1 из aso-util).
- * Приоритет операторов: children доказанных голов → complete слов →
- * complete/children LLM-корней → soup+spice для топ-голов.
+ * Build the wave task queue from prioritized roots (pure, 1:1 from aso-util).
+ * Operator priority: children of proven heads → complete of words →
+ * complete/children of LLM roots → soup+spice for top heads.
  */
 export function planWave(input: {
   provenHeads: string[];
@@ -76,11 +77,11 @@ export function planWave(input: {
 }
 
 /**
- * Чистый разбор результатов волны (сырьё HintsJob'ов → discovered + done).
- * @param results   массив { task, terms|null } — terms=null означает провал джобы.
- * `terms=null` для permanent-провала (4xx≠429/403, битый парсинг) помечает задачу done,
- * иначе задача НЕ помечается (перевыполнится на следующей волне). Троттлинг обрывает
- * волну ВЫШЕ (оркестратор перестаёт эмитить), сюда доходят только полученные ответы.
+ * Pure parsing of wave results (raw HintsJob data → discovered + done).
+ * @param results   array of { task, terms|null } — terms=null means the job failed.
+ * `terms=null` with a permanent failure (4xx≠429/403, broken parsing) marks the task
+ * done; otherwise the task is NOT marked (it reruns on the next wave). Throttling cuts
+ * the wave off ABOVE (the orchestrator stops emitting); only received responses get here.
  */
 export function harvestWaveResults(
   results: { task: ExpansionTask; terms: RawHints | null; permanentError?: boolean }[],

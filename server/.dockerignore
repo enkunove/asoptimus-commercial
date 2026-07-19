@@ -1,4 +1,4 @@
-# Docker build-контекст: НЕ тащим тяжёлое/секретное. shared/ НЕ исключаем — контракт нужен в образе.
+# Docker build context: do NOT drag in heavy/secret stuff. shared/ is NOT excluded — the contract is needed in the image.
 node_modules
 .git
 dist

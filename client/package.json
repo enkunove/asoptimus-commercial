@@ -1,7 +1,7 @@
 {
   "name": "@aso/client",
   "version": "0.1.0",
-  "description": "ASOptimus локальная программа: localhost-UI + Apple-fetch по джобам сервера (тонкий клиент)",
+  "description": "ASOptimus local program: localhost UI + Apple fetch driven by server jobs (thin client)",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,35 +1,35 @@
-// Исполнитель ProbeJob (BUILD-PLAN D2) — САМОЕ важное в клиенте.
-// Инкапсулирует ВСЮ процедуру probing'а одного кейворда в один облачный round-trip:
-//   (1) полный префикс `keyword`: если keyword ∉ его подсказок → unsuggested за 1 запрос
-//       (shortcut — НЕ идём по всей лестнице для unsuggested);
-//   (2) иначе — лестница `prefixLadder` СТРОГО по возрастанию длины: для каждого префикса
-//       берём контент из prefill (без сети) либо фетчим; останавливаемся на КРАТЧАЙШЕМ
-//       префиксе, где keyword встретился. Нельзя пропускать более короткий cache-miss ради
-//       более длинного cache-hit — L это минимум, порядок обязателен;
-//   (3) фетчим/берём `keyword + " "` для childTerms;
-//   (4) возвращаем ProbeResult с ТОЛЬКО реально фетченными префиксами (полные массивы) +
-//       childTerms. НИКАКИХ метрик — P/L/rank/childCount/seenTerms считает сервер над
+// ProbeJob executor (BUILD-PLAN D2) — the MOST important thing in the client.
+// Encapsulates the WHOLE procedure of probing one keyword in a single cloud round-trip:
+//   (1) full prefix `keyword`: if keyword ∉ its hints → unsuggested in 1 request
+//       (shortcut — do NOT walk the whole ladder for unsuggested);
+//   (2) otherwise — the `prefixLadder` ladder STRICTLY in increasing length: for each prefix
+//       take content from prefill (no network) or fetch; stop at the SHORTEST
+//       prefix where the keyword appeared. You must not skip a shorter cache-miss for
+//       a longer cache-hit — L is a minimum, order is mandatory;
+//   (3) fetch/take `keyword + " "` for childTerms;
+//   (4) return a ProbeResult with ONLY the actually fetched prefixes (full arrays) +
+//       childTerms. NO metrics — P/L/rank/childCount/seenTerms are computed by the server over
 //       `prefill ∪ fetched` (D2/D3).
 //
-// Матч keyword ∈ подсказки — механический строковый (нормализация нужна лишь для сравнения,
-// это публичный хелпер из @aso/shared, не moat).
+// The keyword ∈ hints match is mechanical string comparison (normalization is only needed for
+// comparison; it's a public helper from @aso/shared, not the moat).
 
 import type { AppleHttp } from "./http";
 import type { ProbeJob, ProbeResult, RawHints } from "@aso/shared";
 import { normalizeKeyword } from "@aso/shared";
 import { fetchHints } from "./hints";
 
-/** Выполнить ProbeJob против Apple. Возвращает СЫРЬЁ (fetched-префиксы + childTerms). */
+/** Execute a ProbeJob against Apple. Returns RAW material (fetched prefixes + childTerms). */
 export async function executeProbe(http: AppleHttp, job: ProbeJob): Promise<ProbeResult> {
   const K = normalizeKeyword(job.keyword);
   const prefill = job.prefill ?? {};
 
-  // Кэш увиденного за эту джобу: prefill + уже фетченное. Ключ = префикс.
+  // Cache of everything seen during this job: prefill + already fetched. Key = prefix.
   const seen = new Map<string, RawHints>();
-  // ТОЛЬКО реально фетченные (по сети) префиксы — их сервер ещё не имеет.
+  // ONLY prefixes actually fetched (over the network) — the server doesn't have these yet.
   const fetched: Record<string, RawHints> = {};
 
-  // Взять подсказки префикса: prefill → без сети; иначе фетч (и запись в fetched).
+  // Get hints for a prefix: prefill → no network; otherwise fetch (and record into fetched).
   const getPrefix = async (prefix: string): Promise<RawHints> => {
     const cached = seen.get(prefix);
     if (cached) return cached;
@@ -46,31 +46,31 @@ export async function executeProbe(http: AppleHttp, job: ProbeJob): Promise<Prob
 
   const contains = (hints: RawHints): boolean => hints.some((t) => normalizeKeyword(t) === K);
 
-  // (1) Полный префикс = сам keyword. Shortcut для unsuggested.
+  // (1) Full prefix = the keyword itself. Shortcut for unsuggested.
   const fullHints = await getPrefix(K);
   if (!contains(fullHints)) {
     return { job_id: job.job_id, kind: "probe", fetched, childTerms: null, unsuggested: true };
   }
 
-  // (2) Лестница строго по возрастанию длины; ранняя остановка на кратчайшем совпадении.
-  //     prefixLadder детерминирован сервером как ['k','ke',…,keyword] — идём по нему по порядку.
+  // (2) Ladder strictly in increasing length; early stop at the shortest match.
+  //     prefixLadder is determined by the server as ['k','ke',…,keyword] — walk it in order.
   for (const prefix of job.prefixLadder) {
     const hints = await getPrefix(prefix);
-    if (contains(hints)) break; // кратчайший L найден
+    if (contains(hints)) break; // shortest L found
   }
 
-  // (3) childTerms: подсказки на "keyword " (для childCount). Сервер посчитает число сам.
-  //     reconcile v2: если сервер уже держит их в childPrefill (кэш D3) — НЕ фетчим (0 сети).
+  // (3) childTerms: hints for "keyword " (for childCount). The server computes the count itself.
+  //     reconcile v2: if the server already holds them in childPrefill (D3 cache) — do NOT fetch (0 network).
   const childKey = K + " ";
   let childTerms: RawHints | null = null;
   if (job.childPrefill) {
     childTerms = job.childPrefill;
   } else {
     try {
-      // childKey может лежать в общем prefill, тогда без сети; иначе фетч.
+      // childKey may sit in the shared prefill, then no network; otherwise fetch.
       childTerms = prefill[childKey] ?? (await fetchHints(http, childKey, job.storefront));
     } catch {
-      // Отдельная неудача childTerms не должна валить всю джобу — вернём null.
+      // A standalone childTerms failure must not fail the whole job — return null.
       childTerms = null;
     }
   }

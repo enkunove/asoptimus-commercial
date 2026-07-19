@@ -1,78 +1,78 @@
-# ASO-Util — Обзор продукта (v2)
+# ASO-Util — Product Overview (v2)
 
-## Что это
+## What it is
 
-**Один исполняемый файл** (macOS / Windows / Linux), который генерирует для iOS-приложения максимально сильный набор ASO-метаданных: ключевые слова, title и subtitle. Пользователь запускает файл — автоматически поднимается локальный веб-дашборд и открывается браузер:
+**A single executable file** (macOS / Windows / Linux) that generates the strongest possible set of ASO metadata for an iOS app: keywords, title, and subtitle. The user launches the file — a local web dashboard starts automatically and the browser opens:
 
 ```
-запуск бинаря
-   └─▶ локальный сервер (порт 4310) + открытие браузера
-         └─▶ [нет валидной авторизации] страница выбора LLM-провайдера
-               └─▶ авторизация (Claude: подписка ИЛИ API-ключ)
-                     └─▶ дашборд: список прогонов → новый прогон (загрузка md/txt брифа)
-                           └─▶ живой прогон → результаты
+launch the binary
+   └─▶ local server (port 4310) + browser opens
+         └─▶ [no valid auth] LLM provider selection page
+               └─▶ authorization (Claude: subscription OR API key)
+                     └─▶ dashboard: run list → new run (upload md/txt brief)
+                           └─▶ live run → results
 ```
 
-Весь интеллект пайплайна — **встроенный оркестратор**, который вызывает LLM через слой адаптеров (`06-llm-adapters.md`). В v1 единственный адаптер — Claude, но страница выбора провайдера существует с первого дня, и весь код зависит только от интерфейса адаптера.
+All of the pipeline's intelligence is a **built-in orchestrator** that calls the LLM through an adapter layer (`06-llm-adapters.md`). In v1 the only adapter is Claude, but the provider selection page exists from day one, and all code depends only on the adapter interface.
 
-## Единственный вход — файл с описанием проекта
+## The only input — a project description file
 
-Пользователь передаёт **md/txt файл с описанием проекта через дашборд** (drag&drop или выбор файла). Никакого режима «запусти в репозитории», никаких CLI-аргументов с путями, никаких Claude Code скиллов. Оркестратор сам извлекает из брифа бизнес-контекст (LLM-вызов `context`, см. `06`), показывает его пользователю на подтверждение и дальше работает по пайплайну.
+The user provides **an md/txt file describing the project via the dashboard** (drag & drop or file picker). No "run it inside a repository" mode, no CLI arguments with paths, no Claude Code skills. The orchestrator itself extracts the business context from the brief (the `context` LLM call, see `06`), shows it to the user for confirmation, and then proceeds through the pipeline.
 
-## Разделение труда: код считает, LLM судит
+## Division of labor: code computes, the LLM judges
 
-| Детерминированный код | Встроенный LLM (через адаптер) |
+| Deterministic code | Built-in LLM (via adapter) |
 |---|---|
-| Запросы к Apple (подсказки, выдача), троттлинг, кэш | Извлечение бизнес-контекста из брифа |
-| Формулы P / D / Score (`03-metrics.md`) | Генерация сид-гипотез и новых гипотез в цикле |
-| Жадный отбор слов и раскладка по полям (`05`) | Оценка релевантности R по рубрике (с обоснованием) |
-| Валидация лимитов и правил | Формулировка человекочитаемых title/subtitle из выбранных слов |
-| Машина состояний пайплайна (`04`) | — |
+| Requests to Apple (suggestions, search results), throttling, cache | Extracting business context from the brief |
+| P / D / Score formulas (`03-metrics.md`) | Generating seed hypotheses and new hypotheses in the loop |
+| Greedy word selection and layout across fields (`05`) | Scoring relevance R by rubric (with justification) |
+| Validation of limits and rules | Phrasing human-readable title/subtitle from the selected words |
+| Pipeline state machine (`04`) | — |
 
-## Принципы (обязательны при сборке)
+## Principles (mandatory during the build)
 
-1. **Детерминизм метрик.** Каждая цифра вычислена по формуле из `03-metrics.md`; LLM выставляет только R по рубрике с письменным обоснованием. Одинаковый кэш → одинаковый результат.
-2. **Прозрачность как фича.** Пользователь может раскрыть ЛЮБОЕ число до сырых данных (из какой выдачи посчитан D, на каком префиксе найден P) и ЛЮБОЕ решение LLM до полного промпта и ответа (журнал LLM-вызовов, `07-web-ui.md`). Ничего не происходит «где-то внутри».
-3. **Данные — только первоисточники Apple.** Автоподсказки стора + официальный iTunes Search API. Троттлинг и кэш зашиты в HTTP-слой (`02`).
-4. **Настраиваемая точка остановки.** Цикл гипотез крутится до `sampleSize` проверенных кейвордов + раунды улучшения (`04-pipeline.md`).
-5. **Провайдеро-независимость.** Оркестратор знает только интерфейс `LlmAdapter`. Добавление OpenAI-адаптера в будущем не должно трогать ни пайплайн, ни UI, кроме новой карточки на странице провайдеров.
-6. **Всё локально.** Сервер слушает только 127.0.0.1. Данные прогонов и креды — на диске пользователя. Наружу уходят только запросы к Apple и к API LLM-провайдера.
+1. **Deterministic metrics.** Every number is computed by a formula from `03-metrics.md`; the LLM only assigns R by rubric with a written justification. Same cache → same result.
+2. **Transparency as a feature.** The user can drill into ANY number down to the raw data (which search results D was computed from, on which prefix P was found) and ANY LLM decision down to the full prompt and response (LLM call log, `07-web-ui.md`). Nothing happens "somewhere inside".
+3. **Data — Apple primary sources only.** Store autocomplete suggestions + the official iTunes Search API. Throttling and caching are baked into the HTTP layer (`02`).
+4. **Configurable stopping point.** The hypothesis loop runs until `sampleSize` verified keywords + improving rounds (`04-pipeline.md`).
+5. **Provider independence.** The orchestrator knows only the `LlmAdapter` interface. Adding an OpenAI adapter in the future must not touch either the pipeline or the UI, other than a new card on the providers page.
+6. **Everything local.** The server listens only on 127.0.0.1. Run data and credentials live on the user's disk. The only outbound traffic is requests to Apple and to the LLM provider's API.
 
-## Выходы
+## Outputs
 
-1. Финальные метаданные — **две корзины**: основная локализация + кросс-локализация (title `Бренд - Слоган` ≤30, subtitle ≤30, keyword field ≤100 в каждой) — с отчётом о покрытии (`05.9`).
-2. Полный сортируемый список проверенных кейвордов с P/D/R/Score.
-3. Экспорт: markdown-отчёт (кнопка в UI) + JSON состояния прогона.
+1. Final metadata — **two buckets**: primary localization + cross-localization (title `Brand - Slogan` ≤30, subtitle ≤30, keyword field ≤100 in each) — with a coverage report (`05.9`).
+2. A complete sortable list of verified keywords with P/D/R/Score.
+3. Export: markdown report (button in the UI) + JSON of the run state.
 
-## Не-цели v1
+## Non-goals for v1
 
-- Google Play; оценки загрузок/выручки; несколько стран в одном прогоне (один storefront за прогон, вторая страна = второй прогон).
-- Другие адаптеры кроме Claude (но интерфейс и страница выбора — в v1).
-- Облачная версия, аккаунты, мультипользовательность — строго локальный инструмент.
+- Google Play; download/revenue estimates; multiple countries in one run (one storefront per run; a second country = a second run).
+- Adapters other than Claude (but the interface and the selection page ship in v1).
+- Cloud version, accounts, multi-user — strictly a local tool.
 
-## Глоссарий
+## Glossary
 
-| Термин | Значение |
+| Term | Meaning |
 |---|---|
-| **Прогон (run)** | Одна задача «бриф → метаданные» для одной апки и одной страны; хранится в `~/.aso-util/runs/<slug>/` |
-| **Адаптер** | Реализация интерфейса `LlmAdapter` для конкретного провайдера (`06`) |
-| **Кейворд / фраза** | Нормализованная поисковая фраза (lowercase, одиночные пробелы) |
-| **P / D / R / Score** | Метрики силы кейворда, формулы в `03-metrics.md` |
-| **sampleSize** | Целевой объём выборки проверенных кейвордов — точка остановки цикла |
-| **Покрытие фразы** | Все слова фразы присутствуют в объединении title+subtitle+keywords |
+| **Run** | One "brief → metadata" job for one app and one country; stored in `~/.aso-util/runs/<slug>/` |
+| **Adapter** | An implementation of the `LlmAdapter` interface for a specific provider (`06`) |
+| **Keyword / phrase** | A normalized search phrase (lowercase, single spaces) |
+| **P / D / R / Score** | Keyword strength metrics, formulas in `03-metrics.md` |
+| **sampleSize** | Target sample size of verified keywords — the loop's stopping point |
+| **Phrase coverage** | All words of the phrase are present in the union of title+subtitle+keywords |
 
-## Карта спеки и порядок сборки
+## Spec map and build order
 
-| Файл | Содержание |
+| File | Contents |
 |---|---|
-| `01-inputs-and-context.md` | Бриф, извлечение контекста, конфиг прогона, хранилище данных |
-| `02-data-sources.md` | Эндпоинты Apple, storefront-коды, троттлинг, кэш |
-| `03-metrics.md` | Формулы P, D, R, Score с числовыми примерами |
-| `04-pipeline.md` | Оркестратор: машина состояний, цикл гипотез, точка остановки, управление |
-| `05-assembly.md` | Сборка title/subtitle/keywords: жадное покрытие, правила, валидация |
-| `06-llm-adapters.md` | Интерфейс адаптера, Claude-адаптер (подписка + API-ключ), контракты промптов |
-| `07-web-ui.md` | Весь UI: выбор провайдера, авторизация, прогоны, живой дашборд, прозрачность |
-| `08-architecture.md` | Стек (Bun, single binary), структура репо, критерии приёмки |
-| `fixtures/sample-brief.md` | Тестовый бриф для e2e-приёмки (загружается в дашборд) |
+| `01-inputs-and-context.md` | Brief, context extraction, run config, data storage |
+| `02-data-sources.md` | Apple endpoints, storefront codes, throttling, cache |
+| `03-metrics.md` | P, D, R, Score formulas with numeric examples |
+| `04-pipeline.md` | Orchestrator: state machine, hypothesis loop, stopping point, controls |
+| `05-assembly.md` | Assembling title/subtitle/keywords: greedy coverage, rules, validation |
+| `06-llm-adapters.md` | Adapter interface, Claude adapter (subscription + API key), prompt contracts |
+| `07-web-ui.md` | The entire UI: provider selection, authorization, runs, live dashboard, transparency |
+| `08-architecture.md` | Stack (Bun, single binary), repo structure, acceptance criteria |
+| `fixtures/sample-brief.md` | Test brief for e2e acceptance (uploaded into the dashboard) |
 
-Рекомендуемый порядок реализации: 02 → 03 → 06 (адаптер) → 04 (оркестратор) → 05 → 07 (UI) → сборка бинарей → приёмка по 08.
+Recommended implementation order: 02 → 03 → 06 (adapter) → 04 (orchestrator) → 05 → 07 (UI) → binary builds → acceptance per 08.

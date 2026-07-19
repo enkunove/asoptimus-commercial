@@ -1,10 +1,10 @@
-// @aso/core — размещение слов по полям (spec 05.5) + PlacementWeight. ПРОПРИЕТАРНО.
-// Порт 1:1 из aso-util. Константы позиционного веса (05.2) — moat, живут только тут.
+// @aso/core — word placement across fields (spec 05.5) + PlacementWeight. PROPRIETARY.
+// 1:1 port from aso-util. Positional weight constants (05.2) — moat, live only here.
 
 import { foldKey } from "./folding.ts";
 import { phraseKeys, type Phrase } from "./select.ts";
 
-// Константы позиционного веса (spec 05.2) — server-only (moat).
+// Positional weight constants (spec 05.2) — server-only (moat).
 export const FIELD_WEIGHTS = { title: 1.0, subtitle: 0.85, keywords: 0.7 } as const;
 
 export interface PlaceInput {
@@ -29,7 +29,7 @@ function fieldOf(placement: Placement, key: string, language: string): "title" |
   return null;
 }
 
-/** Вес самого слабого поля среди слов фразы; слова бренда считаются как title. */
+/** Weight of the weakest field among the phrase's words; brand words count as title. */
 export function placementWeight(
   keyword: string,
   placement: Placement,

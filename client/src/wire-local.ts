@@ -7,8 +7,8 @@
 //
 // What remains here is the agreed SHAPE of `query.result.data` per QueryKind — i.e.
 // exactly what the localhost relay hands to the browser for each REST endpoint (D1 /
-// BUILD-PLAN §4: "программа не исполняет их локально, а транслирует в WSS и стримит
-// ответ обратно"). `data` is typed `unknown` in the contract on purpose; this file is
+// BUILD-PLAN §4: "the program does not execute them locally — it translates them into WSS
+// and streams the response back"). `data` is typed `unknown` in the contract on purpose; this file is
 // the client-side view of what the server puts there. ZERO proprietary logic — these
 // only carry already-computed projections (RunSummary/RunState/LlmLogPublic/BalanceView/
 // ModelInfo from @aso/shared).
@@ -27,7 +27,7 @@ import type {
   QueryKind,
 } from "@aso/shared";
 
-/** Пагинированный список кейвордов (проекция для таблицы UI). */
+/** Paginated keyword list (projection for the UI table). */
 export interface KeywordPage {
   total: number;
   page: number;
@@ -41,16 +41,16 @@ export interface LlmLogPage {
   items: LlmLogPublic[];
 }
 
-/** Событие ленты прогресса (человекочитаемое, релеится в SSE). */
+/** Progress feed event (human-readable, relayed into SSE). */
 export interface FeedEvent {
   ts: string;
   kind: string;
   text: string;
 }
 
-/** Полное состояние прогона для экрана прогона (совпадает по духу с aso-util GET /api/runs/:id).
- *  Надмножество RunState: + config/events/счётчики, которых нет в push-only канале и которые
- *  экран прогона не может добрать из SSE при первой загрузке. См. NOTES.md gap #2. */
+/** Full run state for the run screen (matches aso-util GET /api/runs/:id in spirit).
+ *  Superset of RunState: + config/events/counters that are absent from the push-only channel and
+ *  that the run screen cannot recover from SSE on first load. See NOTES.md gap #2. */
 export interface RunSnapshot {
   state: Omit<RunState, "keywords">;
   keywordCount: number;
@@ -61,13 +61,13 @@ export interface RunSnapshot {
   assembly: RunState["assembly"];
 }
 
-/** Ответ на kind="keyword" (одиночный кейворд). */
+/** Response for kind="keyword" (single keyword). */
 export interface KeywordHit {
   item: KeywordEntry | null;
 }
 
-/** Тип `query.result.data` по QueryKind — то, что сервер кладёт в data, а реле отдаёт браузеру.
- *  Соответствие «kind → форма» — это под-контракт (см. NOTES.md); @aso/shared оставляет data:unknown. */
+/** Type of `query.result.data` per QueryKind — what the server puts into data and the relay hands to the browser.
+ *  The "kind → shape" mapping is a sub-contract (see NOTES.md); @aso/shared leaves data:unknown. */
 export interface QueryData {
   runs: RunSummary[];
   run: RunSnapshot;
@@ -79,5 +79,5 @@ export interface QueryData {
   packages: TopupPackage[];
 }
 
-// Гарантия на уровне типов: ключи QueryData ровно совпадают с QueryKind контракта.
+// Type-level guarantee: QueryData keys exactly match the contract's QueryKind.
 type _AssertKindsCovered = QueryData[QueryKind];

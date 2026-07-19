@@ -1,6 +1,6 @@
-// @aso/server/orchestrator — внутреннее (богатое) состояние прогона. Шире, чем проекция
-// @aso/shared::RunState (та — то, что видит UI). Внутренние поля (rejected/expansion/
-// improvementState) — как в aso-util RunState, но живут в приватном репо server.
+// @aso/server/orchestrator — internal (rich) run state. Wider than the @aso/shared::RunState
+// projection (which is what the UI sees). Internal fields (rejected/expansion/
+// improvementState) match aso-util RunState but live in the private server repo.
 
 import type {
   RunConfig, BusinessContext, KeywordEntry, RunPhase, UsageTotals, AssemblyResult, RunState,
@@ -26,10 +26,10 @@ export interface ServerRunState {
   usage: UsageTotals;
   assembly: AssemblyResult | null;
   improvementState: { roundsSpent: number; topSnapshot: string[] };
-  /** Монотонные счётчики логических шагов (для реплей-id llm_steps). */
+  /** Monotonic logical-step counters (for llm_steps replay ids). */
   stepCounters: Record<string, number>;
-  /** Оценочный потолок прогона в кредитах (D4 v4): ≈ sampleSize × pricePerKeyphrase. Потолок
-   *  предохранителя COGS; НЕ резерв (usage-based списание — в реальном времени). */
+  /** Estimated run ceiling in credits (D4 v4): ≈ sampleSize × pricePerKeyphrase. Ceiling for
+   *  the COGS fuse; NOT a reserve (usage-based debit happens in real time). */
   estimateCredits: number;
 }
 
@@ -51,7 +51,7 @@ export function initialState(runId: string, userId: string, brief: string, confi
   };
 }
 
-/** Проекция для UI (@aso/shared::RunState). Внутренние moat-поля наружу не идут. */
+/** Projection for the UI (@aso/shared::RunState). Internal moat fields do not go out. */
 export function projectRunState(s: ServerRunState): RunState {
   return {
     runId: s.runId,
@@ -65,8 +65,8 @@ export function projectRunState(s: ServerRunState): RunState {
     context: s.context,
     keywords: s.keywords,
     usage: s.usage,
-    // HTTP-статы Apple живут на клиенте (он делает fetch); сервер их не ведёт. Прогресс
-    // выборки/кэша идёт отдельным сообщением run.phase (RunCounters), не через эти поля.
+    // Apple HTTP stats live on the client (it does the fetching); the server does not track them.
+    // Sample/cache progress goes via a separate run.phase message (RunCounters), not these fields.
     http: { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 },
     assembly: s.assembly,
   };

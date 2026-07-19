@@ -1,6 +1,7 @@
-// @aso/server/apple-dispatch — СИНТЕТИЧЕСКИЙ Apple (только DEV=1 loopback, без сети).
-// В ПРОДЕ сырьё фетчит реальный клиент с IP юзера — эта заглушка на прод-пути не используется.
-// Детерминированная вселенная демо-кейвордов, чтобы probe давал P>0 и expander что-то находил.
+// @aso/server/apple-dispatch — SYNTHETIC Apple (DEV=1 loopback only, no network).
+// In PROD raw data is fetched by the real client from the user's IP — this stub is never used on
+// the prod path. Deterministic universe of demo keywords so probe yields P>0 and the expander
+// finds something.
 
 import type { RawHints, RawSerp } from "@aso/shared";
 import { normalizeKeyword } from "@aso/shared";
@@ -12,20 +13,20 @@ const SUFFIX = ["tracker", "planner", "timer", "journal", "coach", "log", "remin
 function universe(): string[] {
   const out: string[] = [];
   for (const n of NOUNS) for (const s of SUFFIX) out.push(`${n} ${s}`);
-  // немного «детей» для вскрытия хвоста экспандером:
+  // a few "children" so the expander can crack open the tail:
   for (const n of NOUNS.slice(0, 5)) out.push(`${n} tracker pro`, `${n} tracker free`);
   return out;
 }
 const UNIVERSE = universe();
 
-/** Подсказки для произвольного терма/префикса (упорядоченный список). */
+/** Hints for an arbitrary term/prefix (ordered list). */
 export function mockHints(term: string): RawHints {
   const p = normalizeKeyword(term);
   if (!p) return [];
   return UNIVERSE.filter((k) => k.startsWith(p)).slice(0, 10);
 }
 
-/** Синтетическая выдача iTunes Search (для Difficulty). */
+/** Synthetic iTunes Search results (for Difficulty). */
 export function mockSerp(query: string): RawSerp {
   const q = normalizeKeyword(query);
   const results = [];

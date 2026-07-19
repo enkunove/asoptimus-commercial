@@ -1,7 +1,7 @@
-// @aso/server/llm-proxy — детерминированный МОК LLM (ТОЛЬКО DEV=1, без ANTHROPIC_API_KEY).
-// Не модель: генерирует правдоподобный валидный-по-схеме JSON, чтобы happy-path прогонялся
-// офлайн (activation → run → orchestrate → assemble). Usage — синтетический ненулевой, чтобы
-// внутренний COGS-учёт был виден. В ПРОДЕ на этот путь не выходим (см. createLlmClient).
+// @aso/server/llm-proxy — deterministic LLM MOCK (DEV=1 ONLY, no ANTHROPIC_API_KEY).
+// Not a model: generates plausible schema-valid JSON so the happy path runs offline
+// (activation → run → orchestrate → assemble). Usage is synthetic and non-zero so the
+// internal COGS accounting is visible. In PROD this path is never taken (see createLlmClient).
 
 import type { CallOnceRequest, CallOnceResult, LlmClient } from "./client.ts";
 
@@ -28,7 +28,7 @@ export class MockLlmClient implements LlmClient {
 
   async callOnce(req: CallOnceRequest): Promise<CallOnceResult> {
     const text = this.render(req);
-    // Синтетический ненулевой usage — биллинг спишет реальные кредиты (демонстрируемо).
+    // Synthetic non-zero usage — billing debits real credits (demonstrable).
     const usage = {
       inputTokens: 1400 + (req.prompt.length % 800),
       outputTokens: 400 + (text.length % 400),
@@ -42,13 +42,13 @@ export class MockLlmClient implements LlmClient {
     switch (req.task) {
       case "context":
         return JSON.stringify({
-          productSummary: "Приложение помогает пользователю отслеживать привычки и прогресс.",
+          productSummary: "The app helps the user track habits and progress.",
           category: "Health & Fitness",
           jobsToBeDone: ["track daily habits", "build a routine", "stay motivated", "log progress"],
-          audience: "люди, которые хотят выработать полезные привычки",
+          audience: "people who want to build healthy habits",
           featureVocabulary: ["habit tracker", "daily planner", "streak", "reminder", "routine builder", "goal tracker"],
           competitors: [],
-          antiSemantics: "не игра, не социальная сеть, не мессенджер; нерелевантны запросы про игры и знакомства",
+          antiSemantics: "not a game, not a social network, not a messenger; queries about games and dating are irrelevant",
           targetLanguage: "en",
         });
       case "seeds": {
@@ -71,15 +71,15 @@ export class MockLlmClient implements LlmClient {
         const ratings = keywords.map((keyword, i) => ({
           keyword,
           r: (i % 5 === 0 ? 2 : 3),
-          reason: "релевантно ядру продукта (mock-оценка)",
+          reason: "relevant to the product core (mock rating)",
         }));
         return JSON.stringify({ ratings });
       }
       case "phrase": {
         const phrases = extract(/"phrase"\s*:\s*"([^"]+)"/g, req.prompt);
         const slogan = phrases[0] ?? "habit tracker";
-        // Подобрать subtitle-фразу без пересечения слов со слоганом (иначе валидатор отклонит —
-        // тогда сработает детерминированный фолбэк оркестратора).
+        // Pick a subtitle phrase with no word overlap with the slogan (otherwise the validator
+        // rejects it — then the orchestrator's deterministic fallback kicks in).
         const sWords = new Set(slogan.split(" "));
         const sub = phrases.slice(1).find((p) => p.split(" ").every((w) => !sWords.has(w))) ?? "";
         return JSON.stringify({ titleSlogan: slogan, subtitle: sub });

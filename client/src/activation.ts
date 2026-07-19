@@ -1,10 +1,10 @@
-// Активация: обмен ключа `asop_live_…` на session-token через облако по HTTPS
-// (ActivateRequest → ActivateResponse из @aso/shared), хранение в OS secure-store
-// (macOS Keychain через `security`); chmod-600 файл — ТОЛЬКО dev-fallback.
-// Ответ несёт ещё и `hmac_secret` — per-session ключ для SignedEnvelope (см. cloud-link.ts).
-// Токен живёт ТОЛЬКО в программе (браузеру нечего утекать, D1).
+// Activation: exchange of an `asop_live_…` key for a session-token via the cloud over HTTPS
+// (ActivateRequest → ActivateResponse from @aso/shared), stored in the OS secure-store
+// (macOS Keychain via `security`); a chmod-600 file is a dev-fallback ONLY.
+// The response also carries `hmac_secret` — a per-session key for SignedEnvelope (see cloud-link.ts).
+// The token lives ONLY in the program (nothing for a browser to leak, D1).
 //
-// В этом файле НЕТ ни формул, ни промптов — лишь обмен ключа и безопасное хранение.
+// This file contains NO formulas and NO prompts — only key exchange and secure storage.
 
 import { createHash } from "node:crypto";
 import { hostname, userInfo, platform, arch } from "node:os";
@@ -19,20 +19,20 @@ const ACCOUNT = "session-token";
 export interface Session {
   sessionToken: string;
   deviceFp: string;
-  /** per-session HMAC-секрет для SignedEnvelope (выдаётся облаком при активации). */
+  /** per-session HMAC secret for SignedEnvelope (issued by the cloud on activation). */
   hmacSecret: string;
-  /** ISO-срок жизни session-token (из ActivateResponse). null для dev-режима. */
+  /** ISO expiry of the session-token (from ActivateResponse). null in dev mode. */
   expiresAt: string | null;
   activatedAt: string;
 }
 
-/** Стабильный отпечаток машины (device-binding, ARCHITECTURE §5 / D8). Не PII наружу — хэш. */
+/** Stable machine fingerprint (device-binding, ARCHITECTURE §5 / D8). No PII leaves the machine — it's a hash. */
 export function deviceFingerprint(): string {
   let user = "unknown";
   try {
     user = userInfo().username;
   } catch {
-    /* некоторые окружения не дают userInfo */
+    /* some environments don't provide userInfo */
   }
   return createHash("sha256")
     .update(`${hostname()}|${platform()}|${arch()}|${user}`)
@@ -40,26 +40,26 @@ export function deviceFingerprint(): string {
     .slice(0, 32);
 }
 
-/** Формат ключа активации: asop_live_… (или asop_test_… для теста). */
+/** Activation key format: asop_live_… (or asop_test_… for testing). */
 export function isActivationKey(key: string): boolean {
   return /^asop_(live|test)_[A-Za-z0-9]{8,}$/.test(key.trim());
 }
 
 /**
- * Обменять ключ активации на session-token через облако (HTTPS `POST /activate`).
- * Endpoint — config.httpsBase (env ASO_CLOUD_HTTPS, дефолт https://api.asoptimus.com).
- * DEV=1 без облака → синтетический токен/секрет, чтобы UI поднялся оффлайн.
+ * Exchange an activation key for a session-token via the cloud (HTTPS `POST /activate`).
+ * Endpoint — config.httpsBase (env ASO_CLOUD_HTTPS, default https://api.asoptimus.com).
+ * DEV=1 without the cloud → synthetic token/secret so the UI comes up offline.
  */
 export async function activate(key: string): Promise<Session> {
   const trimmed = key.trim();
   if (!isActivationKey(trimmed)) {
-    throw new Error("Ключ должен иметь вид asop_live_… — проверьте, что скопировали целиком.");
+    throw new Error("Key must look like asop_live_… — check that you copied it in full.");
   }
   const deviceFp = deviceFingerprint();
 
   let session: Session;
   if (isDev()) {
-    // DEV-ONLY (за флагом DEV=1): синтетическая сессия для оффлайн-UI. В прод-пути недостижимо.
+    // DEV-ONLY (behind the DEV=1 flag): synthetic session for the offline UI. Unreachable in the prod path.
     const seed = createHash("sha256").update(trimmed + deviceFp).digest("hex");
     session = {
       sessionToken: `dev-session-${seed.slice(0, 24)}`,
@@ -78,12 +78,12 @@ export async function activate(key: string): Promise<Session> {
         body: JSON.stringify(body),
       });
     } catch (e: any) {
-      throw new Error(`Не удалось связаться с сервером активации (${httpsBase()}): ${e?.message ?? e}`);
+      throw new Error(`Could not reach the activation server (${httpsBase()}): ${e?.message ?? e}`);
     }
     const data = (await res.json().catch(() => ({}))) as Partial<ActivateResponse> & { error?: string };
-    if (!res.ok) throw new Error(data?.error || `Активация не удалась (HTTP ${res.status}).`);
-    if (!data?.session_token) throw new Error("Облако не вернуло session_token.");
-    if (!data?.hmac_secret) throw new Error("Облако не вернуло hmac_secret (нужен для подписи сообщений).");
+    if (!res.ok) throw new Error(data?.error || `Activation failed (HTTP ${res.status}).`);
+    if (!data?.session_token) throw new Error("Cloud did not return a session_token.");
+    if (!data?.hmac_secret) throw new Error("Cloud did not return an hmac_secret (required for message signing).");
     session = {
       sessionToken: String(data.session_token),
       deviceFp,
@@ -97,7 +97,7 @@ export async function activate(key: string): Promise<Session> {
   return session;
 }
 
-/** Прочитать сохранённую сессию (keychain → dev-файл). null если не активирован. */
+/** Read the stored session (keychain → dev file). null if not activated. */
 export async function loadSession(): Promise<Session | null> {
   const fromStore = await keychainGet();
   if (fromStore) {
@@ -117,7 +117,7 @@ export async function loadSession(): Promise<Session | null> {
 function parseSession(json: string): Session | null {
   try {
     const s = JSON.parse(json) as Partial<Session>;
-    if (!s || !s.sessionToken || !s.hmacSecret) return null; // старые/битые записи считаем «не активирован»
+    if (!s || !s.sessionToken || !s.hmacSecret) return null; // treat old/corrupt records as "not activated"
     return {
       sessionToken: s.sessionToken,
       deviceFp: s.deviceFp ?? deviceFingerprint(),
@@ -130,7 +130,7 @@ function parseSession(json: string): Session | null {
   }
 }
 
-/** Забыть сессию (logout). */
+/** Forget the session (logout). */
 export async function clearSession(): Promise<void> {
   await keychainDelete();
   try {
@@ -144,25 +144,25 @@ async function storeSession(s: Session): Promise<void> {
   const json = JSON.stringify(s);
   const ok = await keychainSet(json);
   if (!ok) {
-    // Dev-fallback: chmod-600 файл (единственный явный fallback вне macOS Keychain).
+    // Dev-fallback: chmod-600 file (the only explicit fallback outside macOS Keychain).
     ensureDirs();
     writeFileSync(sessionPath(), json);
     try {
       chmodSync(sessionPath(), 0o600);
     } catch {
-      // Windows: chmod не поддерживается.
+      // Windows: chmod is not supported.
     }
   }
 }
 
-// ── OS secure-store через нативные CLI (без внешних зависимостей) ─────────────
-// macOS: `security`. Прочие ОС: падаем на chmod-600 файл (приложение — только macOS, D-раздел 9).
+// ── OS secure-store via native CLIs (no external dependencies) ─────────────
+// macOS: `security`. Other OSes: fall back to a chmod-600 file (the app is macOS-only, D section 9).
 
 async function keychainSet(value: string): Promise<boolean> {
   if (process.platform !== "darwin") return false;
   try {
-    // -U обновляет существующую запись. Значение — через аргумент: локальная доверенная
-    // машина (D8); `security` не читает -w из stdin у add-generic-password.
+    // -U updates an existing entry. Value passed as an argument: local trusted
+    // machine (D8); `security` does not read -w from stdin for add-generic-password.
     const proc = Bun.spawnSync([
       "security", "add-generic-password",
       "-s", SERVICE, "-a", ACCOUNT, "-w", value, "-U",

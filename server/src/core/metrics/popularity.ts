@@ -1,10 +1,10 @@
-// @aso/core — Popularity (P), 0–100 (spec 03.1). ПРОПРИЕТАРНО, zero-I/O.
+// @aso/core — Popularity (P), 0–100 (spec 03.1). PROPRIETARY, zero-I/O.
 //
-// BUILD-PLAN D2/D3: этот модуль БОЛЬШЕ НЕ ХОДИТ В СЕТЬ. Клиент исполняет ProbeJob
-// (полный-префикс-shortcut → лестница early-stop → childTerms) и возвращает СЫРЬЁ
-// (ProbeResult). Сервер считает P/L/rank/childCount/seenTerms НАД `prefill ∪ fetched`
-// (ключ = префикс). Формула popularityScore — 1:1 из aso-util (числовые примеры spec/03
-// обязаны сходиться до цифры).
+// BUILD-PLAN D2/D3: this module NO LONGER TOUCHES THE NETWORK. The client executes a
+// ProbeJob (full-prefix shortcut → early-stop ladder → childTerms) and returns RAW DATA
+// (ProbeResult). The server computes P/L/rank/childCount/seenTerms OVER `prefill ∪ fetched`
+// (key = prefix). The popularityScore formula is 1:1 from aso-util (the numeric examples
+// in spec/03 must match to the digit).
 
 import { normalizeKeyword } from "@aso/shared";
 import type { RawHints } from "@aso/shared";
@@ -14,19 +14,19 @@ export interface PopularityWeights {
   rank: number;
 }
 
-/** Результат расчёта популярности над сырьём (доменный, не wire). */
+/** Popularity computation result over raw data (domain-level, not wire). */
 export interface PopularityMetrics {
   P: number;
   L: number | null;
   rank: number | null;
   unsuggested: boolean;
   childCount: number;
-  /** Все подсказки, встреченные при probing (нормализованные, без дублей) —
-   *  сырьё для кандидатов source="suggest" (spec 03.5). */
+  /** All suggestions seen during probing (normalized, deduplicated) —
+   *  raw material for source="suggest" candidates (spec 03.5). */
   seenTerms: string[];
 }
 
-/** Чистая формула P по найденным L и rank (spec 03.1). 1:1 с aso-util. */
+/** Pure P formula from the found L and rank (spec 03.1). 1:1 with aso-util. */
 export function popularityScore(N: number, L: number, rank: number, w: PopularityWeights): number {
   if (N < 2) return 0;
   const depthScore = (N - L) / (N - 1);
@@ -34,7 +34,7 @@ export function popularityScore(N: number, L: number, rank: number, w: Popularit
   return Math.round(100 * (w.depth * depthScore + w.rank * rankScore));
 }
 
-/** Детерминированная лестница префиксов K[0:1..N] — сервер кладёт её в ProbeJob. */
+/** Deterministic prefix ladder K[0:1..N] — the server puts it into the ProbeJob. */
 export function prefixLadder(keyword: string): string[] {
   const K = normalizeKeyword(keyword);
   const out: string[] = [];
@@ -43,15 +43,15 @@ export function prefixLadder(keyword: string): string[] {
 }
 
 /**
- * Расчёт популярности над СЫРЬЁМ прогона ProbeJob (BUILD-PLAN D2/D3).
- * @param keyword       исходный кейворд
- * @param prefixHints   `prefill ∪ fetched` — ключ = префикс, значение = упорядоченные подсказки
- * @param childTerms    подсказки на "keyword " (для childCount); null если unsuggested
- * @param unsuggested   флаг клиента (K не встретился даже на полном префиксе)
- * @param weights       веса popularity из конфига прогона
+ * Popularity computation over the RAW DATA of a ProbeJob run (BUILD-PLAN D2/D3).
+ * @param keyword       source keyword
+ * @param prefixHints   `prefill ∪ fetched` — key = prefix, value = ordered suggestions
+ * @param childTerms    suggestions for "keyword " (for childCount); null if unsuggested
+ * @param unsuggested   client flag (K did not appear even on the full prefix)
+ * @param weights       popularity weights from the run config
  *
- * КРИТИЧНО (закрытый блокер D2/D3): L/rank считаются над ОБЪЕДИНЕНИЕМ prefill∪fetched,
- * а не над одними fetched — иначе matching-префикс из кэша был бы потерян и P ошибочно = 0.
+ * CRITICAL (closed blocker D2/D3): L/rank are computed over the UNION prefill∪fetched,
+ * not over fetched alone — otherwise a matching prefix from the cache would be lost and P would wrongly be 0.
  */
 export function computePopularity(
   keyword: string,
@@ -63,7 +63,7 @@ export function computePopularity(
   const K = normalizeKeyword(keyword);
   const N = K.length;
 
-  // seenTerms = объединение ВСЕХ подсказок (по всем префиксам + childTerms), нормализованные.
+  // seenTerms = union of ALL suggestions (across all prefixes + childTerms), normalized.
   const seen = new Set<string>();
   for (const terms of Object.values(prefixHints)) {
     for (const t of terms) seen.add(normalizeKeyword(t));
@@ -74,28 +74,28 @@ export function computePopularity(
     return { P: 0, L: null, rank: null, unsuggested: true, childCount: 0, seenTerms: [...seen] };
   }
 
-  // Минимальный L: наименьшая длина префикса, где K встречается в его подсказках.
-  // Строго по возрастанию длины (порядок обязателен — L есть минимум).
+  // Minimal L: the smallest prefix length whose suggestions contain K.
+  // Strictly in ascending length order (order is mandatory — L is a minimum).
   let L: number | null = null;
   let rank: number | null = null;
   for (let i = 1; i <= N; i++) {
     const prefix = K.slice(0, i);
     const terms = prefixHints[prefix];
-    if (!terms) continue; // префикс не трогали (ни в кэше, ни фетчен) — пропускаем
+    if (!terms) continue; // prefix untouched (neither cached nor fetched) — skip
     const idx = terms.findIndex((t) => normalizeKeyword(t) === K);
     if (idx >= 0) {
       L = i;
       rank = idx + 1;
-      break; // ранняя остановка
+      break; // early stop
     }
   }
 
   if (L === null || rank === null) {
-    // K нигде не найден в объединении — трактуем как unsuggested (страховка).
+    // K not found anywhere in the union — treat as unsuggested (safety net).
     return { P: 0, L: null, rank: null, unsuggested: true, childCount: 0, seenTerms: [...seen] };
   }
 
-  // childCount: сколько подсказок на "K " начинаются с "K " (spec 03.1).
+  // childCount: how many suggestions for "K " start with "K " (spec 03.1).
   let childCount = 0;
   if (childTerms) {
     childCount = childTerms.filter((t) => normalizeKeyword(t).startsWith(K + " ")).length;

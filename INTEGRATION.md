@@ -1,50 +1,50 @@
-# Интеграционный лог — Фаза 1
+# Integration log — Phase 1
 
-## Статус
-Оба модуля собраны параллельными агентами против замороженного `@aso/shared` и закоммичены в
-свои репо. Границы соблюдены: `client` не содержит формул/промптов (проверено grep’ом),
-`server/src/core` держит весь moat (метрики, assembly, expander, locales, 5 промптов).
+## Status
+Both modules were built by parallel agents against a frozen `@aso/shared` and committed to
+their repos. Boundaries hold: `client` contains no formulas/prompts (verified by grep),
+`server/src/core` holds the whole moat (metrics, assembly, expander, locales, 5 prompts).
 
 - **server** (`asoptimus-server`): core (metrics/assembly/expander/locales/prompts) + orchestrator
   (control-flow inverted) + llm-proxy (per-attempt debit, step_seq, llm_steps, idem-key) + billing
-  (атомарный микро-резерв, UNIQUE(run_id,step_seq)) + auth + apple-dispatch (кэш D3, очередь) +
-  stripe + db (Postgres + Memory-fallback) + api. Стартует офлайн на моках. Pure-логика: 28/28
-  метрики, 27/27 assembly/expander/store (прогонял через shim; bun в окружении не было).
-  `popularity.ts` переписан на `prefill ∪ fetched` (блокер D2/D3 закрыт, в комментарии кода).
+  (atomic micro-reserve, UNIQUE(run_id,step_seq)) + auth + apple-dispatch (D3 cache, queue) +
+  stripe + db (Postgres + Memory fallback) + api. Starts offline on mocks. Pure logic: 28/28
+  metrics, 27/27 assembly/expander/store (ran through a shim; no bun in the environment).
+  `popularity.ts` rewritten as `prefill ∪ fetched` (D2/D3 blocker closed, noted in a code comment).
 - **client** (`asoptimus-client`): apple/{http,hints,search,probe} + apple-exec + cloud-link (WSS)
-  + localserver (реле + guard D8) + activation + web-ui (логин/баланс/top-up). `probe.ts` живо
-  проверен против Apple (early-stop + 1-request unsuggested). D8 (Host/Origin/token) и D9 (нет
-  полей prompt в LlmLogPublic) подтверждены.
+  + localserver (relay + D8 guard) + activation + web-ui (login/balance/top-up). `probe.ts` was live-
+  tested against Apple (early-stop + 1-request unsuggested). D8 (Host/Origin/token) and D9 (no
+  prompt fields in LlmLogPublic) confirmed.
 
-## Reconciliation v2 — что сведено в `@aso/shared/protocol.ts`
-Оба агента независимо уткнулись в одни и те же дыры контракта (совпадение = дыры реальны). Внёс:
+## Reconciliation v2 — what was merged into `@aso/shared/protocol.ts`
+Both agents independently hit the same contract holes (agreement = the holes are real). Landed:
 
-| Изменение | Закрывает | Кто адаптирует |
+| Change | Closes | Who adapts |
 |---|---|---|
-| `query` / `query.result` / `query.error` (WSS запрос-ответ для браузерных чтений) | client-a, server-4 | клиент: заменить `wire-local.ts::LocalQuery` на shared `query`; сервер: реализовать ответы (runs/run/keywords/llm-log/balance/models) |
-| `run.created{client_ref,run_id}` ack + `client_ref` в `run.create` | client-b, server-3 | сервер: слать ack; клиент: коррелировать по client_ref |
-| `SerpJob.country` (2-буквенный код для Search API) | client-c | сервер: класть country из конфига; клиент: брать отсюда, убрать реверс-мап |
-| `run.delete` в `RunAction` | client-d | оба |
-| `ProbeJob.childPrefill?` (кэш `"<kw> "`) | server-2 | сервер: класть при cache-hit; клиент: если есть — не фетчить childTerms |
-| `SignedEnvelope{mac,ts,nonce,body}` (per-message HMAC) | server-1 | клиент: оборачивать; сервер: `auth.verifyMessage` |
-| `ActivateRequest/Response` (HTTPS `/activate`, + hmac_secret) | client-f | сервер: эндпоинт; клиент: использовать форму |
-| `ModelInfo` + query `kind="models"` | client-g | сервер: отдавать список; клиент: убрать хардкод |
+| `query` / `query.result` / `query.error` (WSS request-response for browser reads) | client-a, server-4 | client: replace `wire-local.ts::LocalQuery` with shared `query`; server: implement the responses (runs/run/keywords/llm-log/balance/models) |
+| `run.created{client_ref,run_id}` ack + `client_ref` in `run.create` | client-b, server-3 | server: send the ack; client: correlate by client_ref |
+| `SerpJob.country` (2-letter code for the Search API) | client-c | server: put country from config; client: take it from here, drop the reverse map |
+| `run.delete` in `RunAction` | client-d | both |
+| `ProbeJob.childPrefill?` (cache of `"<kw> "`) | server-2 | server: include on cache hit; client: if present — do not fetch childTerms |
+| `SignedEnvelope{mac,ts,nonce,body}` (per-message HMAC) | server-1 | client: wrap; server: `auth.verifyMessage` |
+| `ActivateRequest/Response` (HTTPS `/activate`, + hmac_secret) | client-f | server: endpoint; client: use the form |
+| `ModelInfo` + query `kind="models"` | client-g | server: return the list; client: drop the hardcode |
 
-Изменения аддитивные, кроме `SerpJob.country` и `run.create.client_ref` (обязательные) — их обе
-стороны подхватывают в следующей итерации (компилировать всё равно нужно после `bun install`).
+The changes are additive, except `SerpJob.country` and `run.create.client_ref` (required) — both
+sides pick those up in the next iteration (everything needs compiling after `bun install` anyway).
 
-## Остаточные gap’ы Фазы 1 (следующая итерация)
-1. **Сервер: полный event-replay** из `run_events` (сейчас — снапшот `runs.state`) — честное
-   закрытие резюмируемости D7.
-2. **Провод query-чтений end-to-end**: сервер отвечает на `query`, клиент переводит браузерные
-   `/api/runs|:id|/keywords|/llm-log|/balance` на shared `query` вместо локального обхода.
-3. **HMAC-envelope** включить с обеих сторон (SignedEnvelope) + `/activate` HTTPS-лег вживую.
-4. **Порт тест-сьюта** aso-util в репо (`core` тесты сейчас гонялись временным shim’ом, не
-   закоммичены как `.test.ts`).
-5. **Живая проверка** против Postgres + Anthropic api_key + Stripe test (PostgresStore/Anthropic/
-   Stripe написаны, но против живых сервисов не гонялись).
-6. **Клиент**: secure-store для win/linux (сейчас chmod-600 fallback); partial-ProbeJob стриминг
-   для кэша при реконнекте (оптимизация D7).
+## Remaining Phase 1 gaps (next iteration)
+1. **Server: full event replay** from `run_events` (currently — the `runs.state` snapshot) — the honest
+   closure of D7 resumability.
+2. **Wire query reads end-to-end**: the server answers `query`, the client routes browser
+   `/api/runs|:id|/keywords|/llm-log|/balance` through shared `query` instead of the local workaround.
+3. **HMAC envelope** enabled on both sides (SignedEnvelope) + the `/activate` HTTPS leg live.
+4. **Port the aso-util test suite** into the repo (the `core` tests were run via a temporary shim, not
+   committed as `.test.ts`).
+5. **Live verification** against Postgres + Anthropic api_key + Stripe test (PostgresStore/Anthropic/
+   Stripe are written but never ran against live services).
+6. **Client**: secure store for win/linux (currently a chmod-600 fallback); partial-ProbeJob streaming
+   for the cache on reconnect (D7 optimization).
 
-Ничего из остатка не блокирует демонстрацию happy-path офлайн — оба модуля стартуют и
-проходят поток создание→context_review→loop→assemble→done на моках.
+Nothing in the remainder blocks the offline happy-path demo — both modules start and
+walk the create→context_review→loop→assemble→done flow on mocks.

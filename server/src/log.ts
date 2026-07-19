@@ -1,6 +1,6 @@
-// @aso/server — структурное логирование (одна JSON-строка на запись). Секреты НИКОГДА не
-// попадают в лог: любое поле, чьё имя похоже на секрет (key/secret/token/password/hmac/…),
-// редактируется. В лог передаём факты/имена, не значения секретов.
+// @aso/server — structured logging (one JSON line per record). Secrets NEVER end up in the
+// log: any field whose name looks like a secret (key/secret/token/password/hmac/…) is
+// redacted. We log facts/names, not secret values.
 
 import { IS_DEV } from "./env.ts";
 

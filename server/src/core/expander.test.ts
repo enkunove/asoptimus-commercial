@@ -1,26 +1,26 @@
-// Движок расширения suggest-графа: план волны, фильтр чистых запросов, разбор сырья.
-// Порт из aso-util/test/expander.test.ts. runWave (сеть) заменён на harvestWaveResults:
-// сервер сети НЕ ходит — оркестратор эмитит HintsJob, harvest разбирает вернувшееся сырьё.
+// Suggest-graph expansion engine: wave planning, clean-query filter, raw-data parsing.
+// Port of aso-util/test/expander.test.ts. runWave (network) replaced by harvestWaveResults:
+// the server does NOT touch the network — the orchestrator emits HintsJobs, harvest parses the returned raw data.
 
 import { describe, expect, test } from "bun:test";
 import { planWave, isCleanQuery, SPICE_TOKENS, harvestWaveResults, type ExpansionTask } from "./expander.ts";
 
 describe("isCleanQuery", () => {
-  test("чистые запросы проходят", () => {
+  test("clean queries pass", () => {
     expect(isCleanQuery("bac calculator")).toBe(true);
     expect(isCleanQuery("ai bac")).toBe(true);
     expect(isCleanQuery("drink tracker free")).toBe(true);
   });
-  test("мусор отсекается", () => {
-    expect(isCleanQuery("hush: bedtime doomscroll block")).toBe(false); // пунктуация
-    expect(isCleanQuery("a b")).toBe(false); // слова из 1 символа
-    expect(isCleanQuery("one two three four five")).toBe(false); // 5 слов
-    expect(isCleanQuery("x".repeat(41))).toBe(false); // длина
+  test("junk is rejected", () => {
+    expect(isCleanQuery("hush: bedtime doomscroll block")).toBe(false); // punctuation
+    expect(isCleanQuery("a b")).toBe(false); // 1-character words
+    expect(isCleanQuery("one two three four five")).toBe(false); // 5 words
+    expect(isCleanQuery("x".repeat(41))).toBe(false); // length
   });
 });
 
 describe("planWave", () => {
-  test("приоритет: дети голов → LLM-корни (резерв) → completion слов → soup/spice", () => {
+  test("priority: head children → LLM roots (reserved slot) → word completion → soup/spice", () => {
     const tasks = planWave({
       provenHeads: ["bac calculator", "alcohol tracker"],
       headWords: ["breathalyzer", "drink"],
@@ -32,7 +32,7 @@ describe("planWave", () => {
     const terms = tasks.map((t) => t.term);
     expect(terms[0]).toBe("bac calculator ");
     expect(terms[1]).toBe("alcohol tracker ");
-    // LLM-направления идут в зарезервированном слоте ДО бэклога слов
+    // LLM directions go into the reserved slot BEFORE the word backlog
     expect(terms[2]).toBe("sober");
     expect(terms[3]).toBe("sober ");
     expect(terms[4]).toBe("breathalyzer");
@@ -42,7 +42,7 @@ describe("planWave", () => {
     for (const s of SPICE_TOKENS) expect(terms).toContain(`bac calculator ${s}`);
   });
 
-  test("слот LLM-корней ограничен 8 задачами — бэклог слов не голодает вечно", () => {
+  test("LLM-root slot capped at 8 tasks — the word backlog never starves forever", () => {
     const tasks = planWave({
       provenHeads: [],
       headWords: ["word"],
@@ -52,11 +52,11 @@ describe("planWave", () => {
       budget: 100,
     });
     const llmTasks = tasks.filter((t) => t.root.startsWith("r"));
-    expect(llmTasks.length).toBe(8); // 4 корня × 2 операции
+    expect(llmTasks.length).toBe(8); // 4 roots × 2 operations
     expect(tasks.some((t) => t.term === "word")).toBe(true);
   });
 
-  test("done-журнал исключает повторное раскрытие; бюджет соблюдается", () => {
+  test("done journal prevents re-expansion; budget is respected", () => {
     const done = { "bac calculator": ["children", "soup:c"] };
     const tasks = planWave({
       provenHeads: ["bac calculator"],
@@ -73,35 +73,35 @@ describe("planWave", () => {
   });
 });
 
-describe("harvestWaveResults (чистый разбор сырья)", () => {
+describe("harvestWaveResults (pure raw-data parsing)", () => {
   const task = (term: string, opKey = "complete", root = term): ExpansionTask => ({ term, opKey, root });
 
-  test("собирает чистые нормализованные запросы, грязь (пунктуация) отсеивается", () => {
+  test("collects clean normalized queries, dirt (punctuation) is filtered out", () => {
     const res = harvestWaveResults([
       { task: task("bac"), terms: ["bac tracker", "BAC Calculator Pro", "Hush: Bedtime Doomscroll Block"] },
       { task: task("drink"), terms: ["drink calculator pro"] },
     ]);
-    // нормализация к lowercase + фильтр isCleanQuery
+    // normalization to lowercase + isCleanQuery filter
     expect(res.discovered).toContain("bac tracker");
     expect(res.discovered).toContain("bac calculator pro");
     expect(res.discovered).toContain("drink calculator pro");
-    // грязный терм с двоеточием не проходит
+    // dirty term with a colon does not pass
     expect(res.discovered.some((d) => d.includes(":"))).toBe(false);
     expect(res.discovered).not.toContain("hush: bedtime doomscroll block");
   });
 
-  test("permanentError:true помечает задачу done; terms:null без него — нет", () => {
+  test("permanentError:true marks the task done; terms:null without it does not", () => {
     const res = harvestWaveResults([
       { task: task("broken"), terms: null, permanentError: true },
       { task: task("pending"), terms: null },
     ]);
-    // битая (permanent) задача помечена done
+    // broken (permanent) task is marked done
     expect(res.done).toContainEqual({ root: "broken", opKey: "complete" });
-    // временный провал (terms:null без permanentError) НЕ помечается — перевыполнится
+    // transient failure (terms:null without permanentError) is NOT marked — it reruns
     expect(res.done.some((d) => d.root === "pending")).toBe(false);
   });
 
-  test("requestsSpent считает только результаты с непустыми terms", () => {
+  test("requestsSpent counts only results with non-null terms", () => {
     const res = harvestWaveResults([
       { task: task("bac"), terms: ["bac tracker"] },
       { task: task("drink"), terms: ["drink calculator pro"] },
@@ -109,7 +109,7 @@ describe("harvestWaveResults (чистый разбор сырья)", () => {
       { task: task("pending"), terms: null },
     ]);
     expect(res.requestsSpent).toBe(2);
-    // done: два успешных + одна permanent-битая, но НЕ временная
+    // done: two successes + one permanent failure, but NOT the transient one
     expect(res.done).toEqual([
       { root: "bac", opKey: "complete" },
       { root: "drink", opKey: "complete" },

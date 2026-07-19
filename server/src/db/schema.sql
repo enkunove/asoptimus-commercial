@@ -1,6 +1,6 @@
--- @aso/server/db — Postgres-схема всех таблиц (BUILD-PLAN §5). Идемпотентна (IF NOT EXISTS).
--- Применяется через src/db/migrate.ts. Инвариант биллинга: UNIQUE(run_id, step_seq) на ledger
--- и llm_steps закрывает двойное списание/двойной COGS при реплее (D4/D7).
+-- @aso/server/db — Postgres schema for all tables (BUILD-PLAN §5). Idempotent (IF NOT EXISTS).
+-- Applied via src/db/migrate.ts. Billing invariant: UNIQUE(run_id, step_seq) on ledger
+-- and llm_steps rules out double debit/double COGS on replay (D4/D7).
 
 CREATE TABLE IF NOT EXISTS users (
   id                  TEXT PRIMARY KEY,
@@ -10,32 +10,32 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS licenses (
-  key_hash    TEXT PRIMARY KEY,           -- sha256(ключ); сам ключ не храним
+  key_hash    TEXT PRIMARY KEY,           -- sha256(key); the key itself is not stored
   user_id     TEXT NOT NULL REFERENCES users(id),
-  device_fp   TEXT,                        -- device-binding (первый успешный hello)
+  device_fp   TEXT,                        -- device-binding (first successful hello)
   status      TEXT NOT NULL DEFAULT 'active',  -- active | revoked
   revoked_at  TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Баланс — источник истины (D4 v4). Кредиты фракционные (1 кредит = $1, кейфраза стоит доли
--- кредита). Списание за кейфразу под FOR UPDATE (сериализация кошелька, в минус не уходит).
+-- Balance is the source of truth (D4 v4). Credits are fractional (1 credit = $1; a keyphrase
+-- costs a fraction of a credit). Per-keyphrase debit under FOR UPDATE (wallet serialization, never negative).
 CREATE TABLE IF NOT EXISTS wallet (
   user_id         TEXT PRIMARY KEY REFERENCES users(id),
   balance_credits NUMERIC(14,4) NOT NULL DEFAULT 0
 );
 ALTER TABLE wallet ALTER COLUMN balance_credits TYPE NUMERIC(14,4);
 
--- Иммутабельный журнал. D4 v4: по строке debit на каждую проверенную кейфразу —
--- UNIQUE(run_id, keyword) даёт идемпотентность списания. stripe_event_id UNIQUE — гранты.
+-- Immutable log. D4 v4: one debit row per checked keyphrase —
+-- UNIQUE(run_id, keyword) makes debits idempotent. stripe_event_id UNIQUE — grants.
 CREATE TABLE IF NOT EXISTS ledger (
   id               BIGSERIAL PRIMARY KEY,
   user_id          TEXT NOT NULL REFERENCES users(id),
-  delta            NUMERIC(14,4) NOT NULL, -- +grant / -debit (в кредитах, фракционных)
+  delta            NUMERIC(14,4) NOT NULL, -- +grant / -debit (in fractional credits)
   type             TEXT NOT NULL,          -- grant | debit | settle | refund | chargeback
   run_id           TEXT,
-  keyword          TEXT,                   -- кейфраза (для UNIQUE(run_id, keyword), D4 v4)
-  step_seq         INTEGER,                -- (legacy; не используется в v4)
+  keyword          TEXT,                   -- keyphrase (for UNIQUE(run_id, keyword), D4 v4)
+  step_seq         INTEGER,                -- (legacy; unused in v4)
   stripe_event_id  TEXT,
   ts               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -46,19 +46,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS ledger_run_keyword_uq ON ledger (run_id, keywo
 CREATE UNIQUE INDEX IF NOT EXISTS ledger_stripe_event_uq ON ledger (stripe_event_id)
   WHERE stripe_event_id IS NOT NULL;
 
--- Каждая billable-попытка = строка (в т.ч. невалидные). advance/реплей по последней
--- valid строке логического шага; Anthropic не зовётся заново (D7).
+-- Every billable attempt = a row (including invalid ones). advance/replay uses the last
+-- valid row of the logical step; Anthropic is not called again (D7).
 CREATE TABLE IF NOT EXISTS llm_steps (
   run_id        TEXT NOT NULL,
   logical_step  TEXT NOT NULL,             -- context | seeds | rate | hypothesize | phrase (+#)
-  step_seq      INTEGER NOT NULL,          -- серверный монотонный счётчик на попытку
+  step_seq      INTEGER NOT NULL,          -- server-side monotonic counter per attempt
   request_hash  TEXT NOT NULL,
-  result_json   JSONB,                     -- null для невалидной попытки
+  result_json   JSONB,                     -- null for an invalid attempt
   valid         BOOLEAN NOT NULL DEFAULT false,
   usage         JSONB NOT NULL,
   cost_usd      DOUBLE PRECISION,
-  model         TEXT,                      -- модель попытки (D9-журнал)
-  duration_ms   INTEGER,                   -- латентность провайдера (D9-журнал)
+  model         TEXT,                      -- model of the attempt (D9 log)
+  duration_ms   INTEGER,                   -- provider latency (D9 log)
   ts            TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (run_id, step_seq)
 );
@@ -76,19 +76,19 @@ CREATE TABLE IF NOT EXISTS runs (
   user_id        TEXT NOT NULL REFERENCES users(id),
   phase          TEXT NOT NULL,
   config          JSONB NOT NULL,
-  brief           TEXT NOT NULL DEFAULT '',   -- бриф продукта (нужен event-replay)
-  estimate_credits NUMERIC(14,4) NOT NULL DEFAULT 0, -- оценочный потолок (D4 v4; НЕ резерв)
+  brief           TEXT NOT NULL DEFAULT '',   -- product brief (needed by event-replay)
+  estimate_credits NUMERIC(14,4) NOT NULL DEFAULT 0, -- estimated ceiling (D4 v4; NOT a reserve)
   context         JSONB,
   final           JSONB,                      -- AssemblyResult
   usage           JSONB,
-  state           JSONB,                      -- read-проекция состояния (авторитет resume — event-replay)
+  state           JSONB,                      -- read projection of state (resume authority — event-replay)
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS brief TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS estimate_credits NUMERIC(14,4) NOT NULL DEFAULT 0;
 
--- Event-sourced лог: реплей, SSE, Last-Event-ID (D7).
+-- Event-sourced log: replay, SSE, Last-Event-ID (D7).
 CREATE TABLE IF NOT EXISTS run_events (
   run_id  TEXT NOT NULL,
   seq     BIGINT NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS run_events (
   PRIMARY KEY (run_id, seq)
 );
 
--- Очередь Apple-джоб, идемпотентность по job_id (D7). FOR UPDATE SKIP LOCKED при масштабе.
+-- Apple job queue, idempotent by job_id (D7). FOR UPDATE SKIP LOCKED at scale.
 CREATE TABLE IF NOT EXISTS jobs (
   job_id    TEXT PRIMARY KEY,
   run_id    TEXT NOT NULL,
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Общесетевой кэш сырья Apple (D3), TTL по fetched_at.
+-- Network-wide cache of raw Apple data (D3), TTL by fetched_at.
 CREATE TABLE IF NOT EXISTS apple_cache (
   cache_key   TEXT PRIMARY KEY,            -- sha1(method+url+storefront)
   url         TEXT NOT NULL,

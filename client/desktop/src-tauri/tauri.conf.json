@@ -20,7 +20,7 @@
     "targets": ["app", "dmg"],
     "category": "DeveloperTool",
     "shortDescription": "ASO keyword research desktop app",
-    "longDescription": "ASOptimus — локальная программа поиска ключевых слов для App Store. Нативное окно поверх localhost-UI; вычисления и биллинг — в облаке.",
+    "longDescription": "ASOptimus — local App Store keyword research program. Native window over the localhost UI; computation and billing happen in the cloud.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

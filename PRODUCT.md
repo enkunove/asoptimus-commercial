@@ -1,207 +1,207 @@
-# ASOptimus — полная картина продукта (Путь B, вариант с локальным UI)
+# ASOptimus — full product picture (Path B, local-UI variant)
 
-Выбранная модель: **скачанная программа поднимает локальный сайт (localhost) и делает
-Apple-запросы; ВСЯ остальная логика — на облачном сервере.** По сути это текущий aso-util,
-из которого бизнес-логику вынесли в облако, а локально оставили ровно две вещи — отдачу UI
-и fetch к Apple. Дополняет `ARCHITECTURE.md` (там — технические решения; здесь — целостная
-картина и путь пользователя).
+Chosen model: **the downloaded program spins up a local site (localhost) and makes the
+Apple requests; ALL other logic lives on the cloud server.** Essentially it's the current aso-util
+with the business logic moved to the cloud, leaving exactly two things local — serving the UI
+and fetching Apple. Complements `ARCHITECTURE.md` (technical decisions there; the holistic
+picture and user journey here).
 
-> **Актуальный источник истины по стройке — `BUILD-PLAN.md`** (топология, сабмодули,
-> протокол, биллинг, фазы). При расхождении верен он.
-
----
-
-## 1. Форма продукта одним абзацем
-
-Пользователь скачивает с лендинга **программу** (.dmg/.exe/.AppImage) — это тот самый
-«полноценный .app/.exe». Программа поднимает **локальный сайт на localhost** и открывает его
-в браузере (как aso-util сейчас). В этом UI — всё: прогоны, результаты, баланс, оплата. Но
-теперь UI дёргает не локальную логику, а **облачный сервер**, где живёт весь мозг
-(оркестратор, метрики, expander, промпты, LLM, кредиты). Локальная программа делает ровно
-две вещи: отдаёт UI и **ходит на Apple с IP пользователя** по команде сервера.
-
-Ключевая мысль: **«всё кроме запросов к Apple — на бэке»** достигается буквально. Локальная
-программа не содержит ни формул, ни expander'а, ни промптов, ни LLM-ключа, ни гейтинга
-кредитов — только Apple-fetch и голый рендеринг UI. Вскрыв её, красть нечего.
+> **The current source of truth for the build is `BUILD-PLAN.md`** (topology, submodules,
+> protocol, billing, phases). On any conflict, it wins.
 
 ---
 
-## 2. Три части и где что живёт
+## 1. Product shape in one paragraph
+
+The user downloads a **program** (.dmg/.exe/.AppImage) from the landing page — that's the
+"full-fledged .app/.exe". The program spins up a **local site on localhost** and opens it
+in the browser (like aso-util today). Everything is in this UI: runs, results, balance, payment. But
+now the UI calls not local logic but the **cloud server**, where the whole brain lives
+(orchestrator, metrics, expander, prompts, LLM, credits). The local program does exactly
+two things: serves the UI and **hits Apple from the user's IP** on the server's command.
+
+Key idea: **"everything except Apple requests is on the backend"** is achieved literally. The local
+program contains no formulas, no expander, no prompts, no LLM key, no credit
+gating — only the Apple fetch and bare UI rendering. Crack it open — there's nothing to steal.
+
+---
+
+## 2. Three parts and where things live
 
 ```
-┌─────────────────────── МАШИНА пользователя ────────────────────────┐
-│  Браузер → localhost:PORT — локальный UI (прогоны, баланс, оплата)  │
-│        │  (дёргает облачный сервер, НЕ локальную логику)            │
+┌─────────────────────── USER's machine ─────────────────────────────┐
+│  Browser → localhost:PORT — local UI (runs, balance, payment)       │
+│        │  (calls the cloud server, NOT local logic)                 │
 │        ▼                                                            │
-│  ЛОКАЛЬНАЯ ПРОГРАММА (скачанная, Bun-процесс):                      │
-│   ├─ отдаёт UI на localhost                                        │
-│   ├─ держит session-token (OS secure store) + WSS к облаку         │
-│   ├─ fetch к Apple с IP юзера (нативно, без CORS) ← ЕДИНСТВЕННАЯ    │
-│   │    локальная «логика»: 429-backoff, возврат сырого ответа       │
-│   └─ реле: команды прогона → облако, прогресс → браузеру           │
+│  LOCAL PROGRAM (downloaded, Bun process):                           │
+│   ├─ serves the UI on localhost                                    │
+│   ├─ holds session-token (OS secure store) + WSS to the cloud      │
+│   ├─ fetches Apple from the user's IP (native, no CORS) ← the ONLY │
+│   │    local "logic": 429 backoff, returning the raw response       │
+│   └─ relay: run commands → cloud, progress → browser               │
 └──────────────────────────────┼─────────────────────────────────────┘
                                │ WSS/HTTPS
-┌──────────────────────── СЕРВЕР (мозг) ─┴────────────────────────────┐
-│  Orchestrator (машина состояний, expander, метрики, сборка)         │
-│  LLM-proxy (промпты собираются здесь; клиент шлёт только данные)     │
-│  Billing (wallet+ledger — источник истины, reserve/settle, hard-stop)│
-│  Auth (ключ → session-token, device-bound)                          │
+┌──────────────────────── SERVER (brain) ─┴───────────────────────────┐
+│  Orchestrator (state machine, expander, metrics, assembly)          │
+│  LLM proxy (prompts are assembled here; client sends only data)      │
+│  Billing (wallet+ledger — source of truth, reserve/settle, hard-stop)│
+│  Auth (key → session-token, device-bound)                           │
 │  Postgres (users, wallet, ledger, licenses, run-log, job-queue)      │
-│  Stripe (top-up, вебхуки)                                            │
+│  Stripe (top-up, webhooks)                                           │
 └──────────────────────────────────────────────────────────────────────┘
-      Apple (autocomplete + search) ◄── запросы с IP ПОЛЬЗОВАТЕЛЯ (через программу)
+      Apple (autocomplete + search) ◄── requests from the USER's IP (via the program)
 ```
 
-| Часть | Что это | Технически |
+| Part | What it is | Technically |
 |---|---|---|
-| **Локальный UI** | localhost-сайт, который видит юзер | тот же UI из aso-util (`server/public/*`), но данные тянет из облачного API, а не из локальной логики |
-| **Локальная программа** | «программа» со скачивания | Bun-процесс: отдаёт UI на localhost + держит WSS к серверу + **fetch к Apple с IP юзера** + secure-store ключа. НИКАКОЙ бизнес-логики |
-| **Сервер** | мозг + касса | долгоживущий процесс (Railway/Fly/VPS) + Postgres + Stripe. Раздел 7 в ARCHITECTURE.md |
+| **Local UI** | the localhost site the user sees | same UI as aso-util (`server/public/*`), but it pulls data from the cloud API, not from local logic |
+| **Local program** | the "program" from the download | Bun process: serves the UI on localhost + holds a WSS to the server + **fetches Apple from the user's IP** + secure-stores the key. NO business logic |
+| **Server** | brain + cash register | long-lived process (Railway/Fly/VPS) + Postgres + Stripe. Section 7 in ARCHITECTURE.md |
 
-Почему Apple-fetch делает программа, а не браузер: браузерная JS не может дёрнуть Apple-хинты
-(CORS + запрет `User-Agent`/preflight на `X-Apple-Store-Front`) — решение №0. Нативный
-локальный процесс CORS не касается. Почему локально, а не серверно: чтобы запросы шли с IP
-пользователя и Apple не банил тебя (твой moat).
+Why the program does the Apple fetch, not the browser: browser JS can't hit the Apple hints
+(CORS + the ban on `User-Agent`/preflight for `X-Apple-Store-Front`) — decision #0. A native
+local process is untouched by CORS. Why locally rather than server-side: so requests go from the
+user's IP and Apple doesn't ban you (your moat).
 
-**CORS вообще не возникает** (уточнение из BUILD-PLAN D1): браузер, как и в текущем aso-util,
-дёргает ТОЛЬКО `127.0.0.1` (same-origin). В облако cross-origin ходит нативный процесс
-программы, а на нативный fetch CORS не распространяется. Браузер к облаку не обращается вовсе.
+**CORS never comes up at all** (clarification from BUILD-PLAN D1): the browser, just like in the current
+aso-util, hits ONLY `127.0.0.1` (same-origin). Cross-origin to the cloud goes the program's native
+process, and CORS doesn't apply to a native fetch. The browser never talks to the cloud at all.
 
-**Обновление UI без переустановки:** локальная программа при запуске подтягивает свежие
-UI-ассеты с твоего сервера и кэширует — тогда UI правится серверно мгновенно, а программа
-остаётся тонкой (обновляется через auto-updater только при изменении её собственного кода).
-
----
-
-## 3. Путь пользователя (end-to-end)
-
-**A. Открытие (лендинг `asoptimus.com`).**
-Видит баннер/оффер → «Get started free» → вводит email.
-
-**B. Регистрация и ключ.**
-На email приходит **активационный ключ** (`asop_live_…`) — он же идентификатор пользователя
-и якорь баланса. Сразу создаётся Stripe Customer и кошелёк (с N бесплатными кредитами на
-первый прогон, если решишь давать free-tier).
-
-**C. Скачивание программы.**
-На той же странице — кнопки скачивания под ОС: `.dmg` (macOS), `.exe/.msi` (Windows),
-`.AppImage/.deb` (Linux). Это тот самый «полноценный .app/.exe», о котором ты думал.
-
-**D. Первый запуск программы.**
-Ставит, запускает. Программа просит вставить ключ (или ловит его по deep-link из письма),
-меняет ключ на короткоживущий session-token (device-bound), поднимает локальный сайт и
-открывает его в браузере. Автозапуск при логине — опционально.
-
-**E. Работа в локальном UI.**
-Браузер на `localhost:PORT`, залогинен тем же ключом. Дашборд прогонов и баланс. Создаёт
-прогон: бриф + страна + модель. Жмёт «Run». (Всё как в aso-util сейчас — но данные из облака.)
-
-**F. Прогон.**
-Сервер стартует прогон: резервирует кредиты, гоняет оркестратор. Когда нужен Apple-запрос —
-шлёт задание локальной программе, та фетчит с IP юзера. Когда нужен LLM — сервер вызывает
-своим ключом (перед каждой дорогой стадией — hard-stop по балансу). Прогресс льётся в
-localhost-UI живьём (лента, наполнение кейвордов P/D/Score) — как в текущем aso-util.
-
-**G. Результаты.**
-Готовые title/subtitle/keyword-field (две корзины), таблица кейвордов, покрытие, экспорт
-.md/.json. С прогона списывается фактическая стоимость (settle), баланс уменьшается.
-
-**H. Пополнение.**
-Баланс на нуле → прогон не стартует, честная плашка «пополните». Кнопка «Top up» (в вебе И в
-трее агента) → Stripe Checkout → выбор пакета кредитов → оплата → вебхук начисляет баланс.
+**UI updates without reinstalling:** on startup the local program pulls fresh
+UI assets from your server and caches them — so the UI can be fixed server-side instantly, while the program
+stays thin (updated via auto-updater only when its own code changes).
 
 ---
 
-## 4. Что видит пользователь (экраны)
+## 3. User journey (end-to-end)
 
-- **Лендинг** — уже готов (`asoptimus-landing/`). Добавить: кнопки скачивания + email-capture
-  (сейчас waitlist → станет signup).
-- **Локальный UI** (localhost, переиспользует UI aso-util почти как есть):
-  - Дашборд прогонов (карточки, как сейчас) + виджет баланса в шапке.
-  - Форма нового прогона.
-  - Экран прогона: степпер фаз, живая лента, кейворды, сборка, LLM-журнал (всё уже есть).
-  - Экран баланса/оплаты + история списаний (ledger наружу).
-  - Отличие от aso-util: данные идут из облачного API; авторизация по ключу; баланс/оплата.
-- **Локальная программа** (фон, минимум видимого):
-  - Опциональная трей-иконка: Connected / Disconnected, баланс, «Open», «Top up», «Quit».
-  - Всё остальное — невидимо: WSS к серверу, Apple-fetch, отдача UI на localhost.
+**A. Discovery (landing page `asoptimus.com`).**
+Sees the banner/offer → "Get started free" → enters email.
+
+**B. Registration and key.**
+An **activation key** (`asop_live_…`) arrives by email — it doubles as the user identifier
+and the balance anchor. A Stripe Customer and wallet are created right away (with N free credits for
+the first run, if you decide to offer a free tier).
+
+**C. Downloading the program.**
+On the same page — download buttons per OS: `.dmg` (macOS), `.exe/.msi` (Windows),
+`.AppImage/.deb` (Linux). This is that "full-fledged .app/.exe" you had in mind.
+
+**D. First launch of the program.**
+Installs, launches. The program asks for the key (or catches it via deep-link from the email),
+exchanges the key for a short-lived session-token (device-bound), spins up the local site and
+opens it in the browser. Launch-at-login is optional.
+
+**E. Working in the local UI.**
+Browser at `localhost:PORT`, logged in with the same key. Runs dashboard and balance. Creates a
+run: brief + country + model. Hits "Run". (Everything as in aso-util today — but data from the cloud.)
+
+**F. The run.**
+The server starts the run: reserves credits, drives the orchestrator. When an Apple request is needed —
+it sends a job to the local program, which fetches from the user's IP. When an LLM is needed — the server calls it
+with its own key (before each expensive stage — a hard-stop on the balance). Progress streams into the
+localhost UI live (feed, keyword P/D/Score fill) — as in the current aso-util.
+
+**G. Results.**
+Finished title/subtitle/keyword field (two buckets), keyword table, coverage, export
+.md/.json. The run's actual cost is debited (settle), the balance decreases.
+
+**H. Top-up.**
+Balance at zero → the run won't start, an honest "top up" notice. A "Top up" button (on the web AND in
+the agent's tray) → Stripe Checkout → pick a credit package → payment → the webhook credits the balance.
 
 ---
 
-## 5. Анатомия прогона (поток данных)
+## 4. What the user sees (screens)
+
+- **Landing page** — already done (`asoptimus-landing/`). To add: download buttons + email capture
+  (currently waitlist → becomes signup).
+- **Local UI** (localhost, reuses the aso-util UI almost as-is):
+  - Runs dashboard (cards, as today) + balance widget in the header.
+  - New-run form.
+  - Run screen: phase stepper, live feed, keywords, assembly, LLM log (all already there).
+  - Balance/payment screen + debit history (the ledger, exposed).
+  - Difference from aso-util: data comes from the cloud API; key-based auth; balance/payment.
+- **Local program** (background, minimal visibility):
+  - Optional tray icon: Connected / Disconnected, balance, "Open", "Top up", "Quit".
+  - Everything else is invisible: WSS to the server, Apple fetch, serving the UI on localhost.
+
+---
+
+## 5. Anatomy of a run (data flow)
 
 ```
-веб-UI ──run──► сервер: auth? → RESERVE кредитов (иначе отказ)
-сервер (оркестратор):
-   нужен Apple-запрос → WSS → агент → fetch(user IP) → raw → сервер: P/D, урожай
-   нужен LLM          → сервер сам собирает промпт(stage) → HARD-STOP если баланс=0
-                        → вызывает LLM своим ключом → метрит токены
-   прогресс           → SSE → веб-UI (Last-Event-ID, replay при обрыве)
-финиш → SETTLE фактической стоимости → ledger → отчёт в Stripe Meter
+web UI ──run──► server: auth? → RESERVE credits (otherwise refuse)
+server (orchestrator):
+   Apple request needed → WSS → agent → fetch(user IP) → raw → server: P/D, harvest
+   LLM needed           → server assembles the prompt(stage) itself → HARD-STOP if balance=0
+                          → calls the LLM with its own key → meters tokens
+   progress             → SSE → web UI (Last-Event-ID, replay on disconnect)
+finish → SETTLE the actual cost → ledger → report to Stripe Meter
 ```
 
-Итог: и веб-UI, и агент бесполезны по отдельности — прогон невозможен без сервера
-(Apple-задания шлёт он, LLM только у него, кредиты одобряет он). Это и есть твоё «фронт
-ничего не умеет без бэка», достигнутое архитектурой, а не проверками в клиенте.
+Bottom line: both the web UI and the agent are useless on their own — a run is impossible without the server
+(it sends the Apple jobs, only it has the LLM, it approves the credits). This is your "the front
+can do nothing without the back", achieved by architecture, not by client-side checks.
 
 ---
 
-## 6. Точки касания с деньгами
+## 6. Money touchpoints
 
-| Событие | Где | Что происходит |
+| Event | Where | What happens |
 |---|---|---|
-| Регистрация | сайт | создаётся Customer + кошелёк (+ free-tier опционально) |
-| Пополнение | сайт ИЛИ трей агента | Stripe Checkout → вебхук → `grant` в ledger |
-| Старт прогона | сервер | `reserve` оценочной стоимости, отказ если баланс мал |
-| Дорогая стадия | сервер | hard-stop при нуле |
-| Финиш прогона | сервер | `settle` фактической стоимости, возврат разницы |
-| Чарджбэк/возврат | Stripe→вебхук | `chargeback`/`refund` в ledger (риск на тебе — раздел 4 ARCHITECTURE) |
+| Registration | site | Customer + wallet created (+ optional free tier) |
+| Top-up | site OR agent tray | Stripe Checkout → webhook → `grant` in the ledger |
+| Run start | server | `reserve` of the estimated cost, refusal if the balance is too low |
+| Expensive stage | server | hard-stop at zero |
+| Run finish | server | `settle` of the actual cost, refund of the difference |
+| Chargeback/refund | Stripe→webhook | `chargeback`/`refund` in the ledger (the risk is on you — section 4 of ARCHITECTURE) |
 
 ---
 
-## 7. Купить vs построить
+## 7. Buy vs build
 
-| Кусок | Решение |
+| Piece | Decision |
 |---|---|
-| Лендинг | ✅ есть |
-| Веб-UI прогона | переиспользовать из aso-util (переезд на веб + вызовы API вместо локального сервера) |
-| Оркестратор/метрики/expander/промпты | перенести на сервер из aso-util (готовые чистые функции) |
-| Agent (fetch к Apple) | взять `http.ts`+`apple/*` из aso-util, ужать до headless-бинарника |
-| Auth/лицензии | **купить** (Keygen self-host) или простой самопис ключей на старте |
-| Биллинг | Stripe Checkout + свой ledger в Postgres (Stripe не источник истины) |
-| Хостинг сервера | один контейнер Railway/Fly/VPS + Postgres |
-| Подпись агента | Apple $99 + Windows (Azure Trusted Signing/OV) + Linux $0 |
+| Landing page | ✅ done |
+| Run web UI | reuse from aso-util (move to the web + API calls instead of the local server) |
+| Orchestrator/metrics/expander/prompts | move to the server from aso-util (ready-made pure functions) |
+| Agent (Apple fetch) | take `http.ts`+`apple/*` from aso-util, trim down to a headless binary |
+| Auth/licenses | **buy** (Keygen self-host) or a simple home-grown key scheme at the start |
+| Billing | Stripe Checkout + your own ledger in Postgres (Stripe is not the source of truth) |
+| Server hosting | one Railway/Fly/VPS container + Postgres |
+| Agent signing | Apple $99 + Windows (Azure Trusted Signing/OV) + Linux $0 |
 
 ---
 
-## 8. Честные точки трения (и что делать)
+## 8. Honest friction points (and what to do)
 
-- **Установка агента — главный барьер конверсии.** Юзер привык к «просто сайт». Митигация:
-  сделать агент максимально невидимым (поставил раз, забыл, автозапуск), а в онбординге
-  честно объяснить «зачем»: агент = твой IP ходит к Apple вместо нашего сервера → данные
-  не банятся и не уходят к нам. Это же — часть продающей истории (local/privacy).
-- **Агент не запущен, а юзер жмёт Run.** Веб-UI показывает «Agent offline — launch it»,
-  сервер не стартует прогон без коннекта агента.
-- **Подпись под 3 ОС** — разовая возня, но без неё scare-screen ОС убьёт установки.
-  Автоматизировать через `tauri-action`/CI (или, если агент headless без Tauri, — свой
+- **Installing the agent is the main conversion barrier.** Users are used to "just a website". Mitigation:
+  make the agent maximally invisible (install once, forget, auto-launch), and in onboarding
+  honestly explain the "why": the agent = your IP hits Apple instead of our server → data
+  doesn't get banned and doesn't leak to us. This is also part of the sales story (local/privacy).
+- **The agent isn't running and the user hits Run.** The web UI shows "Agent offline — launch it",
+  the server won't start a run without the agent connected.
+- **Signing for 3 OSes** is a one-off chore, but without it OS scare-screens will kill installs.
+  Automate via `tauri-action`/CI (or, if the agent is headless without Tauri, — your own
   build+sign matrix).
-- **Латентность** — прогон идёт минутами (throttling Apple), это норма; UI честно стримит
-  прогресс, юзер не сидит перед крутилкой.
-- **Альтернатива агенту — браузерное расширение**: ставится легче (не .app/.exe), но ревью
-  в сторах + ограничения Manifest V3 на подмену `User-Agent`. Если install-трение критично —
-  протестировать расширение; если важнее контроль/надёжность — headless-агент.
+- **Latency** — a run takes minutes (Apple throttling), that's normal; the UI honestly streams
+  progress, the user isn't staring at a spinner.
+- **Alternative to the agent — a browser extension**: easier to install (not a .app/.exe), but store
+  reviews + Manifest V3 restrictions on spoofing `User-Agent`. If install friction is critical —
+  test the extension; if control/reliability matters more — a headless agent.
 
 ---
 
-## 9. Как это соотносится с текущим кодом (aso-util)
+## 9. How this maps onto the current code (aso-util)
 
-Ничего не выбрасывается — всё раскладывается по трём частям:
+Nothing is thrown away — everything gets sorted into the three parts:
 
-- **На сервер:** `metrics/*`, `assembly/*`, `pipeline/*`, `llm/*` (кроме клиентского ключа).
-- **В агент:** `http.ts`, `apple/hints.ts`, `apple/search.ts` — но *что* фетчить решает сервер.
-- **В веб-UI:** `server/public/*` — тянет данные через API вместо локального сервера.
-- **Выкидывается:** локальная авторизация Claude (`llm/claude.ts` клиентская часть),
-  подписочный/BYO-ключ путь — теперь LLM только через серверный proxy.
+- **To the server:** `metrics/*`, `assembly/*`, `pipeline/*`, `llm/*` (except the client key).
+- **To the agent:** `http.ts`, `apple/hints.ts`, `apple/search.ts` — but *what* to fetch is decided by the server.
+- **To the web UI:** `server/public/*` — pulls data via the API instead of the local server.
+- **Thrown out:** local Claude auth (the client side of `llm/claude.ts`),
+  the subscription/BYO-key path — the LLM now goes only through the server proxy.
 
-Текущий aso-util при этом остаётся живым как **free локальная бета** для валидации спроса,
-пока строится коммерческая версия (Фаза 0 в ARCHITECTURE.md).
+The current aso-util meanwhile stays alive as a **free local beta** to validate demand
+while the commercial version is being built (Phase 0 in ARCHITECTURE.md).

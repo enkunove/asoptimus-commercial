@@ -1,10 +1,10 @@
-// Официальный iTunes Search API (spec 02.2). Возвращает СЫРОЙ JSON нужных полей (RawSerp).
-// Difficulty (D) считает сервер над этим сырьём — клиент никаких метрик не трогает.
+// Official iTunes Search API (spec 02.2). Returns RAW JSON of the needed fields (RawSerp).
+// Difficulty (D) is computed by the server over this raw material — the client touches no metrics.
 
 import type { AppleHttp } from "./http";
 import type { RawSerp, RawSerpApp } from "@aso/shared";
 
-/** Один запрос выдачи. `country` — двухбуквенный код (см. storefront.ts), `lang` — язык. */
+/** One SERP request. `country` — two-letter code (see storefront.ts), `lang` — language. */
 export async function searchApps(
   http: AppleHttp,
   query: string,
@@ -18,8 +18,8 @@ export async function searchApps(
     `&country=${encodeURIComponent(country)}&lang=${encodeURIComponent(lang)}&limit=${limit}`;
   const body = await http.get(url);
   const data = JSON.parse(body);
-  // Сырой passthrough нужных полей: тип RawSerpApp допускает [k]: unknown, поэтому
-  // прокидываем объекты как есть, лишь гарантируя обязательные trackId/trackName.
+  // Raw passthrough of the needed fields: the RawSerpApp type allows [k]: unknown, so we
+  // pass objects through as-is, only guaranteeing the mandatory trackId/trackName.
   const results: RawSerpApp[] = (Array.isArray(data.results) ? data.results : []).map((r: any) => ({
     ...r,
     trackId: Number(r.trackId ?? 0),

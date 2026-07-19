@@ -1,6 +1,6 @@
-// @aso/server/llm-proxy — интерфейс LLM-клиента: ОДНА billable-попытка = один callOnce.
-// Schema-валидация и ретраи — в proxy.ts (чтобы метрить КАЖДУЮ попытку, D4). Клиент лишь
-// делает один вызов провайдера и возвращает сырой текст + usage.
+// @aso/server/llm-proxy — LLM client interface: ONE billable attempt = one callOnce.
+// Schema validation and retries live in proxy.ts (to meter EVERY attempt, D4). The client
+// just makes a single provider call and returns raw text + usage.
 
 export interface LlmUsage {
   inputTokens: number;
@@ -13,11 +13,11 @@ export interface CallOnceRequest {
   task: string;
   model: string;
   system: string;
-  /** Стабильный блок бизнес-контекста — второй кэш-брейкпоинт (spec 06.2). */
+  /** Stable business-context block — second cache breakpoint (spec 06.2). */
   contextBlock?: string;
   prompt: string;
   schema: object;
-  /** run_id+step_seq — idempotency key провайдера (D7): рестарт посреди вызова не двоит COGS. */
+  /** run_id+step_seq — provider idempotency key (D7): a restart mid-call does not double COGS. */
   idempotencyKey: string;
 }
 
@@ -27,7 +27,7 @@ export interface CallOnceResult {
 }
 
 export interface LlmClient {
-  /** Один вызов провайдера (одна billable-попытка). Бросает при сетевой/авторизационной ошибке. */
+  /** One provider call (one billable attempt). Throws on network/auth errors. */
   callOnce(req: CallOnceRequest): Promise<CallOnceResult>;
   readonly kind: "anthropic" | "mock";
 }
@@ -46,9 +46,9 @@ export function createLlmClient(): LlmClient {
   }
   if (IS_DEV) {
     const { MockLlmClient } = require("./mock.ts");
-    log.warn("[llm] MockLlmClient (DEV=1; детерминированные ответы, без сети)");
+    log.warn("[llm] MockLlmClient (DEV=1; deterministic responses, no network)");
     return new MockLlmClient();
   }
-  // D4: нужен API-KEY (не subscription), иначе costUsd=null = бесплатные прогоны.
-  throw new ProdConfigError("ANTHROPIC_API_KEY", "нужен API-KEY (не subscription) для costUsd (D4)");
+  // D4: an API-KEY is required (not subscription), otherwise costUsd=null = free runs.
+  throw new ProdConfigError("ANTHROPIC_API_KEY", "an API-KEY (not subscription) is required for costUsd (D4)");
 }

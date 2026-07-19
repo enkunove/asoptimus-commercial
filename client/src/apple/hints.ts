@@ -1,7 +1,7 @@
-// Автоподсказки поиска App Store (spec 02.1). Формат ответа — XML plist ЛИБО JSON
-// (Apple меняла формат). Парсер обязан поддерживать оба. Порт парсера из
-// aso-util/src/apple/hints.ts ТОЧНО. Возвращает упорядоченный RawHints (ранг = индекс+1).
-// Клиент НЕ считает метрик — только достаёт сырьё.
+// App Store search autosuggest (spec 02.1). Response format — XML plist OR JSON
+// (Apple has changed the format). The parser must support both. Parser ported from
+// aso-util/src/apple/hints.ts EXACTLY. Returns an ordered RawHints (rank = index+1).
+// The client does NOT compute metrics — it only pulls raw material.
 
 import { XMLParser } from "fast-xml-parser";
 import type { AppleHttp } from "./http";
@@ -10,7 +10,7 @@ import { storefrontHeader } from "./storefront";
 
 const UA = "AppStore/3.0 iOS/17.0 model/iPhone14,2";
 
-/** Один запрос подсказок для `term` в storefront (по id). Возвращает упорядоченные строки. */
+/** One hints request for `term` in a storefront (by id). Returns ordered strings. */
 export async function fetchHints(http: AppleHttp, term: string, storefrontId: number): Promise<RawHints> {
   const url =
     "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints" +
@@ -20,16 +20,16 @@ export async function fetchHints(http: AppleHttp, term: string, storefrontId: nu
   return parseHints(body);
 }
 
-/** Разбор ответа подсказок: JSON `{hints:[{term}]}` или XML plist. Возвращает термы по порядку. */
+/** Parse a hints response: JSON `{hints:[{term}]}` or XML plist. Returns terms in order. */
 export function parseHints(body: string): RawHints {
   const trimmed = body.trim();
   if (trimmed.startsWith("{")) {
-    // JSON-вариант: { "hints": [ { "term": "..." }, ... ] }
+    // JSON variant: { "hints": [ { "term": "..." }, ... ] }
     const data = JSON.parse(trimmed);
     const hints = Array.isArray(data.hints) ? data.hints : [];
     return hints.map((h: any) => String(h.term ?? "")).filter(Boolean);
   }
-  // plist-вариант
+  // plist variant
   const parser = new XMLParser({ ignoreAttributes: false, preserveOrder: true });
   const doc = parser.parse(trimmed);
   const terms: string[] = [];
@@ -37,8 +37,8 @@ export function parseHints(body: string): RawHints {
   return terms;
 }
 
-// В plist каждая подсказка — <dict> с парой <key>term</key><string>...</string>.
-// preserveOrder-дерево fast-xml-parser: массивы узлов вида { key: [...], string: [...] }.
+// In the plist each hint is a <dict> with a <key>term</key><string>...</string> pair.
+// fast-xml-parser preserveOrder tree: arrays of nodes shaped { key: [...], string: [...] }.
 function collectPlistTerms(node: any, out: string[]) {
   if (Array.isArray(node)) {
     for (let i = 0; i < node.length; i++) {
@@ -46,7 +46,7 @@ function collectPlistTerms(node: any, out: string[]) {
       if (n && typeof n === "object" && "key" in n) {
         const keyText = textOf(n.key);
         if (keyText === "term") {
-          // Значение — следующий узел-сосед <string>
+          // The value is the next sibling node <string>
           const next = node[i + 1];
           if (next && typeof next === "object" && "string" in next) {
             const v = textOf(next.string);

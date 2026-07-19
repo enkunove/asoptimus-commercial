@@ -1,5 +1,5 @@
-// @aso/server/db — типы строк и интерфейс хранилища (Store). Реализации: Postgres и
-// in-memory (dev-fallback). Всё I/O за этим интерфейсом — так main.ts стартует без живой БД.
+// @aso/server/db — row types and the storage interface (Store). Implementations: Postgres and
+// in-memory (dev fallback). All I/O sits behind this interface — so main.ts starts without a live DB.
 
 import type { RunConfig, BusinessContext, AssemblyResult, UsageTotals } from "@aso/shared";
 import type { JobKind, Job, JobResult, ProgressEvent } from "@aso/shared";
@@ -22,10 +22,10 @@ export type LedgerType = "grant" | "debit" | "settle" | "refund" | "chargeback";
 export interface LedgerRowDb {
   id?: number;
   user_id: string;
-  delta: number; // кредиты (фракционные; 1 кредит = $1)
+  delta: number; // credits (fractional; 1 credit = $1)
   type: LedgerType;
   run_id: string | null;
-  /** Кейворд (D4 v4): по строке debit на каждую проверенную кейфразу; UNIQUE(run_id, keyword). */
+  /** Keyword (D4 v4): one debit row per checked keyphrase; UNIQUE(run_id, keyword). */
   keyword: string | null;
   step_seq: number | null;
   stripe_event_id: string | null;
@@ -41,9 +41,9 @@ export interface LlmStepRow {
   valid: boolean;
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
   cost_usd: number | null;
-  /** Модель попытки (для D9-журнала LlmLogPublic). */
+  /** Model of the attempt (for the D9 LlmLogPublic log). */
   model?: string | null;
-  /** Латентность вызова провайдера, мс (для D9-журнала). */
+  /** Provider call latency, ms (for the D9 log). */
   duration_ms?: number | null;
   ts?: string;
 }
@@ -53,16 +53,16 @@ export interface RunRow {
   user_id: string;
   phase: string;
   config: RunConfig;
-  /** Бриф продукта — нужен для event-replay (phaseContext читает его). */
+  /** Product brief — needed for event-replay (phaseContext reads it). */
   brief: string;
-  /** Оценочный потолок прогона в кредитах (D4 v4: ≈ sampleSize × pricePerKeyphrase). НЕ резерв —
-   *  ничего не удерживает; служит потолком предохранителя COGS. */
+  /** Estimated run ceiling in credits (D4 v4: ≈ sampleSize × pricePerKeyphrase). NOT a reserve —
+   *  holds nothing; serves as the COGS circuit-breaker ceiling. */
   estimate_credits: number;
   context: BusinessContext | null;
   final: AssemblyResult | null;
   usage: UsageTotals | null;
-  /** Read-проекция состояния (для getState/listRuns + fallback). Авторитет по resume —
-   *  event-replay из llm_steps/apple_cache/run_events (см. orchestrator.replayFromLogs). */
+  /** Read projection of state (for getState/listRuns + fallback). The authority for resume is
+   *  event-replay from llm_steps/apple_cache/run_events (see orchestrator.replayFromLogs). */
   state: unknown | null;
   updated_at?: string;
 }
@@ -93,7 +93,7 @@ export interface AppleCacheRow {
   fetched_at: string;
 }
 
-/** Единый интерфейс хранилища. Атомарные примитивы кошелька — для корректного биллинга (D4). */
+/** Unified storage interface. Atomic wallet primitives — for correct billing (D4). */
 export interface Store {
   // users
   createUser(u: UserRow): Promise<void>;
@@ -108,24 +108,24 @@ export interface Store {
   bindDevice(keyHash: string, deviceFp: string): Promise<void>;
   revokeLicense(keyHash: string): Promise<void>;
 
-  // wallet (атомарные примитивы — D4 v4: usage-based, списание в реальном времени)
+  // wallet (atomic primitives — D4 v4: usage-based, real-time debit)
   getBalance(userId: string): Promise<number>;
   ensureWallet(userId: string, initialCredits: number): Promise<void>;
-  /** Атомарно (транзакция/FOR UPDATE): списать `price` за одну кейфразу. Идемпотентно по
-   *  (run_id, keyword). Возврат: charged — списали сейчас; alreadyCharged — уже была; иначе
-   *  (баланс < price) — не списано → hard-stop у вызывающего. В минус не уходит. */
+  /** Atomic (transaction/FOR UPDATE): debit `price` for one keyphrase. Idempotent by
+   *  (run_id, keyword). Returns: charged — debited now; alreadyCharged — row already existed;
+   *  otherwise (balance < price) — not debited → hard-stop at the caller. Never goes negative. */
   debitForKeyphrase(userId: string, runId: string, keyword: string, price: number): Promise<{ charged: boolean; alreadyCharged: boolean; balance: number }>;
-  /** Атомарно: начислить credits, идемпотентно по stripe_event_id (grant/top-up). */
+  /** Atomic: grant credits, idempotent by stripe_event_id (grant/top-up). */
   grantCredits(userId: string, credits: number, stripeEventId: string | null): Promise<{ granted: boolean; balance: number }>;
 
-  // ledger (иммутабельный журнал; чтение для BalanceView/аккаунта)
+  // ledger (immutable log; read for BalanceView/account)
   listLedger(userId: string, limit?: number): Promise<LedgerRowDb[]>;
 
   // llm_steps
   insertLlmStep(row: LlmStepRow): Promise<void>;
   nextStepSeq(runId: string): Promise<number>;
   getLastValidStep(runId: string, logicalStep: string): Promise<LlmStepRow | null>;
-  /** Все попытки прогона (для D9-журнала LlmLogPublic — только выходы+числа, НЕ промпты). */
+  /** All attempts of a run (for the D9 LlmLogPublic log — outputs+numbers only, NOT prompts). */
   listLlmSteps(runId: string): Promise<LlmStepRow[]>;
 
   // processed_events (Stripe idempotency)

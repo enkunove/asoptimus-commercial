@@ -1,7 +1,7 @@
-// DEV-STUB облака (ТОЛЬКО за DEV=1, вне прод-пути). Полностью МОК: держит прогоны/баланс
-// в памяти, чтобы localhost-UI поднялся и был кликабелен без облака. Здесь НЕТ проприетарной
-// логики — ни формул P/D/Score, ни промптов: все числа синтетические, только для наполнения UI.
-// Реальные данные придут по WSS из @aso/server. Прод-сборка сюда не заходит (makeCloudLink).
+// Cloud DEV-STUB (ONLY behind DEV=1, outside the prod path). Fully MOCK: holds runs/balance
+// in memory so the localhost UI comes up and is clickable without the cloud. There is NO proprietary
+// logic here — no P/D/Score formulas, no prompts: all numbers are synthetic, just to populate the UI.
+// Real data will arrive over WSS from @aso/server. The prod build never enters here (makeCloudLink).
 
 import type {
   RunSummary, RunAction, BalanceView, TopupResponse, RunState, ModelInfo, TopupPackage,
@@ -26,7 +26,7 @@ interface StubRun {
   assembly: AssemblyResult | null;
   usage: RunState["usage"];
   http: RunState["http"];
-  drained: number; // DEV: сколько кейфраз уже «списано» симулятором дренажа
+  drained: number; // DEV: how many keyphrases the drain simulator has already "debited"
 }
 
 export interface StubBackend {
@@ -45,24 +45,24 @@ export interface StubBackend {
   topup(packageId: string): Promise<TopupResponse>;
 }
 
-// Синтетический каталог пополнения для оффлайн-UI (истина — серверный query kind="packages").
+// Synthetic top-up catalog for the offline UI (source of truth — server query kind="packages").
 const DEV_PACKAGES: TopupPackage[] = [
-  { id: "small", credits: 500, priceUsd: 500, label: "Старт" },
-  { id: "medium", credits: 1500, priceUsd: 1500, label: "Про", bonusPct: 5 },
-  { id: "large", credits: 5000, priceUsd: 5000, label: "Студия", bonusPct: 12 },
+  { id: "small", credits: 500, priceUsd: 500, label: "Starter" },
+  { id: "medium", credits: 1500, priceUsd: 1500, label: "Pro", bonusPct: 5 },
+  { id: "large", credits: 5000, priceUsd: 5000, label: "Studio", bonusPct: 12 },
 ];
 
-// Синтетический реестр моделей для оффлайн-формы прогона (истина — серверный query kind="models").
+// Synthetic model registry for the offline run form (source of truth — server query kind="models").
 const DEV_MODELS: ModelInfo[] = [
-  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", pricePerKeyphrase: 0.02, note: "быстрая, дешёвая (дефолт)" },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", pricePerKeyphrase: 0.02, note: "fast, cheap (default)" },
   { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", pricePerKeyphrase: 0.06 },
-  { id: "claude-opus-4-5", name: "Claude Opus 4.5", pricePerKeyphrase: 0.18, note: "максимальное качество" },
+  { id: "claude-opus-4-5", name: "Claude Opus 4.5", pricePerKeyphrase: 0.18, note: "maximum quality" },
 ];
 
 export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
   const runs = new Map<string, StubRun>();
-  const startCredits = Number(process.env.ASO_DEV_CREDITS ?? 500); // DEV: стартовый баланс (ASO_DEV_CREDITS для теста hard-stop)
-  let credits = startCredits; // DEV mock-баланс; истина — серверный wallet (D4).
+  const startCredits = Number(process.env.ASO_DEV_CREDITS ?? 500); // DEV: starting balance (ASO_DEV_CREDITS for hard-stop testing)
+  let credits = startCredits; // DEV mock balance; source of truth — server wallet (D4).
   const ledger: BalanceView["ledger"] = [
     { ts: new Date().toISOString(), type: "grant", delta: startCredits },
   ];
@@ -89,7 +89,7 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     };
   }
 
-  // Синтетические кейворды (НЕ метрики — случайные числа для наполнения таблицы).
+  // Synthetic keywords (NOT metrics — random numbers to populate the table).
   function seedKeywords(r: StubRun) {
     const base = ["habit tracker", "sleep sounds", "focus timer", "daily planner", "meditation", "water reminder", "mood diary", "budget app", "workout log", "language learn", "recipe box", "photo editor"];
     r.keywords = base.map((kw, i) => {
@@ -100,15 +100,15 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
         addedAt: now(), probedAt: now(), degraded: false,
         metrics: {
           P, L: (i % 5) + 1, rank: (i % 4) + 1, unsuggested: false, childCount: i % 6,
-          D, serpSize: 25, topApps: [], R, reason: `mock: R=${R} для «${kw}»`, score,
+          D, serpSize: 25, topApps: [], R, reason: `mock: R=${R} for "${kw}"`, score,
         },
       } satisfies KeywordEntry;
     });
   }
 
-  // DEV-симулятор списания в реальном времени (D4 v4): по одной проверенной кейфразе за тик,
-  // атомарно уменьшает баланс и шлёт balance-событие → виджет тает живьём. На нуле — пауза
-  // «кредиты кончились» (резюмируемо через resume после top-up). НЕ прод — только для оффлайн-UI.
+  // DEV real-time debit simulator (D4 v4): one probed keyphrase per tick,
+  // atomically decrements the balance and emits a balance event → the widget melts live. At zero — pause
+  // "out of credits" (resumable via resume after top-up). NOT prod — offline UI only.
   const draining = new Set<string>();
   function priceFor(model: string): number {
     return (DEV_MODELS.find((m) => m.id === model) || DEV_MODELS[0]).pricePerKeyphrase;
@@ -120,15 +120,15 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     const targets = r.keywords.filter((k) => k.status === "rated");
     const tick = () => {
       draining.delete(r.id);
-      if (r.paused) return; // поставили на паузу извне — стоп
+      if (r.paused) return; // paused externally — stop
       if (r.drained >= targets.length) {
-        if (r.phase === "loop") { r.phase = "improving"; feed(r, "✓", "цикл собран (mock)"); emit({ type: "run-changed", slug: r.id }); }
+        if (r.phase === "loop") { r.phase = "improving"; feed(r, "✓", "loop assembled (mock)"); emit({ type: "run-changed", slug: r.id }); }
         return;
       }
       if (credits < price) {
         r.paused = true;
-        feed(r, "⛔", "кредиты кончились — пополните, продолжим с этого места");
-        emit({ type: "run-paused", slug: r.id, reason: "Кредиты кончились — пополните баланс, продолжим с этого места.", code: "credits_out" });
+        feed(r, "⛔", "out of credits — top up and we'll continue from here");
+        emit({ type: "run-paused", slug: r.id, reason: "Out of credits — top up your balance and we'll continue from here.", code: "credits_out" });
         emit({ type: "run-changed", slug: r.id });
         return;
       }
@@ -186,18 +186,18 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
         drained: 0,
       };
       runs.set(id, r);
-      feed(r, "🧠", "context: анализирую бриф (mock)");
-      // DEV: контекст мгновенно готов — в реале это LLM-вызов на сервере.
+      feed(r, "🧠", "context: analyzing the brief (mock)");
+      // DEV: context is ready instantly — in reality this is an LLM call on the server.
       r.context = {
-        productSummary: "Демо-приложение из dev-stub. Реальный контекст придёт с сервера.",
-        category: "Productivity", jobsToBeDone: ["строить привычки", "не забывать про воду"],
-        audience: "молодые профессионалы", featureVocabulary: ["streak", "reminder", "goal"],
-        competitors: ["Streaks", "Habitica"], antiSemantics: "не игра, не соцсеть",
+        productSummary: "Demo app from the dev-stub. The real context will come from the server.",
+        category: "Productivity", jobsToBeDone: ["build habits", "remember to drink water"],
+        audience: "young professionals", featureVocabulary: ["streak", "reminder", "goal"],
+        competitors: ["Streaks", "Habitica"], antiSemantics: "not a game, not a social network",
         targetLanguage: c.semanticLanguage ?? "en",
       };
-      addLlm(r, "context", "Извлечение бизнес-контекста из брифа", r.context);
+      addLlm(r, "context", "Extracting business context from the brief", r.context);
       r.phase = "context_review";
-      feed(r, "✓", "context готов — жду подтверждения");
+      feed(r, "✓", "context ready — awaiting confirmation");
       emit({ type: "run-changed", slug: id });
       return { run_id: id };
     },
@@ -246,30 +246,30 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     async controlRun(runId, action) {
       const r = must(runId);
       switch (action.type) {
-        case "pause": r.paused = true; feed(r, "⏸", "пауза"); break;
-        case "resume": r.paused = false; feed(r, "▶", "возобновлено"); if (r.phase === "loop") startDrain(r); break;
+        case "pause": r.paused = true; feed(r, "⏸", "paused"); break;
+        case "resume": r.paused = false; feed(r, "▶", "resumed"); if (r.phase === "loop") startDrain(r); break;
         case "confirmContext":
-          r.phase = "loop"; feed(r, "🌱", "контекст подтверждён → цикл (mock)");
+          r.phase = "loop"; feed(r, "🌱", "context confirmed → loop (mock)");
           seedKeywords(r);
-          addLlm(r, "seeds", "Генерация seed-кейвордов", r.keywords.slice(0, 5).map((k) => k.keyword));
-          addLlm(r, "rate", "Оценка релевантности R", r.keywords.map((k) => ({ keyword: k.keyword, R: k.metrics.R })));
-          startDrain(r); // DEV: показать живой дренаж баланса (D4 v4) — списание по кейфразе
+          addLlm(r, "seeds", "Generating seed keywords", r.keywords.slice(0, 5).map((k) => k.keyword));
+          addLlm(r, "rate", "Rating relevance R", r.keywords.map((k) => ({ keyword: k.keyword, R: k.metrics.R })));
+          startDrain(r); // DEV: show the live balance drain (D4 v4) — per-keyphrase debit
           break;
         case "editContext":
           if (r.context) Object.assign(r.context, action.patch);
-          feed(r, "✎", "контекст отредактирован");
+          feed(r, "✎", "context edited");
           break;
         case "exclude": {
           const k = r.keywords.find((x) => x.keyword === action.keyword);
           if (k) { k.status = "excluded"; k.metrics.score = 0; }
-          feed(r, "⛔", `исключён «${action.keyword}»`);
+          feed(r, "⛔", `excluded "${action.keyword}"`);
           break;
         }
         case "stopAndAssemble":
         case "reassemble":
-          r.phase = "assembling"; feed(r, "🧩", "сборка (mock)");
-          addLlm(r, "phrase", "Формулировка title/subtitle", { title: "Somna: Habit Tracker" });
-          r.assembly = fakeAssembly(); r.phase = "done"; feed(r, "🏁", "готово");
+          r.phase = "assembling"; feed(r, "🧩", "assembly (mock)");
+          addLlm(r, "phrase", "Phrasing title/subtitle", { title: "Somna: Habit Tracker" });
+          r.assembly = fakeAssembly(); r.phase = "done"; feed(r, "🏁", "done");
           break;
       }
       r.updatedAt = now();
@@ -285,7 +285,7 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     async getPackages() { return DEV_PACKAGES.map((p) => ({ ...p })); },
 
     async topup(packageId) {
-      // DEV: реальный Stripe Checkout URL приходит с сервера по HTTPS; тут — фейковый.
+      // DEV: the real Stripe Checkout URL comes from the server over HTTPS; this one is fake.
       const pkg = DEV_PACKAGES.find((p) => p.id === packageId);
       const grant = pkg ? Math.round(pkg.credits * (1 + (pkg.bonusPct ?? 0) / 100)) : 500;
       credits += grant;
@@ -297,7 +297,7 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
 
   function must(runId: string): StubRun {
     const r = runs.get(runId);
-    if (!r) throw new Error(`прогон не найден: ${runId}`);
+    if (!r) throw new Error(`run not found: ${runId}`);
     return r;
   }
   function pick(k: KeywordEntry, sort: string): number | string {

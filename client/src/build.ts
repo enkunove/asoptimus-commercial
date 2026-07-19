@@ -1,12 +1,12 @@
-// Сборка самодостаточных бинарей (D6): `bun run build` → dist/.
-// web-ui вшивается через `import … with { type: "text" }` (localserver.ts).
+// Build of self-contained binaries (D6): `bun run build` → dist/.
+// web-ui is embedded via `import … with { type: "text" }` (localserver.ts).
 //
-// Режимы:
-//   bun run src/build.ts                 → dist/ все 4 таргета (прямая раздача бинаря)
-//   bun run src/build.ts macos-arm64     → dist/ только один таргет (подстрока имени)
-//   bun run src/build.ts --sidecar [dir] → macOS-бинари с ИМЕНЕМ ПОД TAURI-SIDECAR
-//        (`<name>-<rust-triple>`), по умолчанию в desktop/src-tauri/binaries/.
-//        Это то, что грузит десктоп-обёртка как bundle.externalBin.
+// Modes:
+//   bun run src/build.ts                 → dist/ all 4 targets (direct binary distribution)
+//   bun run src/build.ts macos-arm64     → dist/ single target only (name substring)
+//   bun run src/build.ts --sidecar [dir] → macOS binaries NAMED FOR TAURI-SIDECAR
+//        (`<name>-<rust-triple>`), by default into desktop/src-tauri/binaries/.
+//        This is what the desktop wrapper loads as bundle.externalBin.
 
 import { mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), ".."); // client/
 
-// Bun-таргет → (dist-имя, rust-triple для Tauri sidecar).
+// Bun target → (dist name, rust-triple for the Tauri sidecar).
 const TARGETS = [
   { bun: "bun-darwin-arm64", dist: "asoptimus-macos-arm64", triple: "aarch64-apple-darwin" },
   { bun: "bun-darwin-x64", dist: "asoptimus-macos-x64", triple: "x86_64-apple-darwin" },
@@ -22,7 +22,7 @@ const TARGETS = [
   { bun: "bun-windows-x64", dist: "asoptimus-windows-x64.exe", triple: "x86_64-pc-windows-msvc" },
 ] as const;
 
-/** Базовое имя sidecar'а — должно совпадать с bundle.externalBin в tauri.conf.json. */
+/** Sidecar base name — must match bundle.externalBin in tauri.conf.json. */
 const SIDECAR_BASENAME = "asoptimus-sidecar";
 
 function compile(outfile: string, bunTarget: string) {
@@ -32,7 +32,7 @@ function compile(outfile: string, bunTarget: string) {
     { stdout: "inherit", stderr: "inherit", cwd: root },
   );
   if (proc.exitCode !== 0) {
-    console.error(`Сборка ${outfile} не удалась`);
+    console.error(`Build of ${outfile} failed`);
     process.exit(1);
   }
 }
@@ -40,20 +40,20 @@ function compile(outfile: string, bunTarget: string) {
 const argv = process.argv.slice(2);
 
 if (argv[0] === "--sidecar") {
-  // Только macOS-таргеты, имена под Tauri-sidecar (target-triple-suffixed).
+  // macOS targets only, names for Tauri sidecar (target-triple-suffixed).
   const outDir = argv[1] ?? join(root, "desktop", "src-tauri", "binaries");
   mkdirSync(outDir, { recursive: true });
   for (const t of TARGETS) {
-    if (!t.bun.startsWith("bun-darwin-")) continue; // приложение — только macOS (BUILD-PLAN §9)
+    if (!t.bun.startsWith("bun-darwin-")) continue; // the app is macOS-only (BUILD-PLAN §9)
     compile(join(outDir, `${SIDECAR_BASENAME}-${t.triple}`), t.bun);
   }
-  console.log(`Готово: sidecar-бинари в ${outDir}`);
+  console.log(`Done: sidecar binaries in ${outDir}`);
 } else {
-  const only = argv[0]; // `bun run src/build.ts macos-arm64` — один таргет
+  const only = argv[0]; // `bun run src/build.ts macos-arm64` — single target
   mkdirSync(join(root, "dist"), { recursive: true });
   for (const t of TARGETS) {
     if (only && !t.dist.includes(only)) continue;
     compile(join(root, "dist", t.dist), t.bun);
   }
-  console.log("Готово: dist/");
+  console.log("Done: dist/");
 }

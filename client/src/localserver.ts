@@ -1,14 +1,14 @@
-// localserver — отдаёт web-ui и РЕЛЕ-API/SSE между браузером и облаком (D1).
-// Браузер говорит ТОЛЬКО с 127.0.0.1; наружу ходит cloud-link. Guard D8:
-//   (1) строгий Host-allowlist (защита от DNS-rebinding);
-//   (2) Origin-проверка на state-changing маршрутах (blind-CSRF);
-//   (3) per-launch токен в HTML, требуется на всех /api (наивный CSRF).
-// Никакой доменной логики — только транспорт и статика.
+// localserver — serves the web-ui and the RELAY API/SSE between browser and cloud (D1).
+// The browser talks ONLY to 127.0.0.1; cloud-link goes outside. Guard D8:
+//   (1) strict Host allowlist (protection against DNS rebinding);
+//   (2) Origin check on state-changing routes (blind CSRF);
+//   (3) per-launch token in the HTML, required on all /api (naive CSRF).
+// No domain logic — only transport and statics.
 
 import type { CloudLink, RelayEvent } from "./cloud-link";
 import { STOREFRONTS, HTTP_DEFAULTS, FIELD_LIMITS, DEFAULT_STOPWORDS } from "@aso/shared";
 
-// Статика UI, вшитая в бинарь (Bun `with { type: "text" }`).
+// UI statics embedded into the binary (Bun `with { type: "text" }`).
 import indexHtmlRaw from "./web-ui/index.html" with { type: "text" };
 const indexHtmlTemplate = indexHtmlRaw as unknown as string;
 // @ts-expect-error — Bun text import
@@ -19,10 +19,10 @@ import stylesCss from "./web-ui/styles.css" with { type: "text" };
 export interface LocalServerDeps {
   port: number;
   token: string;
-  /** Текущий cloud-link (null до активации). */
+  /** Current cloud-link (null before activation). */
   getCloud(): CloudLink | null;
   isActivated(): boolean;
-  /** Активация ключом: обмен на session-token + запуск cloud-link. */
+  /** Key activation: exchange for a session-token + start cloud-link. */
   activate(key: string): Promise<void>;
   logout(): Promise<void>;
 }
@@ -33,7 +33,7 @@ export function startLocalServer(deps: LocalServerDeps) {
   const hostsFor = (port: number) => new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const originsFor = (port: number) => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
 
-  // ── SSE-клиенты (релей событий cloud-link) ─────────────────────────────────
+  // ── SSE clients (relay of cloud-link events) ─────────────────────────────
   const sseClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
   const pushSse = (obj: unknown) => {
     const payload = encoder.encode(`data: ${JSON.stringify(obj)}\n\n`);
@@ -41,7 +41,7 @@ export function startLocalServer(deps: LocalServerDeps) {
       try { c.enqueue(payload); } catch { sseClients.delete(c); }
     }
   };
-  // Подписка на события cloud-link (пере-подписываемся при смене cloud после активации).
+  // Subscription to cloud-link events (re-subscribe when cloud changes after activation).
   let unsub: (() => void) | null = null;
   const wireCloud = () => {
     unsub?.();
@@ -51,22 +51,22 @@ export function startLocalServer(deps: LocalServerDeps) {
   wireCloud();
 
   const server = Bun.serve({
-    hostname: "127.0.0.1", // только локально (D1)
+    hostname: "127.0.0.1", // local only (D1)
     port: deps.port,
     idleTimeout: 0,
     fetch: async (req, srv) => {
       const url = new URL(req.url);
       const path = url.pathname;
-      const boundPort = srv.port ?? deps.port; // реальный порт (важно при port=0)
+      const boundPort = srv.port ?? deps.port; // actual port (matters when port=0)
 
-      // ── Guard D8.1: Host-allowlist на ВСЕ запросы ──────────────────────────
+      // ── Guard D8.1: Host allowlist on ALL requests ──────────────────────────
       const host = req.headers.get("host") ?? "";
       if (!hostsFor(boundPort).has(host)) {
         return new Response("forbidden host", { status: 403 });
       }
 
       try {
-        // ── Статика UI (без токена: страница его же и бутстрапит) ─────────────
+        // ── UI statics (no token: the page is what bootstraps it) ─────────────
         if (req.method === "GET" && (path === "/" || path === "/index.html")) {
           const html = indexHtmlTemplate.replace(/__ASO_TOKEN__/g, deps.token);
           return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
@@ -78,12 +78,12 @@ export function startLocalServer(deps: LocalServerDeps) {
           return new Response(stylesCss, { headers: { "Content-Type": "text/css; charset=utf-8" } });
         }
 
-        // Всё под /api — только с валидным per-launch токеном (D8.3).
+        // Everything under /api — only with a valid per-launch token (D8.3).
         if (path.startsWith("/api/")) {
           const token = req.headers.get("x-aso-token") ?? url.searchParams.get("token");
           if (token !== deps.token) return json({ error: "bad token" }, 401);
 
-          // Guard D8.2: Origin на state-changing маршрутах.
+          // Guard D8.2: Origin on state-changing routes.
           if (req.method !== "GET") {
             const origin = req.headers.get("origin");
             if (origin && !originsFor(boundPort).has(origin)) return json({ error: "bad origin" }, 403);
@@ -98,7 +98,7 @@ export function startLocalServer(deps: LocalServerDeps) {
     },
   });
 
-  // Keep-alive SSE, чтобы прокси/браузер не рвали соединение.
+  // Keep-alive SSE so proxies/browsers don't drop the connection.
   const ping = setInterval(() => {
     const p = encoder.encode(`: ping\n\n`);
     for (const c of [...sseClients]) {
@@ -120,7 +120,7 @@ async function handleApi(
   sseClients: Set<ReadableStreamDefaultController<Uint8Array>>,
   wireCloud: () => void,
 ): Promise<Response> {
-  // ── SSE-релей ────────────────────────────────────────────────────────────
+  // ── SSE relay ────────────────────────────────────────────────────────────
   if (path === "/api/events" && req.method === "GET") {
     let ctrl: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({
@@ -132,7 +132,7 @@ async function handleApi(
     });
   }
 
-  // ── Сессия / активация (login-by-key) ──────────────────────────────────────
+  // ── Session / activation (login-by-key) ──────────────────────────────────
   if (path === "/api/session" && req.method === "GET") {
     const cloud = deps.getCloud();
     return json({
@@ -143,7 +143,7 @@ async function handleApi(
   if (path === "/api/activate" && req.method === "POST") {
     const body = await req.json().catch(() => ({}));
     await deps.activate(String((body as any).key ?? ""));
-    wireCloud(); // после активации появился cloud-link — пере-подписать SSE
+    wireCloud(); // after activation a cloud-link appeared — re-subscribe SSE
     return json({ ok: true });
   }
   if (path === "/api/logout" && req.method === "POST") {
@@ -152,24 +152,24 @@ async function handleApi(
     return json({ ok: true });
   }
 
-  // ── Публичные константы для формы прогона (storefronts + безопасные дефолты) ─
+  // ── Public constants for the run form (storefronts + safe defaults) ─
   if (path === "/api/storefronts" && req.method === "GET") {
     return json({ storefronts: STOREFRONTS, defaults: publicDefaults() });
   }
 
-  // Ниже нужен активный cloud-link.
+  // Everything below requires an active cloud-link.
   const cloud = deps.getCloud();
-  if (!cloud) return json({ error: "не активировано" }, 401);
+  if (!cloud) return json({ error: "not activated" }, 401);
 
   if (path === "/api/balance" && req.method === "GET") {
     return json(await cloud.getBalance());
   }
   if (path === "/api/models" && req.method === "GET") {
-    // Реестр моделей + pricePerKeyphrase (D4 v3) — из облака (query kind="models"), НЕ хардкод.
+    // Model registry + pricePerKeyphrase (D4 v3) — from the cloud (query kind="models"), NOT hardcoded.
     return json({ models: await cloud.getModels() });
   }
   if (path === "/api/packages" && req.method === "GET") {
-    // Каталог пополнения — из облака (query kind="packages"), НЕ хардкод.
+    // Top-up catalog — from the cloud (query kind="packages"), NOT hardcoded.
     return json({ packages: await cloud.getPackages() });
   }
   if (path === "/api/topup" && req.method === "POST") {
@@ -181,7 +181,7 @@ async function handleApi(
     return json({ runs: await cloud.listRuns() });
   }
   if (path === "/api/runs" && req.method === "POST") {
-    // UI шлёт JSON { brief, config } (файл читается в браузере) — без multipart.
+    // The UI sends JSON { brief, config } (the file is read in the browser) — no multipart.
     const body = await req.json().catch(() => ({}));
     const brief = String((body as any).brief ?? "");
     const config = (body as any).config ?? {};
@@ -216,10 +216,10 @@ async function handleApi(
     }
   }
 
-  return json({ error: "не найдено" }, 404);
+  return json({ error: "not found" }, 404);
 }
 
-// Собрать RunAction из тела /control (совместимо с UI: { action, ...payload }).
+// Build a RunAction from the /control body (UI-compatible: { action, ...payload }).
 function toAction(body: any): any {
   const type = body?.action;
   switch (type) {
@@ -232,8 +232,8 @@ function toAction(body: any): any {
   }
 }
 
-// Безопасные дефолты конфига: ТОЛЬКО публичные константы @aso/shared.
-// Веса формул (P/D/Score) и placement-веса — moat, их тут НЕТ; сервер применит свои.
+// Safe config defaults: ONLY public @aso/shared constants.
+// Formula weights (P/D/Score) and placement weights are the moat — they are NOT here; the server applies its own.
 function publicDefaults() {
   return {
     country: "us",

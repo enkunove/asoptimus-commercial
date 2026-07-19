@@ -1,8 +1,8 @@
-# 02 — Источники данных Apple
+# 02 — Apple data sources
 
-Два эндпоинта. Оба без авторизации. Оба ходят через единый HTTP-слой с троттлингом и кэшем (ниже).
+Two endpoints. Both require no authorization. Both go through a single HTTP layer with throttling and caching (below).
 
-## 2.1 Автоподсказки поиска (недокументированный)
+## 2.1 Search autocomplete suggestions (undocumented)
 
 ```
 GET https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints?clientApplication=Software&term={prefix}
@@ -11,39 +11,39 @@ Headers:
   User-Agent: AppStore/3.0 iOS/17.0 model/iPhone14,2
 ```
 
-- `{prefix}` — URL-encoded строка запроса (то, что «набирает пользователь»).
-- Ответ — XML plist ЛИБО JSON (Apple меняла формат). Парсер обязан поддерживать оба:
-  - plist: массив словарей с ключом `term` (строка подсказки); порядок массива = ранг;
+- `{prefix}` — URL-encoded query string (what the "user is typing").
+- The response is an XML plist OR JSON (Apple has changed the format before). The parser must support both:
+  - plist: an array of dictionaries with a `term` key (the suggestion string); array order = rank;
   - JSON: `{ "hints": [ { "term": "..." }, ... ] }`.
-- Из ответа берём упорядоченный список строк `hints[]` (обычно ≤10). Ранг подсказки = индекс + 1.
-- Если в ответе есть числовой `priority` — сохранять в сыром виде в кэш (пригодится), но в формулах v1 НЕ использовать (недокументирован, шкала неизвестна).
+- From the response we take the ordered list of strings `hints[]` (usually ≤10). Suggestion rank = index + 1.
+- If the response contains a numeric `priority` — store it raw in the cache (may come in handy), but do NOT use it in v1 formulas (undocumented, unknown scale).
 
-**Обязательный smoke-тест при сборке** (единственное место спеки, где разрешено исследовательское поведение): дёрнуть эндпоинт с `term=photo` и storefront US; если формат ответа отличается от обоих описанных — адаптировать парсер под фактический ответ и зафиксировать пример ответа в `test/fixtures/hints-response.example`.
+**Mandatory smoke test during the build** (the only place in the spec where exploratory behavior is allowed): hit the endpoint with `term=photo` and the US storefront; if the response format differs from both described — adapt the parser to the actual response and record a sample response in `test/fixtures/hints-response.example`.
 
-**Fallback:** если эндпоинт стабильно отдаёт не-200 (Apple поменяла/закрыла), пайплайн не падает: Popularity помечается как `unavailable`, в состоянии прогона выставляется `hintsEndpointDown: true` (UI показывает жёлтую плашку с объяснением). Score в этом режиме считается с P=50 для всех (нейтрализация фактора) и флагом `degraded` в каждом кейворде.
+**Fallback:** if the endpoint consistently returns non-200 (Apple changed/closed it), the pipeline does not crash: Popularity is marked `unavailable`, the run state gets `hintsEndpointDown: true` (the UI shows a yellow banner with an explanation). In this mode Score is computed with P=50 for everyone (neutralizing the factor) and a `degraded` flag on every keyword.
 
-## 2.2 Поисковая выдача (официальный iTunes Search API)
+## 2.2 Search results (official iTunes Search API)
 
 ```
 GET https://itunes.apple.com/search?media=software&entity=software&term={query}&country={cc}&lang={lang}&limit=25
 ```
 
-Ответ — JSON `{ resultCount, results: [...] }`. Используемые поля каждого результата:
+The response is JSON `{ resultCount, results: [...] }`. Fields used from each result:
 
-| Поле | Зачем |
+| Field | Why |
 |---|---|
-| `trackId`, `trackName` | идентификация; поиск вхождения кейворда в название |
-| `averageUserRating`, `userRatingCount` | сила конкурента |
-| `currentVersionReleaseDate` | свежесть конкурента |
-| `primaryGenreName`, `genres` | контекст ниши (для UI и отчёта) |
-| `artworkUrl100` | иконка в UI |
-| `sellerName` | отображение в UI |
+| `trackId`, `trackName` | identification; finding keyword occurrences in the name |
+| `averageUserRating`, `userRatingCount` | competitor strength |
+| `currentVersionReleaseDate` | competitor freshness |
+| `primaryGenreName`, `genres` | niche context (for UI and report) |
+| `artworkUrl100` | icon in the UI |
+| `sellerName` | display in the UI |
 
-Документированный лимит: ~20 запросов/мин с IP. Наш бюджет ниже (см. 2.4).
+Documented limit: ~20 requests/min per IP. Our budget is lower (see 2.4).
 
-## 2.3 Таблица storefront-кодов
+## 2.3 Storefront code table
 
-Хранится в исходниках как `src/storefronts.json`. Заголовок: `X-Apple-Store-Front: <id>-1,29`.
+Stored in the sources as `src/storefronts.json`. Header: `X-Apple-Store-Front: <id>-1,29`.
 
 | country | id | | country | id |
 |---|---|---|---|---|
@@ -58,17 +58,17 @@ GET https://itunes.apple.com/search?media=software&entity=software&term={query}&
 | nl | 143452 | | ua | 143492 |
 | se | 143456 | | pl | 143478 |
 
-При сборке проверить коды хотя бы для us/gb/de/ru smoke-тестом (подсказки на локальном языке страны = код верен). Неизвестная страна в конфиге → код выхода 2 со списком поддерживаемых.
+During the build, verify the codes at least for us/gb/de/ru with a smoke test (suggestions in the country's local language = the code is correct). An unknown country in the config → exit code 2 with the list of supported countries.
 
-## 2.4 HTTP-слой: троттлинг, кэш, ретраи (единый для обоих эндпоинтов)
+## 2.4 HTTP layer: throttling, cache, retries (single layer for both endpoints)
 
-Это сердце «вежливости». Реализуется ОДИН раз, все запросы идут только через него.
+This is the heart of "politeness". Implemented ONCE; all requests go only through it.
 
-- **Token bucket:** ёмкость = `http.requestsPerMinute` (дефолт 18), пополнение 1 токен каждые `60/rpm` секунд. Нет токена — запрос ждёт в FIFO-очереди. Дополнительно джиттер 300–900 мс между фактическими отправками.
-- **Кэш:** файловый, общий для всех прогонов: `<dataDir>/cache/<sha1(method+url+storefront)>.json`, содержимое `{ fetchedAt, url, status, body }`. TTL = `http.cacheTtlDays`. Попадание в кэш НЕ тратит токены. Опция прогона «свежие данные» игнорирует TTL при чтении (но результат всё равно пишется в кэш).
-- **Ретраи:** на 429/403/5xx/timeout — экспоненциальный backoff 5s → 20s → 60s (макс `http.retries`). После исчерпания — кейворд помечается `status: "error"` с текстом причины, пайплайн продолжается (одна ошибка не валит прогон).
-- **Счётчики:** HTTP-слой ведёт `requestsMade`, `cacheHits`, `throttleWaitMs` в state — UI показывает их живьём.
+- **Token bucket:** capacity = `http.requestsPerMinute` (default 18), refill of 1 token every `60/rpm` seconds. No token — the request waits in a FIFO queue. Additionally, 300–900 ms of jitter between actual sends.
+- **Cache:** file-based, shared across all runs: `<dataDir>/cache/<sha1(method+url+storefront)>.json`, contents `{ fetchedAt, url, status, body }`. TTL = `http.cacheTtlDays`. A cache hit does NOT spend tokens. The run option "fresh data" ignores TTL on read (but the result is still written to the cache).
+- **Retries:** on 429/403/5xx/timeout — exponential backoff 5s → 20s → 60s (max `http.retries`). Once exhausted — the keyword is marked `status: "error"` with the reason text, and the pipeline continues (one error does not kill the run).
+- **Counters:** the HTTP layer tracks `requestsMade`, `cacheHits`, `throttleWaitMs` in state — the UI shows them live.
 
-## 2.5 Apple Search Ads (v1.1, только интерфейс)
+## 2.5 Apple Search Ads (v1.1, interface only)
 
-В `src/apple/` предусмотреть интерфейс `PopularityProvider { getPopularity(keyword): number | null }` с единственной v1-реализацией `SuggestPopularityProvider` (формула из `03-metrics.md`). В v1.1 добавится `AsaPopularityProvider` (официальный popularity 5-балльной шкалы через аккаунт Apple Search Ads). Код сборки Score не должен знать, откуда пришла популярность.
+In `src/apple/`, provide the interface `PopularityProvider { getPopularity(keyword): number | null }` with the single v1 implementation `SuggestPopularityProvider` (formula from `03-metrics.md`). v1.1 will add `AsaPopularityProvider` (official popularity on a 5-point scale via an Apple Search Ads account). The Score assembly code must not know where the popularity came from.

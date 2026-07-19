@@ -1,91 +1,91 @@
-# 07 — Веб-интерфейс
+# 07 — Web interface
 
-UI — это весь продукт: другого способа взаимодействия нет. Требования к характеру: понятный и приятный; полная прозрачность — каждое число раскрывается до сырых данных, каждое решение LLM — до полного промпта и ответа.
+The UI is the entire product: there is no other way to interact with it. Character requirements: clear and pleasant; full transparency — every number drills down to raw data, every LLM decision — down to the full prompt and response.
 
-## 7.1 Запуск и технология
+## 7.1 Startup and technology
 
-- Бинарь поднимает HTTP-сервер **только на 127.0.0.1**, порт 4310 (флаги: `--port`, `--no-open`, `--data-dir`) и открывает системный браузер.
-- Фронт: **без сборки и внешних зависимостей** — `index.html` + `app.js` + `styles.css` (vanilla JS, отдаются из бинаря). Никаких CDN, чарт-библиотек и фреймворков; вся визуализация — таблицы, div-прогрессбары, минимальный inline-SVG.
-- SPA-роутинг по hash (`#/setup`, `#/runs`, `#/run/<slug>`, `#/run/<slug>/llm`); прямые ссылки работают.
-- Живость: SSE `GET /api/events` (сервер пушит при изменении state любого прогона; клиент перезапрашивает данные). Fallback — поллинг раз в 3 с.
-- Тёмная/светлая тема по `prefers-color-scheme`; системный шрифт; аккуратные отступы. На 500+ строк таблицы не тормозят (пагинация по 100 или виртуализация).
+- The binary starts an HTTP server **on 127.0.0.1 only**, port 4310 (flags: `--port`, `--no-open`, `--data-dir`) and opens the system browser.
+- Frontend: **no build step and no external dependencies** — `index.html` + `app.js` + `styles.css` (vanilla JS, served from the binary). No CDNs, chart libraries, or frameworks; all visualization is tables, div progress bars, and minimal inline SVG.
+- SPA routing by hash (`#/setup`, `#/runs`, `#/run/<slug>`, `#/run/<slug>/llm`); deep links work.
+- Liveness: SSE `GET /api/events` (the server pushes on any run's state change; the client re-fetches data). Fallback — polling every 3 s.
+- Dark/light theme via `prefers-color-scheme`; system font; tidy spacing. Tables don't lag at 500+ rows (pagination by 100 or virtualization).
 
 ## 7.2 HTTP API
 
-| Endpoint | Описание |
+| Endpoint | Description |
 |---|---|
-| `GET /api/providers` | реестр адаптеров + статус авторизации каждого (`verifyAuth`) |
-| `POST /api/providers/:id/auth` | `{ method, payload }` → setAuth; ответ ok/ошибка текстом |
-| `GET /api/runs` | список прогонов (slug, brand, country, phase, progress, updatedAt, usage) |
-| `POST /api/runs` | создать прогон: multipart (brief-файл или текст) + config |
-| `GET /api/runs/:slug` | полное состояние: фаза, счётчики, context, финальные поля, validate, usage |
-| `GET /api/runs/:slug/keywords?sort=&dir=&status=&q=&page=` | кейворды с метриками |
-| `GET /api/runs/:slug/keywords/:kw` | детали: topApps выдачи, L/rank/childCount, reason, история статусов |
+| `GET /api/providers` | adapter registry + each one's auth status (`verifyAuth`) |
+| `POST /api/providers/:id/auth` | `{ method, payload }` → setAuth; response ok/error as text |
+| `GET /api/runs` | run list (slug, brand, country, phase, progress, updatedAt, usage) |
+| `POST /api/runs` | create a run: multipart (brief file or text) + config |
+| `GET /api/runs/:slug` | full state: phase, counters, context, final fields, validate, usage |
+| `GET /api/runs/:slug/keywords?sort=&dir=&status=&q=&page=` | keywords with metrics |
+| `GET /api/runs/:slug/keywords/:kw` | details: topApps of the SERP, L/rank/childCount, reason, status history |
 | `POST /api/runs/:slug/control` | `{ action: start\|pause\|resume\|stopAndAssemble\|reassemble\|exclude(kw)\|confirmContext\|editContext(patch) }` |
-| `GET /api/runs/:slug/llm-log?page=` | журнал LLM-вызовов (полные промпты/ответы) |
-| `GET /api/runs/:slug/export.md` / `export.json` | экспорт отчёта / состояния |
-| `DELETE /api/runs/:slug` | удалить прогон |
+| `GET /api/runs/:slug/llm-log?page=` | LLM call log (full prompts/responses) |
+| `GET /api/runs/:slug/export.md` / `export.json` | report / state export |
+| `DELETE /api/runs/:slug` | delete a run |
 | `GET /api/events` | SSE: `{ type: "run-changed", slug }` |
 
-## 7.3 Экран 1: выбор провайдера и авторизация (`#/setup`)
+## 7.3 Screen 1: provider selection and authorization (`#/setup`)
 
-Показывается при первом запуске и всегда доступен из меню («Провайдер»). Если ни один провайдер не авторизован — все остальные маршруты редиректят сюда.
+Shown on first launch and always reachable from the menu ("Provider"). If no provider is authorized — all other routes redirect here.
 
 ```
 ┌──────────────────────────────────────────────┐
-│  ASO-Util · Выберите LLM-провайдера          │
+│  ASO-Util · Choose an LLM provider           │
 │                                              │
 │  ┌─ Claude (Anthropic) ────────┐  ┌─ ░░░░ ─┐ │
-│  │  ● не подключён             │  │ Другие │ │
-│  │  [Подключить]               │  │ скоро  │ │
+│  │  ● not connected            │  │ Others │ │
+│  │  [Connect]                  │  │ soon   │ │
 │  └─────────────────────────────┘  └────────┘ │
 └──────────────────────────────────────────────┘
 ```
 
-- Карточки рендерятся из реестра адаптеров (`06.1`); неактивная карточка-заглушка «Другие провайдеры — скоро» существует с v1 (дизайн честно показывает, что архитектура расширяема).
-- Клик «Подключить» раскрывает карточку: **две вкладки по authMethods** — «Подписка» (инструкция с копируемыми командами `ant auth login` / `claude setup-token` + поле для ручного токена + честная плашка из `06.2`) и «API-ключ» (поле ввода + ссылка на console.anthropic.com).
-- Кнопка «Проверить и сохранить» → `POST auth` → зелёная галка с `detail` от `verifyAuth` (что именно подключено) или красный текст ошибки.
-- После успеха — выбор дефолтной модели (радио-список из `listModels` с ценами) и переход на `#/runs`.
+- The cards render from the adapter registry (`06.1`); an inactive placeholder card "More providers — coming soon" exists from v1 (the design honestly shows the architecture is extensible).
+- Clicking "Connect" expands the card: **two tabs per authMethods** — "Subscription" (instructions with copyable `ant auth login` / `claude setup-token` commands + a field for a manual token + the honest banner from `06.2`) and "API key" (an input field + a link to console.anthropic.com).
+- The "Verify and save" button → `POST auth` → a green check with the `detail` from `verifyAuth` (what exactly got connected) or red error text.
+- On success — default model selection (a radio list from `listModels` with prices) and a transition to `#/runs`.
 
-## 7.4 Экран 2: список прогонов (`#/runs`)
+## 7.4 Screen 2: run list (`#/runs`)
 
-- Карточки прогонов: бренд + страна, фаза (бейдж), прогресс-бар выборки `117/150`, дата, usage-строка, топ-3 кейворда по Score. Клик → экран прогона. Меню карточки: удалить, клонировать (для другой страны, `01.5`).
-- Кнопка «Новый прогон» → форма: drag&drop зона для `.md/.txt` (или textarea «вставить текст»), поля brand / country / **язык семантики** (автоподставляется по стране, редактируем — `01.3`) / sampleSize (слайдер) / model (селект с ценами), аккордеон «Расширенные настройки» (`01.3`). Сабмит → создаётся прогон, редирект на его экран, фаза `context` стартует сразу.
-- Пустое состояние (нет прогонов): дружелюбный онбординг «Загрузи описание своего приложения — получишь лучшие ключевые слова, title и subtitle» + ссылка на пример брифа (отдаём `fixtures/sample-brief.md`).
+- Run cards: brand + country, phase (badge), sample progress bar `117/150`, date, usage line, top-3 keywords by Score. Click → the run screen. Card menu: delete, clone (for another country, `01.5`).
+- The "New run" button → a form: drag & drop zone for `.md/.txt` (or a "paste text" textarea), fields brand / country / **semantic language** (auto-filled from the country, editable — `01.3`) / sampleSize (slider) / model (select with prices), an "Advanced settings" accordion (`01.3`). Submit → the run is created, redirect to its screen, the `context` phase starts immediately.
+- Empty state (no runs): friendly onboarding "Upload a description of your app — get the best keywords, title, and subtitle" + a link to a sample brief (we serve `fixtures/sample-brief.md`).
 
-## 7.5 Экран 3: прогон (`#/run/<slug>`)
+## 7.5 Screen 3: run (`#/run/<slug>`)
 
-**Шапка (всегда видна):** бренд · страна · степпер фаз `Контекст → Посев → Цикл → Улучшение → Сборка → Готово` (активная подсвечена, paused — оранжевая пауза поверх); прогресс-бар выборки; usage LLM («14 вызовов · 182k токенов · ~$1.9», клик → разбивка); счётчики HTTP Apple (запросы/кэш-хиты); кнопки управления по `04.4`; жёлтая плашка деградации при `hintsEndpointDown`.
+**Header (always visible):** brand · country · phase stepper `Context → Seeding → Loop → Improving → Assembly → Done` (active highlighted; paused — an orange pause overlaid); sample progress bar; LLM usage ("14 calls · 182k tokens · ~$1.9", click → breakdown); Apple HTTP counters (requests/cache hits); control buttons per `04.4`; a yellow degradation banner on `hintsEndpointDown`.
 
-**Шаг «Контекст» (фаза context_review):** карточки полей контекста (`01.2`) с инлайн-редактированием; кнопки «Поехали» / «Сохранить правки». Подпись: «Это единственное, что нужно подтвердить — дальше всё само».
+**"Context" step (phase context_review):** cards for the context fields (`01.2`) with inline editing; buttons "Go" / "Save edits". Caption: "This is the only thing you need to confirm — everything else runs on its own."
 
-**Вкладка «Обзор»:**
-- плитки: размер выборки; медианный Score топ-20; покрыто Score (после сборки); ошибок; LLM-вызовов;
-- живая лента событий из `events.jsonl` (автоскролл, человекочитаемые строки): `14:02 ✓ habit tracker → P=80 D=63 Score=54 · 14:03 🧠 hypothesize: +20 гипотез (14 exploit / 6 explore) · ...`;
-- гистограмма распределения Score из div-баров (корзины по 10).
+**"Overview" tab:**
+- tiles: sample size; median Score of the top 20; Score covered (after assembly); errors; LLM calls;
+- a live event feed from `events.jsonl` (autoscroll, human-readable lines): `14:02 ✓ habit tracker → P=80 D=63 Score=54 · 14:03 🧠 hypothesize: +20 hypotheses (14 exploit / 6 explore) · ...`;
+- a Score distribution histogram made of div bars (buckets of 10).
 
-**Вкладка «Кейворды» (главная):**
-- таблица: Кейворд · Score · P · D · R · статус · источник(seed/suggest/competitor/expansion/explore) · childCount · reason (обрезан, полностью в тултипе);
-- сортировка кликом (дефолт Score desc), текстовый фильтр, фильтры по статусу/источнику; цвет Score: ≥50 зелёный, 25–49 жёлтый, 1–24 серый, 0 красный тусклый; `speculative` — фиолетовая метка;
-- **раскрытие строки — витрина прозрачности:** топ-10 выдачи по кейворду (иконка, название, рейтинги, обновление, бар AppStrength), строка «P=80, потому что фраза появилась на префиксе "habi" (4 символа из 13) на позиции 2» — шаблонная генерация из сырых данных; полный reason оценки R со ссылкой «показать LLM-вызов» (якорь в журнал); кнопка «Исключить»;
-- у каждого заголовка колонки P/D/Score — иконка «?» с поповером: формула из `03` и веса текущего конфига.
+**"Keywords" tab (the main one):**
+- table: Keyword · Score · P · D · R · status · source(seed/suggest/competitor/expansion/explore) · childCount · reason (truncated, full in a tooltip);
+- click-to-sort (default Score desc), a text filter, filters by status/source; Score color: ≥50 green, 25–49 yellow, 1–24 gray, 0 dim red; `speculative` — a purple tag;
+- **row expansion — the transparency showcase:** the top-10 search results for the keyword (icon, name, ratings, update, AppStrength bar), the line "P=80 because the phrase appeared at prefix \"habi\" (4 of 13 characters) at position 2" — template-generated from raw data; the full R reason with a "show LLM call" link (an anchor into the log); an "Exclude" button;
+- every P/D/Score column header has a "?" icon with a popover: the formula from `03` and the current config's weights.
 
-**Вкладка «Сборка»** (активна с фазы assembling; до неё — заглушка с пояснением):
-- **два блока полей**: «Основная локализация (en-US)» и «Кросс-локализация (es-MX)» (`05.9`) — в каждом Title / Subtitle / Keywords моноширинно, посимвольные счётчики `27/30` (краснеют при переборе), слова подсвечены интенсивностью по вкладу (contribution); у блока кросс-локализации — поповер «что это и куда вставлять в App Store Connect»;
-- чек-лист правил валидации T/S/K/X/W + X4 с ✓/✗ и текстами;
-- таблица покрытия: топ-50 фраз по Score → покрыта/нет, какой корзиной и какими полями (бейджи T/S/K ×2), PlacementWeight;
-- блок «Топ непокрытых» — то, что не влезло даже во вторую корзину;
-- на фазе done: кнопки «Копировать» у каждого поля, «Экспорт .md», «Экспорт .json», «Пересобрать», «Продолжить копать».
+**"Assembly" tab** (active from the assembling phase; before that — a placeholder with an explanation):
+- **two field blocks**: "Primary localization (en-US)" and "Cross-localization (es-MX)" (`05.9`) — each with Title / Subtitle / Keywords in monospace, per-character counters `27/30` (turning red on overflow), words highlighted with intensity proportional to contribution; the cross-localization block has a popover "what this is and where to paste it in App Store Connect";
+- a checklist of validation rules T/S/K/X/W + X4 with ✓/✗ and messages;
+- a coverage table: top-50 phrases by Score → covered or not, by which bucket and which fields (T/S/K badges ×2), PlacementWeight;
+- a "Top uncovered" block — what didn't fit even into the second bucket;
+- in the done phase: "Copy" buttons on each field, "Export .md", "Export .json", "Reassemble", "Keep digging".
 
-**Вкладка «LLM-журнал» (`#/run/<slug>/llm`):**
-- список вызовов: время · задача (context/seeds/rate/hypothesize/phrase) · модель · длительность · токены (in/out/cache) · стоимость · статус;
-- клик раскрывает вызов целиком: системный промпт, пользовательский промпт, ответ (JSON с подсветкой), ошибки валидации и повторы. Ничего не скрывается — это и есть обещанная прозрачность «как оно работает»;
-- итоговая строка: суммарные токены и стоимость прогона.
+**"LLM log" tab (`#/run/<slug>/llm`):**
+- call list: time · task (context/seeds/rate/hypothesize/phrase) · model · duration · tokens (in/out/cache) · cost · status;
+- clicking expands the call in full: system prompt, user prompt, response (syntax-highlighted JSON), validation errors and retries. Nothing is hidden — this is the promised "how it works" transparency;
+- a summary line: the run's total tokens and cost.
 
-## 7.6 Критерии качества UI (проверяются при приёмке)
+## 7.6 UI quality criteria (checked at acceptance)
 
-1. Открыл экран прогона — за 3 секунды ясно: какая фаза, сколько осталось, что происходит прямо сейчас.
-2. Ни одного числа-сироты: у каждого P/D/Score есть путь до сырых данных в ≤2 клика; у каждой оценки R — путь до полного LLM-вызова.
-3. Путь «скачал бинарь → запустил → авторизовался по API-ключу → загрузил бриф → прогон пошёл» проходится без документации, все подсказки внутри UI.
-4. Пауза/возобновление/перезапуск бинаря не теряют ни одного данного и не путают UI.
-5. Обе темы выглядят опрятно; горизонтального скролла страницы нет ни при какой ширине от 1024px.
+1. Open the run screen — within 3 seconds it's clear: which phase, how much is left, what's happening right now.
+2. No orphan numbers: every P/D/Score has a path to the raw data in ≤2 clicks; every R score — a path to the full LLM call.
+3. The path "download the binary → launch → authorize with an API key → upload a brief → the run is going" can be walked without documentation; all hints live inside the UI.
+4. Pause/resume/binary restart lose not a single piece of data and never confuse the UI.
+5. Both themes look tidy; no horizontal page scroll at any width from 1024px up.

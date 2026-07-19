@@ -1,9 +1,9 @@
-// @aso/server/apple-dispatch — общесетевой кэш сырья (D3) + сборка prefill/childPrefill + диспатч
-// джоб + write-through + идемпотентность по job_id (D7). Мерж prefill∪fetched и childCount живут
-// ЗДЕСЬ (правильный дом для D2/D3-блокера); оркестратору отдаётся готовое сырьё для метрик.
+// @aso/server/apple-dispatch — network-wide raw-data cache (D3) + prefill/childPrefill assembly +
+// job dispatch + write-through + idempotency by job_id (D7). The prefill∪fetched merge and childCount
+// live HERE (the right home for the D2/D3 blocker); the orchestrator gets ready raw data for metrics.
 //
-// Реплей-режим (D7): сырьё берётся ТОЛЬКО из apple_cache; промах = фронтир durable-истории
-// (ReplayFrontier) — джоба не диспатчится, клиент не дёргается.
+// Replay mode (D7): raw data comes ONLY from apple_cache; a miss = the frontier of durable history
+// (ReplayFrontier) — the job is not dispatched, the client is not touched.
 
 import { randomUUID } from "node:crypto";
 import type { Store, AppleCacheRow } from "../db/index.ts";
@@ -13,10 +13,10 @@ import { prefixLadder } from "../core/metrics/popularity.ts";
 import type { JobChannel } from "./channel.ts";
 import { ReplayFrontier } from "../replay.ts";
 
-const TTL_MS = 7 * 24 * 3600 * 1000; // D3: TTL сырья
+const TTL_MS = 7 * 24 * 3600 * 1000; // D3: raw-data TTL
 
 export interface ProbeRaw {
-  /** prefill ∪ fetched, ключ = префикс (для computePopularity, D2/D3). */
+  /** prefill ∪ fetched, key = prefix (for computePopularity, D2/D3). */
   prefixHints: Record<string, RawHints>;
   childTerms: RawHints | null;
   unsuggested: boolean;
@@ -29,11 +29,11 @@ export class AppleGateway {
     private store: Store,
     private channel: JobChannel,
     private runId: string,
-    /** 2-буквенный country-код прогона — кладётся в SerpJob.country (reconcile v2). */
+    /** 2-letter country code of the run — goes into SerpJob.country (reconcile v2). */
     private country: string,
   ) {}
 
-  /** Включить реплей-режим (cache-only, ReplayFrontier на промахе). */
+  /** Enable replay mode (cache-only, ReplayFrontier on a miss). */
   setReplay(on: boolean) { this.replaying = on; }
 
   private hintsKey(storefront: number, prefix: string) { return `hints:${storefront}:${prefix}`; }
@@ -55,7 +55,7 @@ export class AppleGateway {
     });
   }
 
-  /** ProbeJob: собрать prefill/childPrefill из кэша → диспатч → write-through → мерж (D2/D3). */
+  /** ProbeJob: assemble prefill/childPrefill from cache → dispatch → write-through → merge (D2/D3). */
   async probe(keyword: string, storefront: number): Promise<ProbeRaw> {
     const K = normalizeKeyword(keyword);
     const ladder = prefixLadder(K);
@@ -72,8 +72,8 @@ export class AppleGateway {
     const job: ProbeJob = {
       job_id: randomUUID(), kind: "probe", run_id: this.runId,
       keyword: K, storefront, prefixLadder: ladder, prefill,
-      // reconcile v2: отдельное поле childPrefill (не конвенция prefill["K "]). Есть в кэше →
-      // клиент НЕ фетчит childTerms.
+      // reconcile v2: dedicated childPrefill field (not the prefill["K "] convention). Present in
+      // cache → the client does NOT fetch childTerms.
       ...(childCached ? { childPrefill: childCached } : {}),
     };
     await this.store.insertJob({ job_id: job.job_id, run_id: this.runId, kind: "probe", payload: job, status: "dispatched", result: null, deadline: null });
@@ -81,11 +81,11 @@ export class AppleGateway {
     const result = (await this.channel.run(job)) as ProbeResult;
     await this.store.updateJob(job.job_id, { status: "done", result });
 
-    // write-through реально фетченного (D3).
+    // write-through of what was actually fetched (D3).
     for (const [p, hints] of Object.entries(result.fetched)) await this.putHintsCache(storefront, p, hints);
     if (result.childTerms && !childCached) await this.putHintsCache(storefront, K + " ", result.childTerms);
 
-    // мерж prefill∪fetched.
+    // merge prefill∪fetched.
     const prefixHints: Record<string, RawHints> = { ...prefill };
     for (const [p, h] of Object.entries(result.fetched)) prefixHints[p] = h;
 
@@ -96,7 +96,7 @@ export class AppleGateway {
     };
   }
 
-  /** Реплей probe: реконструируем ProbeRaw из кэша (write-through сделал все фетчи durable). */
+  /** Replay probe: reconstruct ProbeRaw from cache (write-through made all fetches durable). */
   private async replayProbe(K: string, ladder: string[], storefront: number): Promise<ProbeRaw> {
     const prefixHints: Record<string, RawHints> = {};
     for (const p of ladder) {
@@ -112,7 +112,7 @@ export class AppleGateway {
     return { prefixHints, childTerms: child, unsuggested: false };
   }
 
-  /** SerpJob: кэш → диспатч → write-through. */
+  /** SerpJob: cache → dispatch → write-through. */
   async serp(query: string, storefront: number, lang: string): Promise<RawSerp> {
     const q = normalizeKeyword(query);
     const key = this.serpKey(storefront, lang, q);
@@ -129,7 +129,7 @@ export class AppleGateway {
     return result.raw;
   }
 
-  /** HintsJob: кэш → диспатч → write-through. */
+  /** HintsJob: cache → dispatch → write-through. */
   async hints(term: string, storefront: number): Promise<RawHints> {
     const t = normalizeKeyword(term);
     const cached = await this.getHintsCache(storefront, t);

@@ -1,8 +1,8 @@
-// @aso/server/db — Postgres реализация Store через пакет `postgres`. SQL по схеме schema.sql.
-// Атомарность кошелька (D4 v4): списание/грант в транзакции с FOR UPDATE (сериализация кошелька,
-// в т.ч. между инстансами) + UNIQUE-индексы (ledger_run_keyword_uq, ledger_stripe_event_uq,
-// ON CONFLICT DO NOTHING) — идемпотентность списания/грантов. NB: против живой БД в офлайн-среде
-// сборки не прогонялось (нет сети) — гоняется миграцией `bun run migrate` + happy-path на деплое.
+// @aso/server/db — Postgres Store implementation via the `postgres` package. SQL per schema.sql.
+// Wallet atomicity (D4 v4): debit/grant in a transaction with FOR UPDATE (wallet serialization,
+// including across instances) + UNIQUE indexes (ledger_run_keyword_uq, ledger_stripe_event_uq,
+// ON CONFLICT DO NOTHING) — idempotent debits/grants. NB: not exercised against a live DB in the
+// offline build environment (no network) — exercised by `bun run migrate` + happy-path on deploy.
 
 import postgres from "postgres";
 import type {
@@ -62,8 +62,8 @@ export class PostgresStore implements Store {
     await this.sql`INSERT INTO wallet (user_id, balance_credits) VALUES (${userId}, ${initialCredits})
       ON CONFLICT (user_id) DO NOTHING`;
   }
-  // D4 v4: списание за кейфразу — атомарно в транзакции с FOR UPDATE (сериализация кошелька,
-  // в т.ч. между инстансами), идемпотентно по UNIQUE(run_id, keyword) на ledger.
+  // D4 v4: per-keyphrase debit — atomic in a transaction with FOR UPDATE (wallet serialization,
+  // including across instances), idempotent by UNIQUE(run_id, keyword) on ledger.
   async debitForKeyphrase(userId: string, runId: string, keyword: string, price: number) {
     return this.sql.begin(async (sql) => {
       const [existing] = await sql`SELECT 1 AS x FROM ledger WHERE run_id = ${runId} AND keyword = ${keyword} AND type = 'debit' LIMIT 1`;
@@ -136,7 +136,7 @@ export class PostgresStore implements Store {
   }
   async updateRun(patch: Partial<RunRow> & { id: string }) {
     const s = this.sql;
-    // Динамический UPDATE только по переданным полям.
+    // Dynamic UPDATE over the provided fields only.
     const fields: Record<string, unknown> = {};
     for (const k of ["phase", "config", "brief", "estimate_credits", "context", "final", "usage", "state"] as const) {
       if (k in patch) {

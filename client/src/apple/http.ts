@@ -1,7 +1,7 @@
-// Единый HTTP-слой для запросов к Apple (spec 02.4): token bucket ПЕР-IP (эта машина),
-// файловый кэш (D3, локальная нога), экспоненциальные ретраи, счётчики.
-// Портирован ~1:1 из aso-util/src/http.ts. ВСЕ запросы к Apple идут только через него.
-// В клиенте НЕТ метрик — этот слой лишь достаёт сырьё.
+// Single HTTP layer for requests to Apple (spec 02.4): PER-IP token bucket (this machine),
+// file cache (D3, local leg), exponential retries, counters.
+// Ported ~1:1 from aso-util/src/http.ts. ALL requests to Apple go only through it.
+// The client has NO metrics — this layer only pulls raw material.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -33,7 +33,7 @@ export class HttpError extends Error {
   }
 }
 
-/** Троттлинг — сигнал серверу для back-pressure (job.error{throttle}). */
+/** Throttling — a signal to the server for back-pressure (job.error{throttle}). */
 export function isThrottle(e: unknown): boolean {
   return e instanceof HttpError && (e.status === 429 || e.status === 403);
 }
@@ -45,8 +45,8 @@ interface Bucket {
 }
 
 export class AppleHttp {
-  // Бакет на хост: у search.itunes.apple.com (подсказки) и itunes.apple.com (выдача)
-  // раздельные лимиты — общий бакет заставлял бы их простаивать друг под друга.
+  // Per-host bucket: search.itunes.apple.com (hints) and itunes.apple.com (SERP)
+  // have separate limits — a shared bucket would make them idle waiting on each other.
   private buckets = new Map<string, Bucket>();
   readonly stats: HttpStats = { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 };
 
@@ -95,7 +95,7 @@ export class AppleHttp {
 
   private async takeToken(host: string): Promise<void> {
     const b = this.bucket(host);
-    // FIFO в рамках хоста: сериализуем ожидание через цепочку промисов.
+    // FIFO within a host: serialize the wait through a promise chain.
     const prev = b.queue;
     let release!: () => void;
     b.queue = new Promise((r) => (release = r));
@@ -110,8 +110,8 @@ export class AppleHttp {
         }
         await sleep(250);
       }
-      // Джиттер 300–900 мс между фактическими отправками (spec 02.4).
-      // При rpm > 60 (тесты/моки) вежливость не нужна — пропускаем.
+      // 300–900 ms jitter between actual sends (spec 02.4).
+      // At rpm > 60 (tests/mocks) politeness isn't needed — skip it.
       if (this.opts.requestsPerMinute <= 60) await sleep(300 + Math.random() * 600);
       this.stats.throttleWaitMs += Date.now() - start;
     } finally {
@@ -119,7 +119,7 @@ export class AppleHttp {
     }
   }
 
-  /** GET с кэшем; storefront участвует в ключе кэша. Возвращает тело ответа (строку). */
+  /** GET with cache; storefront is part of the cache key. Returns the response body (string). */
   async get(url: string, headers: Record<string, string> = {}, storefront = ""): Promise<string> {
     const key = this.cacheKey(url, storefront);
     const cached = this.readCache(key);
@@ -146,7 +146,7 @@ export class AppleHttp {
         this.stats.requestsMade += 1;
         this.opts.onStats?.(this.stats);
         if (res.status === 429 || res.status === 403 || res.status >= 500) {
-          lastError = new HttpError(`HTTP ${res.status} от ${new URL(url).host}`, res.status);
+          lastError = new HttpError(`HTTP ${res.status} from ${new URL(url).host}`, res.status);
         } else {
           const body = await res.text();
           writeFileSync(this.cachePath(key), JSON.stringify({
@@ -155,7 +155,7 @@ export class AppleHttp {
             status: res.status,
             body,
           } satisfies CacheEntry));
-          if (res.status !== 200) throw new HttpError(`HTTP ${res.status} от ${new URL(url).host}`, res.status);
+          if (res.status !== 200) throw new HttpError(`HTTP ${res.status} from ${new URL(url).host}`, res.status);
           return body;
         }
       } catch (e: any) {
@@ -166,7 +166,7 @@ export class AppleHttp {
         await sleep(BACKOFFS_MS[Math.min(attempt, BACKOFFS_MS.length - 1)]);
       }
     }
-    throw lastError ?? new HttpError("неизвестная ошибка HTTP");
+    throw lastError ?? new HttpError("unknown HTTP error");
   }
 }
 

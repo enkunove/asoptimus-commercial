@@ -1,8 +1,8 @@
-// @aso/server/apple-dispatch — канал исполнения джоб. Две реализации:
-//  • WssJobChannel — отправляет job.dispatch реальному клиенту через ClientHub, ждёт job.result.
-//  • LoopbackJobChannel — DEV-стенд (только при DEV=1): исполняет джобу локально по mock-apple,
-//    ВОСПРОИЗВОДЯ клиентский алгоритм ProbeJob (D2: shortcut → лестница early-stop → childTerms).
-//    В ПРОДЕ джобы идут реальному клиенту (WssJobChannel); этот алгоритм живёт в репо client.
+// @aso/server/apple-dispatch — job execution channel. Two implementations:
+//  • WssJobChannel — sends job.dispatch to a real client via ClientHub, awaits job.result.
+//  • LoopbackJobChannel — DEV bench (DEV=1 only): executes the job locally against mock-apple,
+//    REPRODUCING the client-side ProbeJob algorithm (D2: shortcut → early-stop ladder → childTerms).
+//    In PROD jobs go to a real client (WssJobChannel); this algorithm lives in the client repo.
 
 import type { Job, ProbeJob, SerpJob, HintsJob, JobResult, ProbeResult, RawHints } from "@aso/shared";
 import { normalizeKeyword } from "@aso/shared";
@@ -31,30 +31,30 @@ export class LoopbackJobChannel implements JobChannel {
     return this.execHints(job as HintsJob);
   }
 
-  /** DEV-воспроизведение клиентского алгоритма ProbeJob (D2). Возвращает ТОЛЬКО реально
-   *  «фетченные» префиксы (в проде этот код живёт в репо client). */
+  /** DEV reproduction of the client ProbeJob algorithm (D2). Returns ONLY prefixes that were
+   *  actually "fetched" (in prod this code lives in the client repo). */
   private execProbe(job: ProbeJob): ProbeResult {
     const K = normalizeKeyword(job.keyword);
     const fetched: Record<string, RawHints> = {};
     const take = (prefix: string): RawHints => {
-      if (job.prefill[prefix]) return job.prefill[prefix]; // из кэша D3 — без «сети»
+      if (job.prefill[prefix]) return job.prefill[prefix]; // from D3 cache — no "network"
       if (fetched[prefix]) return fetched[prefix];
-      const terms = mockHints(prefix); // «сеть» (mock)
+      const terms = mockHints(prefix); // "network" (mock)
       fetched[prefix] = terms;
       return terms;
     };
 
-    // 1. Полный префикс K — детект unsuggested за один запрос (shortcut D2).
+    // 1. Full prefix K — detect unsuggested in a single request (shortcut D2).
     const full = take(K);
     if (!full.some((t) => normalizeKeyword(t) === K)) {
       return { job_id: job.job_id, kind: "probe", fetched, childTerms: null, unsuggested: true };
     }
-    // 2. Восходящая лестница, ранняя остановка на минимальном L (порядок обязателен).
+    // 2. Ascending ladder, early stop at the minimal L (order is mandatory).
     for (const prefix of job.prefixLadder) {
       const terms = take(prefix);
       if (terms.some((t) => normalizeKeyword(t) === K)) break;
     }
-    // 3. childTerms для childCount: из childPrefill (кэш D3, reconcile v2) или «фетч».
+    // 3. childTerms for childCount: from childPrefill (D3 cache, reconcile v2) or a "fetch".
     const childTerms = job.childPrefill ?? mockHints(K + " ");
     return { job_id: job.job_id, kind: "probe", fetched, childTerms, unsuggested: false };
   }

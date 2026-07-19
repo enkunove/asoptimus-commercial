@@ -1,12 +1,12 @@
-// @aso/server/auth — ключ→короткоживущий session-token (device-bound), HMAC на сообщение,
-// отзыв, per-user rate limit (BUILD-PLAN §auth, ARCHITECTURE §5). Пароли отсутствуют (§5).
+// @aso/server/auth — key→short-lived session token (device-bound), per-message HMAC,
+// revocation, per-user rate limit (BUILD-PLAN §auth, ARCHITECTURE §5). No passwords (§5).
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Store } from "../db/index.ts";
 
-const SESSION_TTL_MS = 12 * 3600 * 1000; // 12ч; клиент рефрешит/переактивируется по истечении
-const NONCE_WINDOW_MS = 5 * 60 * 1000;    // ±5м анти-replay (ARCHITECTURE §5)
-// D4 v4: free-tier НЕТ. Кошелёк создаётся с нулём; работать можно только пополнив кредиты.
+const SESSION_TTL_MS = 12 * 3600 * 1000; // 12h; client refreshes/re-activates on expiry
+const NONCE_WINDOW_MS = 5 * 60 * 1000;    // ±5m anti-replay (ARCHITECTURE §5)
+// D4 v4: NO free tier. Wallet is created at zero; you can only work after topping up credits.
 
 export function hashKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
@@ -26,21 +26,21 @@ interface Bucket { tokens: number; last: number; }
 
 export class AuthService {
   private sessions = new Map<string, Session>();
-  private nonces = new Map<string, number>(); // nonce → ts (окно ±5м; общий store — Фаза 3, BUILD-PLAN §8)
+  private nonces = new Map<string, number>(); // nonce → ts (±5m window; shared store — Phase 3, BUILD-PLAN §8)
   private buckets = new Map<string, Bucket>();
 
   constructor(private store: Store, private rpm = 120) {}
 
-  /** signup: создать User+wallet+license, вернуть ключ. Идемпотентно по email (не плодим). */
+  /** signup: create User+wallet+license, return the key. Idempotent by email (no duplicates). */
   async signup(email: string): Promise<{ key: string; userId: string; existed: boolean }> {
     const existing = await this.store.getUserByEmail(email);
     if (existing) {
-      // Повторный signup: не плодим Customer/юзера; ключ уже выслан ранее (resend отдельно).
+      // Repeat signup: don't spawn a Customer/user; the key was already sent earlier (resend is separate).
       return { key: "", userId: existing.id, existed: true };
     }
     const userId = `usr_${randomBytes(9).toString("base64url")}`;
     await this.store.createUser({ id: userId, email, stripe_customer_id: null });
-    await this.store.ensureWallet(userId, 0); // D4 v4: free-tier НЕТ — стартовый баланс 0
+    await this.store.ensureWallet(userId, 0); // D4 v4: NO free tier — starting balance 0
     const key = generateKey();
     await this.store.createLicense({
       key_hash: hashKey(key), user_id: userId, device_fp: null, status: "active", revoked_at: null,
@@ -48,7 +48,7 @@ export class AuthService {
     return { key, userId, existed: false };
   }
 
-  /** Перевыпуск ключа (resend/reissue): выдать новый активный ключ существующему юзеру. */
+  /** Key reissue (resend/reissue): issue a new active key to an existing user. */
   async reissueKey(userId: string): Promise<string> {
     const key = generateKey();
     await this.store.createLicense({
@@ -57,17 +57,17 @@ export class AuthService {
     return key;
   }
 
-  /** activation: ключ → session-token (+ HMAC-секрет + срок), device-binding при первом успехе. */
+  /** activation: key → session token (+ HMAC secret + expiry), device-binding on first success. */
   async activate(key: string, deviceFp: string): Promise<{ token: string; hmacSecret: string; userId: string; expiresAt: string } | { error: string }> {
     const lic = await this.store.getLicenseByKeyHash(hashKey(key));
-    if (!lic) return { error: "ключ не найден" };
-    if (lic.status === "revoked") return { error: "ключ отозван" };
-    if (lic.device_fp && lic.device_fp !== deviceFp) return { error: "ключ привязан к другому устройству" };
+    if (!lic) return { error: "key not found" };
+    if (lic.status === "revoked") return { error: "key has been revoked" };
+    if (lic.device_fp && lic.device_fp !== deviceFp) return { error: "key is bound to another device" };
     if (!lic.device_fp) await this.store.bindDevice(lic.key_hash, deviceFp);
     return this.issue(lic.user_id, deviceFp);
   }
 
-  /** Выпуск session-token с новым HMAC-секретом и сроком. */
+  /** Issue a session token with a fresh HMAC secret and expiry. */
   private issue(userId: string, deviceFp: string): { token: string; hmacSecret: string; userId: string; expiresAt: string } {
     const token = randomBytes(24).toString("base64url");
     const hmacSecret = randomBytes(32).toString("base64url");
@@ -77,21 +77,21 @@ export class AuthService {
   }
 
   /**
-   * refresh: валидный (ещё не протухший) session-token того же устройства → новый токен со
-   * свежим сроком (клиент не хранит ключ в проде — рефреш без повторной активации).
-   * Проверяет отзыв лицензии на уровне... нет прямого доступа к key_hash по userId, поэтому
-   * рефреш опирается на неистёкшую сессию; отзыв блокирует НОВУЮ активацию + инвалидируется по TTL.
+   * refresh: a valid (not yet expired) session token from the same device → a new token with a
+   * fresh expiry (client doesn't store the key in prod — refresh without re-activation).
+   * Checks license revocation at the level of... there's no direct key_hash lookup by userId, so
+   * refresh relies on a non-expired session; revocation blocks NEW activation + invalidates via TTL.
    */
   async refresh(token: string, deviceFp: string): Promise<{ token: string; hmacSecret: string; userId: string; expiresAt: string } | { error: string }> {
     const s = this.sessions.get(token);
-    if (!s) return { error: "сессия не найдена или истекла" };
-    if (s.exp < Date.now()) { this.sessions.delete(token); return { error: "сессия истекла — активируйте ключ заново" }; }
-    if (s.deviceFp !== deviceFp) return { error: "device_fp не совпадает" };
-    this.sessions.delete(token); // одноразовая ротация
+    if (!s) return { error: "session not found or expired" };
+    if (s.exp < Date.now()) { this.sessions.delete(token); return { error: "session expired — activate your key again" }; }
+    if (s.deviceFp !== deviceFp) return { error: "device_fp mismatch" };
+    this.sessions.delete(token); // one-time rotation
     return this.issue(s.userId, deviceFp);
   }
 
-  /** Проверка session-token (+ device-binding). null → невалиден/протух. */
+  /** Session-token check (+ device-binding). null → invalid/expired. */
   verifySession(token: string, deviceFp?: string): { userId: string; hmacSecret: string } | null {
     const s = this.sessions.get(token);
     if (!s) return null;
@@ -100,14 +100,14 @@ export class AuthService {
     return { userId: s.userId, hmacSecret: s.hmacSecret };
   }
 
-  /** Отзыв ключа (revocation) + инвалидация активных сессий этого пользователя. */
+  /** Key revocation + invalidation of this user's active sessions. */
   async revoke(key: string): Promise<void> {
     const lic = await this.store.getLicenseByKeyHash(hashKey(key));
     await this.store.revokeLicense(hashKey(key));
     if (lic) for (const [tok, s] of this.sessions) if (s.userId === lic.user_id) this.sessions.delete(tok);
   }
 
-  /** HMAC + timestamp(±5м) + nonce анти-replay на сообщение WSS (ARCHITECTURE §5). */
+  /** HMAC + timestamp(±5m) + nonce anti-replay per WSS message (ARCHITECTURE §5). */
   verifyMessage(token: string, body: string, ts: number, nonce: string, mac: string): boolean {
     const s = this.sessions.get(token);
     if (!s) return false;
@@ -126,7 +126,7 @@ export class AuthService {
     for (const [n, t] of this.nonces) if (t < cutoff) this.nonces.delete(n);
   }
 
-  /** Per-user token-bucket rate limit. true = разрешено. */
+  /** Per-user token-bucket rate limit. true = allowed. */
   allow(userId: string): boolean {
     const now = Date.now();
     let b = this.buckets.get(userId);

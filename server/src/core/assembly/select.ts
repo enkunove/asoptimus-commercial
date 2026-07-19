@@ -1,4 +1,4 @@
-// @aso/core — жадный отбор слов (spec 05.4). ПРОПРИЕТАРНО. Порт 1:1 из aso-util.
+// @aso/core — greedy word selection (spec 05.4). PROPRIETARY. 1:1 port from aso-util.
 
 import { foldKey } from "./folding.ts";
 
@@ -12,11 +12,11 @@ export interface SelectInput {
   stopwords: string[];
   brandWords: string[];
   language: string;
-  /** Суммарный символьный бюджет: слоган + subtitle + keywords. */
+  /** Total character budget: slogan + subtitle + keywords. */
   budgetTotal: number;
-  /** Слова, уже занятые предыдущим проходом (для кросс-локализации, spec 05.9). */
+  /** Words already taken by the previous pass (for cross-localization, spec 05.9). */
   excludedFoldKeys?: Set<string>;
-  /** Фразы с гарантией покрытия: их слова резервируются ДО жадного конкурса, пока влезают. */
+  /** Phrases with guaranteed coverage: their words are reserved BEFORE the greedy contest, as long as they fit. */
   mustCover?: string[];
 }
 
@@ -31,7 +31,7 @@ interface WordInfo {
   phrases: Set<number>;
 }
 
-/** Разбивает фразу на значимые фолдинг-ключи (минус стоп-слова). */
+/** Splits a phrase into meaningful folding keys (minus stopwords). */
 export function phraseKeys(keyword: string, stopwords: Set<string>, language: string): string[] {
   return keyword
     .split(" ")
@@ -72,7 +72,7 @@ export function selectWords(input: SelectInput): SelectResult {
   const isCovered = (pi: number, extra?: string): boolean =>
     phraseKeyLists[pi].every((k) => selected.has(k) || brandKeys.has(k) || excluded.has(k) || k === extra);
 
-  // Гарантированное покрытие: слова mustCover-фраз берутся вне конкурса (пока влезают).
+  // Guaranteed coverage: mustCover phrase words are taken outside the contest (as long as they fit).
   for (const phrase of input.mustCover ?? []) {
     const pi = input.phrases.findIndex((p) => p.keyword === phrase);
     if (pi < 0 || isCovered(pi)) continue;
@@ -140,7 +140,7 @@ export function selectWords(input: SelectInput): SelectResult {
   return { words: order, covered };
 }
 
-/** Форма с максимальной суммой Score; тай-брейк — короче, затем алфавит. */
+/** Form with the maximum Score sum; tie-break — shorter, then alphabetical. */
 function bestForm(info: WordInfo): string {
   let best = "";
   let bestScore = -1;

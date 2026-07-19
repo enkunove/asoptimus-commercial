@@ -1,15 +1,15 @@
-// @aso/shared — WIRE-ПРОТОКОЛ «локальная программа ↔ облако» и «браузер ↔ localhost».
-// Это КОНТРАКТ (BUILD-PLAN §4). Zero-I/O, zero-secret. Импортируется и сервером, и клиентом.
-// Здесь НЕТ ни формул, ни промптов, ни стратегий — только формы сообщений.
+// @aso/shared — WIRE PROTOCOL "local program ↔ cloud" and "browser ↔ localhost".
+// This is the CONTRACT (BUILD-PLAN §4). Zero-I/O, zero-secret. Imported by both server and client.
+// There are NO formulas, NO prompts, NO strategies here — only message shapes.
 
 import type { RunState, RunConfig, KeywordEntry } from "./types.ts";
 
-// ── Сырьё Apple (клиент возвращает ЭТО; метрики считает сервер) ──────────────
+// ── Raw Apple data (the client returns THIS; the server computes the metrics) ──────────────
 
-/** Упорядоченный список строк-подсказок одного запроса hints. Порядок = ранг. */
+/** Ordered list of hint strings from one hints request. Order = rank. */
 export type RawHints = string[];
 
-/** Сырой ответ iTunes Search API (как есть, поля берёт сервер). */
+/** Raw iTunes Search API response (as-is; the server picks the fields). */
 export interface RawSerp {
   resultCount: number;
   results: RawSerpApp[];
@@ -27,44 +27,44 @@ export interface RawSerpApp {
   [k: string]: unknown;
 }
 
-// ── Джобы: сервер решает ЧТО фетчить, клиент — КАК (BUILD-PLAN D2) ────────────
+// ── Jobs: the server decides WHAT to fetch, the client decides HOW (BUILD-PLAN D2) ────────────
 
 export type JobKind = "probe" | "serp" | "hints";
 
-/** Прогон популярности одного кейворда. Клиент: полный-префикс-shortcut → лестница
- *  early-stop → childTerms; возвращает СЫРЬЁ. Сервер считает P/L/rank/childCount/seenTerms
- *  над `prefill ∪ fetched` (BUILD-PLAN D2/D3). */
+/** Popularity run of one keyword. Client: full-prefix shortcut → early-stop
+ *  ladder → childTerms; returns RAW material. The server computes P/L/rank/childCount/seenTerms
+ *  over `prefill ∪ fetched` (BUILD-PLAN D2/D3). */
 export interface ProbeJob {
   job_id: string;
   kind: "probe";
   run_id: string;
   keyword: string;
   storefront: number; // X-Apple-Store-Front id
-  /** ['k','ke','key',…,keyword] — детерминирован из keyword сервером. */
+  /** ['k','ke','key',…,keyword] — deterministically derived from keyword by the server. */
   prefixLadder: string[];
-  /** Префиксы, уже лежащие в общесетевом кэше (с контентом) — для локальной ранней остановки
-   *  без сети. Ключ = префикс. Сервер их уже имеет; клиент по сети шлёт только реально фетченные. */
+  /** Prefixes already present in the network-wide cache (with content) — for local early stop
+   *  without network. Key = prefix. The server already has these; over the wire the client sends only what it actually fetched. */
   prefill: Record<string, RawHints>;
-  /** [reconcile v2] Кэшированные подсказки на "keyword " (childCount) — если сервер уже имеет их,
-   *  клиент НЕ фетчит childTerms. Отсутствует → клиент фетчит сам. */
+  /** [reconcile v2] Cached hints for "keyword " (childCount) — if the server already has them,
+   *  the client does NOT fetch childTerms. Absent → the client fetches on its own. */
   childPrefill?: RawHints;
 }
 
-/** Один запрос выдачи (для Difficulty). */
+/** One SERP request (for Difficulty). */
 export interface SerpJob {
   job_id: string;
   kind: "serp";
   run_id: string;
   query: string;
   storefront: number;
-  /** [reconcile v2] 2-буквенный country-код для iTunes Search (`country=`) — сервер кладёт
-   *  его сам из конфига; клиент берёт отсюда, а НЕ реверс-мапит storefront id обратно. */
+  /** [reconcile v2] 2-letter country code for iTunes Search (`country=`) — the server sets it
+   *  from the config; the client takes it from here and does NOT reverse-map the storefront id. */
   country: string;
   lang: string;
 }
 
-/** Одиночные подсказки для НЕЗАВИСИМЫХ нужд: дети лидеров (hypothesize), alphabet-soup expander.
- *  childCount сюда НЕ входит — он внутри ProbeJob. */
+/** Standalone hints for INDEPENDENT needs: leaders' children (hypothesize), alphabet-soup expander.
+ *  childCount is NOT included here — it lives inside ProbeJob. */
 export interface HintsJob {
   job_id: string;
   kind: "hints";
@@ -75,15 +75,15 @@ export interface HintsJob {
 
 export type Job = ProbeJob | SerpJob | HintsJob;
 
-// ── Результаты джоб (клиент → сервер): всегда СЫРЬЁ, никаких метрик ───────────
+// ── Job results (client → server): always RAW material, no metrics ───────────
 
 export interface ProbeResult {
   job_id: string;
   kind: "probe";
-  /** ТОЛЬКО реально фетченные префиксы (полные массивы подсказок), ключ = префикс.
-   *  Полные массивы обязательны: сервер харвестит seenTerms в новых кандидатов (D2). */
+  /** ONLY the actually fetched prefixes (full hint arrays), key = prefix.
+   *  Full arrays are mandatory: the server harvests seenTerms into new candidates (D2). */
   fetched: Record<string, RawHints>;
-  /** Подсказки на "keyword " (childCount). null если кейворд unsuggested. */
+  /** Hints for "keyword " (childCount). null if the keyword is unsuggested. */
   childTerms: RawHints | null;
   unsuggested: boolean;
 }
@@ -99,7 +99,7 @@ export interface HintsResult {
 }
 export type JobResult = ProbeResult | SerpResult | HintsResult;
 
-// ── WSS: клиент → сервер ─────────────────────────────────────────────────────
+// ── WSS: client → server ─────────────────────────────────────────────────────
 
 export type RunAction =
   | { type: "pause" }
@@ -111,21 +111,21 @@ export type RunAction =
   | { type: "editContext"; patch: Record<string, unknown> }
   | { type: "delete" }; // [reconcile v2]
 
-/** [reconcile v2] Виды on-demand чтений, которые браузер запрашивает у localhost, а программа
- *  релеит в облако запрос-ответом (push-событий недостаточно для больших таблиц/журнала). */
+/** [reconcile v2] Kinds of on-demand reads the browser requests from localhost, and the program
+ *  relays into the cloud as request-response (push events are not enough for large tables/logs). */
 export type QueryKind = "runs" | "run" | "keywords" | "keyword" | "llm-log" | "balance" | "models" | "packages";
 
 export type ClientToServer =
   | { t: "hello"; session_token: string; device_fp: string; resume_job_ids: string[] }
-  // [reconcile v2] client_ref — корреляция запроса с ответом run.created (run_id узнаётся в ответе)
-  | { t: "run.create"; client_ref: string; brief: string; config: unknown /* RunConfig из types.ts */ }
+  // [reconcile v2] client_ref — correlates the request with the run.created reply (run_id learned from the reply)
+  | { t: "run.create"; client_ref: string; brief: string; config: unknown /* RunConfig from types.ts */ }
   | { t: "run.control"; run_id: string; action: RunAction }
   | { t: "job.result"; result: JobResult }
   | { t: "job.error"; job_id: string; reason: string; throttle?: boolean }
-  // [reconcile v2] запрос-ответ для браузерных чтений (релеится через localhost, D1)
+  // [reconcile v2] request-response for browser reads (relayed through localhost, D1)
   | { t: "query"; query_id: string; kind: QueryKind; params?: Record<string, unknown> };
 
-// ── WSS: сервер → клиент ─────────────────────────────────────────────────────
+// ── WSS: server → client ─────────────────────────────────────────────────────
 
 export type ServerToClient =
   | { t: "job.dispatch"; job: Job }
@@ -133,9 +133,9 @@ export type ServerToClient =
   | { t: "run.phase"; run_id: string; phase: string; counters: RunCounters }
   | { t: "run.paused"; run_id: string; reason: string; code?: "credits_out" | "provider_error" | "client_offline" | "user" }
   | { t: "balance"; credits: number }
-  // [reconcile v2] ack на run.create: связывает client_ref ↔ выданный сервером run_id
+  // [reconcile v2] ack for run.create: links client_ref ↔ the server-issued run_id
   | { t: "run.created"; client_ref: string; run_id: string }
-  // [reconcile v2] ответ на query (data — по kind: RunSummary[] | RunState | KeywordEntry[] | LlmLogPublic[] | BalanceView | model[])
+  // [reconcile v2] reply to query (data — by kind: RunSummary[] | RunState | KeywordEntry[] | LlmLogPublic[] | BalanceView | model[])
   | { t: "query.result"; query_id: string; data: unknown }
   | { t: "query.error"; query_id: string; reason: string };
 
@@ -147,25 +147,25 @@ export interface RunCounters {
   calls: number;
 }
 
-/** Человекочитаемое событие для ленты UI (релеится в браузерный SSE). */
+/** Human-readable event for the UI feed (relayed into browser SSE). */
 export interface ProgressEvent {
   ts: string;
   kind: string;
   text: string;
 }
 
-// ── Браузер ↔ localhost (реле D1). Формы ответов реле-API. ────────────────────
-// REST по BUILD-PLAN §4 / spec 07.2: /api/runs, /api/runs/:id[/keywords|/control],
-// /api/events(SSE), /api/balance, /api/topup. Программа не исполняет их, а транслирует в WSS.
+// ── Browser ↔ localhost (D1 relay). Relay-API response shapes. ────────────────────
+// REST per BUILD-PLAN §4 / spec 07.2: /api/runs, /api/runs/:id[/keywords|/control],
+// /api/events(SSE), /api/balance, /api/topup. The program does not execute them — it translates them into WSS.
 
-/** Проекция LLM-журнала ДЛЯ КЛИЕНТА (D9): НЕТ ни system, ни prompt — только выход + числа. */
+/** LLM log projection FOR THE CLIENT (D9): NO system, NO prompt — only the output + numbers. */
 export interface LlmLogPublic {
   ts: string;
   task: string; // context | seeds | rate | hypothesize | phrase
   model: string;
-  /** Человекочитаемое описание стадии (НЕ промпт). */
+  /** Human-readable stage description (NOT a prompt). */
   stage: string;
-  /** Выход модели (R+reason / гипотезы / тексты полей) — это пользователю полезно. */
+  /** Model output (R+reason / hypotheses / field texts) — this is useful to the user. */
   output: unknown;
   tokens: { input: number; output: number; cacheRead: number };
   costUsd: number | null;
@@ -177,7 +177,7 @@ export interface TopupRequest {
   packageId: string;
 }
 export interface TopupResponse {
-  checkoutUrl: string; // Stripe Checkout, браузер редиректит на домен Stripe
+  checkoutUrl: string; // Stripe Checkout, the browser redirects to the Stripe domain
 }
 
 export interface BalanceView {
@@ -191,11 +191,11 @@ export interface LedgerRow {
   runId?: string;
 }
 
-// ── Reconciliation v2 (сведение gap-листов обоих агентов) ─────────────────────
+// ── Reconciliation v2 (merging both agents' gap lists) ─────────────────────
 
-/** [reconcile v2] Транспортная обёртка WSS-сообщений клиент→сервер: per-message HMAC + защита
- *  от replay (ARCHITECTURE §5). Сервер (auth.verifyMessage) проверяет mac по per-session секрету,
- *  ts в пределах ±5 мин, nonce не переиспользован. body — собственно ClientToServer. */
+/** [reconcile v2] Transport wrapper for client→server WSS messages: per-message HMAC + replay
+ *  protection (ARCHITECTURE §5). The server (auth.verifyMessage) verifies mac against the per-session secret,
+ *  ts within ±5 min, nonce not reused. body — the actual ClientToServer. */
 export interface SignedEnvelope {
   mac: string;
   ts: number;
@@ -203,8 +203,8 @@ export interface SignedEnvelope {
   body: ClientToServer;
 }
 
-/** [reconcile v2] HTTPS-лег активации (НЕ WSS): ключ → короткоживущий session-token,
- *  привязанный к устройству. Эндпоинт `POST /activate`. */
+/** [reconcile v2] HTTPS activation leg (NOT WSS): key → short-lived session-token
+ *  bound to the device. Endpoint `POST /activate`. */
 export interface ActivateRequest {
   key: string; // asop_live_…
   device_fp: string;
@@ -212,37 +212,37 @@ export interface ActivateRequest {
 export interface ActivateResponse {
   session_token: string;
   expires_at: string;
-  /** per-session HMAC-секрет для SignedEnvelope (выдаётся один раз при активации). */
+  /** per-session HMAC secret for SignedEnvelope (issued once at activation). */
   hmac_secret: string;
 }
 
-/** [reconcile v2] Модель в списке для формы прогона (отдаётся сервером через query kind="models"
- *  — клиент НЕ хардкодит список). Цена не показывается в UI обязательно; нужна серверу. */
+/** [reconcile v2] Model in the run-form list (served by the server via query kind="models"
+ *  — the client does NOT hardcode the list). Price need not be shown in the UI; the server needs it. */
 export interface ModelInfo {
   id: string;
   name: string;
-  /** [v3] Цена за одну проверенную кейфразу в кредитах (1 кредит = $1). Мощнее модель → дороже.
-   *  Публично (юзер видит в форме прогона); сервер авторитетно пересчитывает квот при reserve. */
+  /** [v3] Price per one probed keyphrase in credits (1 credit = $1). More powerful model → more expensive.
+   *  Public (the user sees it in the run form); the server authoritatively recomputes quotas at reserve. */
   pricePerKeyphrase: number;
   note?: string;
 }
 
-/** [v4] ОЦЕНКА стоимости прогона (usage-based, D4). НЕ удержание/резерв: кредиты списываются в
- *  реальном времени по мере появления кейфраз; итог = фактически произведённые кейфразы × цена.
- *  Клиент считает оценку живьём при слайдере sampleSize / смене модели. */
+/** [v4] Run cost ESTIMATE (usage-based, D4). NOT a hold/reserve: credits are debited in
+ *  real time as keyphrases are produced; the total = actually produced keyphrases × price.
+ *  The client computes the estimate live on the sampleSize slider / model change. */
 export interface RunQuote {
   sampleSize: number;
   model: string;
-  pricePerKeyphrase: number; // кредитов за кейфразу
-  quote: number;             // ≈ ceil(sampleSize × pricePerKeyphrase) — ОЦЕНКА, не резерв
-  overshootPct: number;      // 0.1 — итог может быть до +10% выше (overshoot ОПЛАЧИВАЕТСЯ)
+  pricePerKeyphrase: number; // credits per keyphrase
+  quote: number;             // ≈ ceil(sampleSize × pricePerKeyphrase) — an ESTIMATE, not a reserve
+  overshootPct: number;      // 0.1 — the total may be up to +10% higher (overshoot IS BILLED)
 }
 
-// ── Проекции данных для query.result по kind (reconcile v5) ───────────────────
-// Закрывают под-контракт `query.result.data` — что именно приходит на каждый QueryKind.
+// ── Data projections for query.result by kind (reconcile v5) ───────────────────
+// Close the `query.result.data` sub-contract — exactly what arrives for each QueryKind.
 
-/** kind="run": надмножество RunState для первой загрузки экрана прогона (push-only SSE не
- *  доставляет config/events/счётчики при первом открытии). */
+/** kind="run": superset of RunState for the run screen's first load (push-only SSE does not
+ *  deliver config/events/counters on first open). */
 export interface RunSnapshot extends RunState {
   config: RunConfig;
   events: ProgressEvent[];
@@ -250,7 +250,7 @@ export interface RunSnapshot extends RunState {
   sampleCount: number;
 }
 
-/** kind="keywords": СЕРВЕРНАЯ пагинация/сорт/фильтр (spec 07 — 500+ строк не грузить целиком).
+/** kind="keywords": SERVER-SIDE pagination/sort/filter (spec 07 — don't load 500+ rows wholesale).
  *  params: {runId, page, pageSize, sort, dir, status, q}. */
 export interface KeywordPage {
   total: number;
@@ -259,23 +259,23 @@ export interface KeywordPage {
   items: KeywordEntry[];
 }
 
-/** kind="llm-log": пагинация журнала (D9 — только LlmLogPublic, без промптов). */
+/** kind="llm-log": log pagination (D9 — LlmLogPublic only, no prompts). */
 export interface LlmLogPage {
   total: number;
   page: number;
   items: LlmLogPublic[];
 }
 
-/** kind="packages": каталог пополнения (истина — серверный конфиг TOPUP_PACKAGES_JSON).
- *  Клиент НЕ хардкодит пакеты. */
+/** kind="packages": top-up catalog (source of truth — the server config TOPUP_PACKAGES_JSON).
+ *  The client does NOT hardcode packages. */
 export interface TopupPackage {
   id: string;
-  credits: number;  // 1 кредит = $1
+  credits: number;  // 1 credit = $1
   priceUsd: number;
   label?: string;
   bonusPct?: number;
 }
 
-// Соответствие query kind → тип data в query.result:
+// Mapping of query kind → data type in query.result:
 //   runs→RunSummary[] · run→RunSnapshot · keywords→KeywordPage · keyword→{item:KeywordEntry|null}
 //   llm-log→LlmLogPage · balance→BalanceView · models→ModelInfo[] · packages→TopupPackage[]

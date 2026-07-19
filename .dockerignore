@@ -1,5 +1,5 @@
-# Docker-контекст = корень репо, но серверному образу нужны только server/ и shared/.
-# Всё остальное исключаем, чтобы контекст не раздувался.
+# Docker context = repo root, but the server image only needs server/ and shared/.
+# Exclude everything else so the context doesn't bloat.
 .git
 .gitignore
 .DS_Store

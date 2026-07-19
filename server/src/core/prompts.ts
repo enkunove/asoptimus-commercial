@@ -1,5 +1,5 @@
-// @aso/core — загрузка системных промптов (ПРОПРИЕТАРНО, moat, D9: наружу не уходят).
-// Промпты вшиваются в бинарь через Bun text-импорты (как в aso-util). Порт 1:1.
+// @aso/core — system prompt loading (PROPRIETARY, moat, D9: never leaves the server).
+// Prompts are baked into the binary via Bun text imports (as in aso-util). 1:1 port.
 
 // @ts-expect-error — Bun text import
 import contextMd from "./prompts/context.md" with { type: "text" };
@@ -20,10 +20,10 @@ const templates: Record<string, string> = {
   phrase: phraseMd,
 };
 
-/** Подстановка {{PLACEHOLDER}}-значений. Результат стабилен в рамках прогона (кэш промптов). */
+/** Substitutes {{PLACEHOLDER}} values. Result is stable within a run (prompt cache). */
 export function renderPrompt(task: string, vars: Record<string, string | number>): string {
   let text = templates[task];
-  if (!text) throw new Error(`Нет промпта для задачи ${task}`);
+  if (!text) throw new Error(`No prompt for task ${task}`);
   for (const [k, v] of Object.entries(vars)) {
     text = text.replaceAll(`{{${k}}}`, String(v));
   }

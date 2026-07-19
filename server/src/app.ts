@@ -1,7 +1,7 @@
-// @aso/server — корень композиции: собирает все сервисы (store, auth, billing, stripe, email,
-// llm-client, hub, run-manager) за интерфейсами. Внешние зависимости (Postgres, Anthropic,
-// Stripe, SMTP) обязательны в проде; их мок/loopback работают ТОЛЬКО при DEV=1 (иначе фабрики
-// бросают ProdConfigError). Порядок конструирования = порядок валидации секретов на старте.
+// @aso/server — composition root: wires all services (store, auth, billing, stripe, email,
+// llm-client, hub, run-manager) behind interfaces. External dependencies (Postgres, Anthropic,
+// Stripe, SMTP) are required in prod; their mock/loopback work ONLY with DEV=1 (otherwise the
+// factories throw ProdConfigError). Construction order = secret-validation order at startup.
 
 import { createStore, type Store } from "./db/index.ts";
 import { BillingService } from "./billing/service.ts";
@@ -32,8 +32,8 @@ export function createApp(): App {
   const hub = new ClientHub();
   const client = createLlmClient();
 
-  // Loopback Apple (mock-apple) — ТОЛЬКО DEV=1 и без REQUIRE_CLIENT. В проде Apple-джобы
-  // исполняет реальный клиент по WSS (jobs фейлятся, если клиента нет).
+  // Apple loopback (mock-apple) — ONLY with DEV=1 and without REQUIRE_CLIENT. In prod, Apple
+  // jobs are executed by a real client over WSS (jobs fail if no client is present).
   const allowLoopback = IS_DEV && process.env.REQUIRE_CLIENT !== "1";
   const manager = new RunManager(store, billing, client, hub, { allowLoopback });
 

@@ -1,5 +1,5 @@
-// @aso/server/db — миграции: применяет schema.sql к Postgres. Запуск: `bun run migrate`.
-// Требует DATABASE_URL. Без него — no-op с подсказкой (in-memory схему не мигрируют).
+// @aso/server/db — migrations: applies schema.sql to Postgres. Run with: `bun run migrate`.
+// Requires DATABASE_URL. Without it — no-op with a hint (in-memory needs no schema migration).
 
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    console.log("[migrate] DATABASE_URL не задан — пропуск (dev-режим на MemoryStore схему не требует).");
+    console.log("[migrate] DATABASE_URL not set — skipping (dev mode on MemoryStore needs no schema).");
     return;
   }
   const here = dirname(fileURLToPath(import.meta.url));
@@ -17,13 +17,13 @@ async function main() {
   const sql = postgres(url);
   try {
     await sql.unsafe(schema);
-    console.log("[migrate] схема применена (schema.sql).");
+    console.log("[migrate] schema applied (schema.sql).");
   } finally {
     await sql.end({ timeout: 5 });
   }
 }
 
 main().catch((e) => {
-  console.error("[migrate] ошибка:", e);
+  console.error("[migrate] error:", e);
   process.exit(1);
 });

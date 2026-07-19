@@ -1,5 +1,5 @@
-// @aso/core — Difficulty (D), 0–100 (spec 03.2). ПРОПРИЕТАРНО, чистые функции.
-// Порт 1:1 из aso-util; вход теперь — RawSerpApp[] из wire-протокола (сырой Search JSON).
+// @aso/core — Difficulty (D), 0–100 (spec 03.2). PROPRIETARY, pure functions.
+// 1:1 port from aso-util; input is now RawSerpApp[] from the wire protocol (raw Search JSON).
 
 import { normalizeKeyword } from "@aso/shared";
 import type { RawSerpApp, TopApp } from "@aso/shared";
@@ -11,7 +11,7 @@ export interface DifficultyWeights {
   match: number;
 }
 
-/** M: 1.0 — K целиком входит в trackName; 0.5 — все слова в любом порядке; 0.0 — иначе. */
+/** M: 1.0 — K appears in trackName in full; 0.5 — all words in any order; 0.0 — otherwise. */
 export function matchScore(keyword: string, trackName: string): number {
   const k = normalizeKeyword(keyword);
   const name = normalizeKeyword(trackName);
@@ -40,15 +40,16 @@ export interface DifficultyResult {
 }
 
 /**
- * Детектор «мёртвого брендового запроса» (эмпирика): Apple сеет ИМЕНА приложений в
- * suggest-индекс, поэтому фраза-имя мёртвой апки получает дутый P при нулевом реальном
- * спросе. Сигнатура: фраза — точное нормализованное имя приложения из топ-3 выдачи, у
- * него меньше ratingFloor рейтингов, и никакая ДРУГАЯ апка топа не содержит фразу целиком.
+ * "Dead brand query" detector (empirical): Apple seeds app NAMES into the suggest
+ * index, so a phrase that is a dead app's name gets an inflated P with zero real
+ * demand. Signature: the phrase is the exact normalized name of an app in the top-3
+ * results, that app has fewer than ratingFloor ratings, and no OTHER top app contains
+ * the phrase in full.
  */
 export function isDeadBrandQuery(keyword: string, topApps: TopApp[], ratingFloor = 200): boolean {
   const kw = normalizeKeyword(keyword);
   const fullMatches = topApps.filter((a) => a.match === 1);
-  if (fullMatches.length > 1) return false; // категорийный термин
+  if (fullMatches.length > 1) return false; // category term
   for (const a of topApps.slice(0, 3)) {
     if (normalizeKeyword(a.trackName) === kw && a.ratingCount < ratingFloor) return true;
   }
@@ -88,7 +89,7 @@ export function computeDifficulty(
 
   let dRaw = 0;
   topApps.forEach((a, i) => {
-    const wi = (serpTop - i) / weightSum; // позиция i=1..serpTop → вес (serpTop+1−i)/Σ
+    const wi = (serpTop - i) / weightSum; // position i=1..serpTop → weight (serpTop+1−i)/Σ
     dRaw += wi * a.strength;
   });
 

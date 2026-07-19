@@ -1,16 +1,17 @@
-// @aso/server/llm-proxy — сборка промптов (из @aso/core) + вызов Anthropic + метрик КАЖДОЙ
-// попытки + step_seq + llm_steps + idempotency-key (BUILD-PLAN D4/D7).
+// @aso/server/llm-proxy — prompt assembly (from @aso/core) + Anthropic call + metering of EVERY
+// attempt + step_seq + llm_steps + idempotency-key (BUILD-PLAN D4/D7).
 //
-// D4 v3: пользователь платит ПО КЕЙФРАЗАМ (reserve/settle на уровне прогона, billing/service).
-// Здесь — ВНУТРЕННИЙ per-attempt COGS-учёт: каждая billable-попытка = строка llm_steps с
-// usage + cost_usd (маржа мониторится, предохранитель — в оркестраторе). Кошелёк тут НЕ трогаем.
+// D4 v3: the user pays PER KEYPHRASE (reserve/settle at the run level, billing/service).
+// Here — INTERNAL per-attempt COGS accounting: every billable attempt = an llm_steps row with
+// usage + cost_usd (margin is monitored; the circuit breaker lives in the orchestrator). The
+// wallet is NOT touched here.
 //
-// Инварианты:
-//  • Валидный результат в llm_steps ДО возврата (advance state) — реплей читает его, а не
-//    зовёт провайдера заново (idempotency-key = run_id+step_seq; getLastValidStep).
-//  • Списываем СУММУ ВСЕХ попыток в COGS (каждый callOnce = своя строка), не только успешной.
-//  • ЛЮБАЯ трата требует живого клиент-коннекта (D7) — через gate().
-//  • Реплей-режим (req.replay): нет валидной прошлой попытки → ReplayFrontier (провайдер не зовётся).
+// Invariants:
+//  • The valid result is in llm_steps BEFORE returning (advance state) — replay reads it instead
+//    of calling the provider again (idempotency-key = run_id+step_seq; getLastValidStep).
+//  • COGS charges the SUM OF ALL attempts (each callOnce = its own row), not just the successful one.
+//  • ANY spend requires a live client connection (D7) — via gate().
+//  • Replay mode (req.replay): no valid prior attempt → ReplayFrontier (provider is not called).
 
 import { validateAgainstSchema } from "../core/llm-schemas.ts";
 import { costUsdFor } from "../billing/prices.ts";
@@ -23,14 +24,14 @@ export interface LlmProxyRequest {
   runId: string;
   userId: string;
   task: string;
-  /** Уникальный id логического шага в рамках прогона (для реплея): "context#1","rate#3",… */
+  /** Unique id of the logical step within a run (for replay): "context#1","rate#3",… */
   logicalStep: string;
   system: string;
   contextBlock?: string;
   prompt: string;
   schema: object;
   model: string;
-  /** Реплей-режим (D7): использовать только персиснутый результат; иначе ReplayFrontier. */
+  /** Replay mode (D7): use only the persisted result; otherwise ReplayFrontier. */
   replay?: boolean;
 }
 
@@ -47,20 +48,20 @@ export class LlmProxy {
   constructor(
     private store: Store,
     private client: LlmClient,
-    /** Гейт живого клиент-коннекта (D7): бросает, если сессии клиента нет. */
+    /** Live client-connection gate (D7): throws if there is no client session. */
     private gate: (runId: string) => void,
   ) {}
 
   async complete<T = unknown>(req: LlmProxyRequest): Promise<LlmProxyResult<T>> {
-    // Реплей (D7): если логический шаг уже завершён валидной попыткой — вернуть её, НЕ зовя провайдера.
+    // Replay (D7): if the logical step already finished with a valid attempt — return it, WITHOUT calling the provider.
     const prior = await this.store.getLastValidStep(req.runId, req.logicalStep);
     if (prior) {
       return { data: prior.result_json as T, usage: prior.usage, costUsd: prior.cost_usd ?? 0, replayed: true };
     }
-    // В реплей-режиме отсутствие персиснутого результата = фронтир durable-истории.
+    // In replay mode a missing persisted result = the frontier of durable history.
     if (req.replay) throw new ReplayFrontier(`llm ${req.logicalStep}`);
 
-    // ЛЮБАЯ трата требует живого клиента (D7).
+    // ANY spend requires a live client (D7).
     this.gate(req.runId);
 
     let note = "";
@@ -70,7 +71,7 @@ export class LlmProxy {
       const stepSeq = await this.store.nextStepSeq(req.runId);
       const idempotencyKey = `${req.runId}:${stepSeq}`;
       const prompt = note
-        ? `${req.prompt}\n\nПредыдущий ответ не прошёл валидацию схемы:\n${note}\nВерни корректный JSON строго по схеме.`
+        ? `${req.prompt}\n\nThe previous response failed schema validation:\n${note}\nReturn correct JSON strictly matching the schema.`
         : req.prompt;
 
       const t0 = Date.now();
@@ -85,12 +86,12 @@ export class LlmProxy {
         usage = r.usage;
       } catch (e) {
         if (e instanceof LlmAuthError) throw e;
-        // D4: неуспешные СЕТЕВЫЕ ретраи не billable — не пишем строку; сетевой ретрай в оркестраторе.
+        // D4: failed NETWORK retries are not billable — no row written; network retry is in the orchestrator.
         throw e;
       }
       const durationMs = Date.now() - t0;
 
-      // Внутренний COGS каждой billable-попытки (D4): usage + cost_usd в llm_steps.
+      // Internal COGS of every billable attempt (D4): usage + cost_usd in llm_steps.
       const cost = costUsdFor(req.model, usage);
 
       let data: unknown = null;
@@ -102,7 +103,7 @@ export class LlmProxy {
         if (errors.length > 0) parseNote = errors.slice(0, 10).join("\n");
         else ok = true;
       } catch {
-        parseNote = `ответ не является валидным JSON: ${text.slice(0, 200)}`;
+        parseNote = `response is not valid JSON: ${text.slice(0, 200)}`;
       }
 
       await this.store.insertLlmStep({
@@ -111,7 +112,7 @@ export class LlmProxy {
         step_seq: stepSeq,
         request_hash: idempotencyKey,
         result_json: ok ? data : null,
-        valid: ok, // валидный результат персистится ДО advance (D7)
+        valid: ok, // the valid result is persisted BEFORE advance (D7)
         usage,
         cost_usd: cost,
         model: req.model,
@@ -122,7 +123,7 @@ export class LlmProxy {
       else note = parseNote;
     }
 
-    if (!valid) throw new Error(`LLM-задача ${req.task} не вернула валидный ответ за ${MAX_ATTEMPTS} попыток`);
+    if (!valid) throw new Error(`LLM task ${req.task} did not return a valid response in ${MAX_ATTEMPTS} attempts`);
     return { data: valid.data, usage: valid.usage, costUsd: valid.cost, replayed: false };
   }
 }

@@ -1,7 +1,7 @@
-// @aso/core — JSON-схемы выходов всех LLM-задач (spec 06.3). ПРОПРИЕТАРНО.
-// Порт 1:1 из aso-util/src/llm/schemas.ts. Ограничения structured outputs: везде
-// additionalProperties:false, все поля в required, без numeric/string constraints
-// (количества/длины валидируются кодом после парсинга).
+// @aso/core — JSON schemas for all LLM task outputs (spec 06.3). PROPRIETARY.
+// 1:1 port from aso-util/src/llm/schemas.ts. Structured-outputs constraints:
+// additionalProperties:false everywhere, all fields in required, no numeric/string
+// constraints (counts/lengths are validated by code after parsing).
 
 export const contextSchema = {
   type: "object",
@@ -100,21 +100,21 @@ export const schemas: Record<string, object> = {
   phrase: phraseSchema,
 };
 
-/** Минимальная структурная валидация ответа по схеме (код не доверяет провайдеру, spec 06.1). */
+/** Minimal structural validation of a response against a schema (code does not trust the provider, spec 06.1). */
 export function validateAgainstSchema(data: unknown, schema: any, path = "$"): string[] {
   const errors: string[] = [];
   const check = (value: any, sch: any, p: string) => {
     if (sch.type === "object") {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        errors.push(`${p}: ожидался объект`);
+        errors.push(`${p}: expected an object`);
         return;
       }
       for (const req of sch.required ?? []) {
-        if (!(req in value)) errors.push(`${p}.${req}: обязательное поле отсутствует`);
+        if (!(req in value)) errors.push(`${p}.${req}: required field missing`);
       }
       if (sch.additionalProperties === false) {
         for (const k of Object.keys(value)) {
-          if (!(k in (sch.properties ?? {}))) errors.push(`${p}.${k}: лишнее поле`);
+          if (!(k in (sch.properties ?? {}))) errors.push(`${p}.${k}: unexpected field`);
         }
       }
       for (const [k, sub] of Object.entries(sch.properties ?? {})) {
@@ -122,20 +122,20 @@ export function validateAgainstSchema(data: unknown, schema: any, path = "$"): s
       }
     } else if (sch.type === "array") {
       if (!Array.isArray(value)) {
-        errors.push(`${p}: ожидался массив`);
+        errors.push(`${p}: expected an array`);
         return;
       }
       value.forEach((item, i) => check(item, sch.items, `${p}[${i}]`));
     } else if (sch.type === "string") {
-      if (typeof value !== "string") errors.push(`${p}: ожидалась строка`);
-      else if (sch.enum && !sch.enum.includes(value)) errors.push(`${p}: значение "${value}" не из ${JSON.stringify(sch.enum)}`);
+      if (typeof value !== "string") errors.push(`${p}: expected a string`);
+      else if (sch.enum && !sch.enum.includes(value)) errors.push(`${p}: value "${value}" not in ${JSON.stringify(sch.enum)}`);
     } else if (sch.type === "integer") {
-      if (!Number.isInteger(value)) errors.push(`${p}: ожидалось целое число`);
-      else if (sch.enum && !sch.enum.includes(value)) errors.push(`${p}: значение ${value} не из ${JSON.stringify(sch.enum)}`);
+      if (!Number.isInteger(value)) errors.push(`${p}: expected an integer`);
+      else if (sch.enum && !sch.enum.includes(value)) errors.push(`${p}: value ${value} not in ${JSON.stringify(sch.enum)}`);
     } else if (sch.type === "number") {
-      if (typeof value !== "number") errors.push(`${p}: ожидалось число`);
+      if (typeof value !== "number") errors.push(`${p}: expected a number`);
     } else if (sch.type === "boolean") {
-      if (typeof value !== "boolean") errors.push(`${p}: ожидался boolean`);
+      if (typeof value !== "boolean") errors.push(`${p}: expected a boolean`);
     }
   };
   check(data, schema, path);

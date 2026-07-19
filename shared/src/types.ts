@@ -1,6 +1,6 @@
-// @aso/shared — доменные типы (общий словарь UI ↔ сервер). Zero-I/O, zero-secret.
-// Портировано из aso-util/src/types.ts. НАРОЧНО ОПУЩЕН LlmLogEntry с телами system/prompt —
-// наружу они не уходят (D9); клиент видит только protocol.ts::LlmLogPublic.
+// @aso/shared — domain types (shared vocabulary UI ↔ server). Zero-I/O, zero-secret.
+// Ported from aso-util/src/types.ts. LlmLogEntry with system/prompt bodies is DELIBERATELY OMITTED —
+// they never leave (D9); the client sees only protocol.ts::LlmLogPublic.
 
 export interface RunConfig {
   brand: string;
@@ -138,7 +138,7 @@ export interface AssemblyResult {
   topUncovered: { keyword: string; score: number; missingWords: string[] }[];
 }
 
-/** Проекция состояния прогона, которую видит UI (в облаке источник — Postgres). */
+/** Run state projection seen by the UI (in the cloud the source is Postgres). */
 export interface RunState {
   runId: string;
   phase: RunPhase;
@@ -169,7 +169,7 @@ export interface RunSummary {
   topKeywords: { keyword: string; score: number }[];
 }
 
-// Счётчик выборки: rated/selected/bench с R >= 1 (spec 04.1).
+// Sample counter: rated/selected/bench with R >= 1 (spec 04.1).
 export function sampleCount(keywords: KeywordEntry[]): number {
   return keywords.filter(
     (k) =>
@@ -178,7 +178,7 @@ export function sampleCount(keywords: KeywordEntry[]): number {
   ).length;
 }
 
-// Нормализация кейворда (spec 03): lowercase → trim → схлопнуть пробелы → NFC.
+// Keyword normalization (spec 03): lowercase → trim → collapse whitespace → NFC.
 export function normalizeKeyword(s: string): string {
   return s.toLowerCase().trim().replace(/\s+/g, " ").normalize("NFC");
 }

@@ -1,13 +1,13 @@
-// @aso/server — реплей состояния прогона из durable-логов (D7, «честное закрытие»).
+// @aso/server — replay of run state from durable logs (D7, "honest closure").
 //
-// При рестарте инстанса внутреннее состояние оркестратора реконструируется НЕ из снапшота
-// runs.state, а РЕ-ПРОГОНОМ детерминированного пайплайна, где ВСЕ внешние side-effects
-// подаются из персиснутых логов:
-//   • LLM  — из llm_steps (последняя valid-попытка логического шага; провайдер НЕ зовётся);
-//   • Apple — из apple_cache (общесетевой кэш сырья).
-// Первый лог-промах = «фронтир» durable-истории: дальше прогон ещё не был зафиксирован, поэтому
-// реплей останавливается, а состояние остаётся точно на границе resumable. Живой resume после
-// этого делает уже настоящие (billable/сетевые) вызовы с фронтира — без двойного COGS/фетча.
+// On instance restart the orchestrator's internal state is reconstructed NOT from the
+// runs.state snapshot, but by RE-RUNNING the deterministic pipeline where ALL external
+// side effects are fed from persisted logs:
+//   • LLM  — from llm_steps (last valid attempt of the logical step; the provider is NOT called);
+//   • Apple — from apple_cache (network-wide cache of raw data).
+// The first log miss = the "frontier" of durable history: beyond it the run was never recorded,
+// so replay stops and state lands exactly on the resumable boundary. A live resume afterwards
+// makes real (billable/network) calls from the frontier — no double COGS/fetch.
 export class ReplayFrontier extends Error {
   constructor(public where: string) {
     super(`replay frontier: ${where}`);

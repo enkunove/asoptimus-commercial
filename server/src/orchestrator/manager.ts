@@ -1,10 +1,10 @@
-// @aso/server/orchestrator — менеджер прогонов: связывает Store + billing + llm-proxy +
-// apple-dispatch + hub в один Orchestrator на прогон. Держит event-bus (run.progress →
-// WSS-клиент + браузерный SSE-релей).
+// @aso/server/orchestrator — run manager: wires Store + billing + llm-proxy +
+// apple-dispatch + hub into one Orchestrator per run. Owns the event bus (run.progress →
+// WSS client + browser SSE relay).
 //
-// D4 v4: НЕТ апфронт-резерва и end-of-run settle. startRun только проверяет, что баланс покрывает
-// хотя бы одну кейфразу (не удерживает). Списание — в реальном времени в оркестраторе
-// (deps.chargeKeyphrase). D7: cold-resume реконструирует состояние event-replay'ем из логов.
+// D4 v4: NO upfront reserve and no end-of-run settle. startRun only checks that the balance covers
+// at least one keyphrase (does not hold it). Debiting happens in real time in the orchestrator
+// (deps.chargeKeyphrase). D7: cold resume reconstructs state via event replay from the logs.
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -45,18 +45,18 @@ export class RunManager {
   onProgress(l: ProgressListener) { this.listeners.add(l); return () => this.listeners.delete(l); }
   userOf(runId: string): string | undefined { return this.runUsers.get(runId); }
 
-  /** Гейт живого клиент-коннекта (D7): есть реальный клиент → ок; иначе только DEV-loopback. */
+  /** Live client-connection gate (D7): a real client exists → ok; otherwise DEV loopback only. */
   private assertLiveClient(runId: string) {
     const userId = this.runUsers.get(runId);
     if (userId && this.hub.hasClient(userId)) return;
-    if (this.opts.allowLoopback) return; // DEV: реального клиента нет, но loopback исполняет джобы
+    if (this.opts.allowLoopback) return; // DEV: no real client, but loopback executes jobs
     throw new ClientGoneError();
   }
 
   private channelFor(userId: string): JobChannel {
     if (this.hub.hasClient(userId)) return new WssJobChannel(this.hub, userId);
     if (this.opts.allowLoopback) return new LoopbackJobChannel();
-    return new WssJobChannel(this.hub, userId); // нет клиента и нет loopback → диспатч отклонится (ClientGone)
+    return new WssJobChannel(this.hub, userId); // no client and no loopback → dispatch will be rejected (ClientGone)
   }
 
   private async emitEvent(runId: string, kind: string, text: string) {
@@ -71,7 +71,7 @@ export class RunManager {
     await this.store.updateRun({
       id: s.runId, phase: s.phase, context: s.context, final: s.assembly, usage: s.usage, state: s,
     });
-    // run.phase → клиенту (счётчики выборки).
+    // run.phase → to the client (sample counters).
     this.hub.broadcast(s.userId, {
       t: "run.phase", run_id: s.runId, phase: s.phase,
       counters: { sampleCount: sampleCount(s.keywords), sampleSize: s.config.sampleSize, requestsMade: 0, cacheHits: 0, calls: s.usage.calls },
@@ -88,7 +88,7 @@ export class RunManager {
     if (userId) this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason, ...(code ? { code } : {}) });
   }
 
-  /** РЕАЛЬНОЕ списание кейфразы (D4 v4) + живой push баланса клиенту. */
+  /** REAL keyphrase debit (D4 v4) + live balance push to the client. */
   private async chargeKeyphrase(userId: string, runId: string, model: string, keyword: string) {
     const price = pricePerKeyphrase(model);
     const r = await this.billing.chargeKeyphrase(userId, runId, keyword, price);
@@ -110,16 +110,16 @@ export class RunManager {
     });
   }
 
-  /** Завершение прогона (D4 v4: без settle — usage-based, всё списано в реальном времени). */
+  /** Run completion (D4 v4: no settle — usage-based, everything debited in real time). */
   private async finishRun(s: ServerRunState) {
     await this.broadcastBalance(s.userId);
     const charged = (await this.store.listLedger(s.userId, 1000))
       .filter((r) => r.run_id === s.runId && r.type === "debit")
       .reduce((sum, r) => sum + Math.abs(Number(r.delta)), 0);
-    await this.emitEvent(s.runId, "💰", `прогон завершён: списано ${charged.toFixed(2)} кр. за ${sampleCount(s.keywords)} кейфраз`);
+    await this.emitEvent(s.runId, "💰", `run finished: ${charged.toFixed(2)} cr debited for ${sampleCount(s.keywords)} keyphrases`);
   }
 
-  // ---------- публичный API ----------
+  // ---------- public API ----------
 
   async createRun(userId: string, brief: string, config: RunConfig): Promise<string> {
     const runId = `run_${randomUUID()}`;
@@ -135,7 +135,7 @@ export class RunManager {
     return runId;
   }
 
-  /** Старт: gate «баланс покрывает хотя бы 1 кейфразу» (НЕ резерв, D4 v4); мало → paused. */
+  /** Start: gate "balance covers at least 1 keyphrase" (NOT a reserve, D4 v4); insufficient → paused. */
   async startRun(runId: string): Promise<void> {
     const orch = await this.getOrchestrator(runId);
     const userId = this.runUsers.get(runId)!;
@@ -143,7 +143,7 @@ export class RunManager {
     const balance = await this.billing.balance(userId);
     if (balance < price) {
       orch.state.paused = true;
-      orch.state.notice = `Недостаточно кредитов для старта (кейфраза стоит ${price}, на балансе ${balance.toFixed(2)}). Пополните баланс.`;
+      orch.state.notice = `Not enough credits to start (a keyphrase costs ${price}, balance is ${balance.toFixed(2)}). Top up your balance.`;
       await this.persist(orch.state);
       await this.emitEvent(runId, "💳", orch.state.notice);
       this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason: orch.state.notice, code: "credits_out" });
@@ -152,20 +152,20 @@ export class RunManager {
     await orch.start();
   }
 
-  /** Получить оркестратор: в памяти — как есть; cold — реконструкция event-replay'ем из логов (D7). */
+  /** Get the orchestrator: in memory — as is; cold — reconstruction via event replay from the logs (D7). */
   async getOrchestrator(runId: string): Promise<Orchestrator> {
     const existing = this.orchestrators.get(runId);
     if (existing) return existing;
     const row = await this.store.getRun(runId);
-    if (!row) throw new Error(`прогон не найден: ${runId}`);
+    if (!row) throw new Error(`run not found: ${runId}`);
     this.runUsers.set(runId, row.user_id);
     const state = initialState(runId, row.user_id, row.brief ?? "", row.config, Number(row.estimate_credits ?? 0));
     const orch = this.buildOrchestrator(state);
     try {
       await orch.replayFromLogs(row.phase as ServerRunState["phase"]);
     } catch (e: any) {
-      // Неожиданный сбой реплея — страховка: гидрируем внутренние поля из снапшот-проекции.
-      log.warn("[replay] реконструкция из логов не удалась — fallback на снапшот-проекцию", { runId, err: String(e?.message ?? e) });
+      // Unexpected replay failure — safety net: hydrate internal fields from the snapshot projection.
+      log.warn("[replay] reconstruction from logs failed — falling back to the snapshot projection", { runId, err: String(e?.message ?? e) });
       if (row.state) Object.assign(state, row.state, { runId, userId: row.user_id, config: row.config, brief: row.brief ?? "" });
     }
     this.orchestrators.set(runId, orch);
@@ -183,12 +183,12 @@ export class RunManager {
       case "editContext": orch.editContext(action.patch as any); break;
       case "exclude": orch.excludeKeyword(action.keyword); break;
       case "delete": await this.deleteRun(runId); break;
-      default: throw new Error(`неизвестное действие: ${(action as any).type}`);
+      default: throw new Error(`unknown action: ${(action as any).type}`);
     }
   }
 
   private async deleteRun(runId: string): Promise<void> {
-    // D4 v4: удаление ничего не возвращает на кошелёк (списания usage-based, уже финальны).
+    // D4 v4: deletion refunds nothing to the wallet (debits are usage-based and already final).
     this.orchestrators.delete(runId);
     await this.store.updateRun({ id: runId, phase: "done" });
   }
@@ -222,7 +222,7 @@ export class RunManager {
     return this.store.listRunEvents(runId, afterSeq);
   }
 
-  /** query kind="run": RunSnapshot (RunState + config + лента событий + счётчики) для первой загрузки. */
+  /** query kind="run": RunSnapshot (RunState + config + event feed + counters) for the initial load. */
   async runSnapshot(runId: string): Promise<RunSnapshot | null> {
     const state = await this.getState(runId);
     if (!state) return null;
@@ -238,7 +238,7 @@ export class RunManager {
     };
   }
 
-  /** query kind="keywords": СЕРВЕРНАЯ пагинация/сорт/фильтр (spec 07: 500+ строк не грузить целиком). */
+  /** query kind="keywords": SERVER-SIDE pagination/sort/filter (spec 07: don't load 500+ rows wholesale). */
   async keywordPage(runId: string, params: Record<string, unknown> = {}): Promise<KeywordPage> {
     const state = await this.getState(runId);
     let items: KeywordEntry[] = state?.keywords ? [...state.keywords] : [];
@@ -268,14 +268,14 @@ export class RunManager {
     return { total, page, pageSize, items: items.slice(start, start + pageSize) };
   }
 
-  /** query kind="keyword": одна запись по params.keyword (не весь массив). */
+  /** query kind="keyword": a single entry by params.keyword (not the whole array). */
   async keywordItem(runId: string, keyword: string): Promise<{ item: KeywordEntry | null }> {
     const state = await this.getState(runId);
     const kw = normalizeKeyword(keyword);
     return { item: state?.keywords.find((k) => k.keyword === kw) ?? null };
   }
 
-  /** query kind="llm-log": пагинированный D9-журнал (только выходы+числа). */
+  /** query kind="llm-log": paginated D9 log (outputs+numbers only). */
   async llmLogPage(runId: string, params: Record<string, unknown> = {}): Promise<LlmLogPage> {
     const all = await this.llmLog(runId);
     const pageSize = Math.min(200, Math.max(1, Number(params.pageSize ?? 100)));
@@ -284,7 +284,7 @@ export class RunManager {
     return { total: all.length, page, items: all.slice(start, start + pageSize) };
   }
 
-  /** D9-журнал LLM: ТОЛЬКО выходы+числа (LlmLogPublic). Промптов нет физически (в llm_steps их нет). */
+  /** D9 LLM log: ONLY outputs+numbers (LlmLogPublic). Prompts are physically absent (not stored in llm_steps). */
   async llmLog(runId: string): Promise<LlmLogPublic[]> {
     const steps = await this.store.listLlmSteps(runId);
     return steps.map((s) => ({
@@ -296,11 +296,11 @@ export class RunManager {
       tokens: { input: s.usage.inputTokens, output: s.usage.outputTokens, cacheRead: s.usage.cacheReadTokens },
       costUsd: s.cost_usd,
       durationMs: s.duration_ms ?? 0,
-      ...(s.valid ? {} : { error: "ответ не прошёл валидацию схемы (ретрай)" }),
+      ...(s.valid ? {} : { error: "response failed schema validation (retried)" }),
     }));
   }
 
-  /** Клиент вернул результат/ошибку джобы → маршрутизация в ожидающий диспатч. */
+  /** Client returned a job result/error → route it to the awaiting dispatch. */
   resolveJob = (result: Parameters<ClientHub["resolveJob"]>[0]) => this.hub.resolveJob(result);
   rejectJob = (jobId: string, reason: string, throttle?: boolean) => this.hub.rejectJob(jobId, reason, throttle);
 }

@@ -1,20 +1,20 @@
-// @aso/server/orchestrator — машина состояний прогона (порт aso-util pipeline/orchestrator.ts,
-// 1339 стр) с ИНВЕРСИЕЙ ПОТОКА УПРАВЛЕНИЯ (BUILD-PLAN §7): Apple-I/O больше не inline-fetch,
-// а async job-dispatch через AppleGateway (Probe/Serp/Hints). LLM — через LlmProxy (метрик
-// каждой попытки, микро-резерв, llm_steps, D4/D7). Событийность — в run_events (event-sourced).
-// Pure-функции метрик/сборки — 1:1 из @aso/core.
+// @aso/server/orchestrator — run state machine (port of aso-util pipeline/orchestrator.ts,
+// 1339 lines) with INVERTED CONTROL FLOW (BUILD-PLAN §7): Apple I/O is no longer inline fetch
+// but async job dispatch via AppleGateway (Probe/Serp/Hints). LLM goes through LlmProxy (per-attempt
+// metrics, micro-reserve, llm_steps, D4/D7). Events are event-sourced in run_events.
+// Pure metric/assembly functions are 1:1 from @aso/core.
 //
-// БИЛЛИНГ (D4 v4): списание в реальном времени — как только кейворд становится проверенной
-// кейфразой (rated, R≥1) — сразу charge pricePerKeyphrase[model] (deps.chargeKeyphrase). На нуле
-// — hard-stop paused (резюмируемо). Оркестратор кэпит перебор на sampleSize×(1+OVERSHOOT_PCT),
-// но что произведено — то оплачено. Внутренний per-attempt COGS (llm_steps) — предохранитель.
+// BILLING (D4 v4): real-time debit — as soon as a keyword becomes a verified keyphrase
+// (rated, R≥1) — immediately charge pricePerKeyphrase[model] (deps.chargeKeyphrase). At zero
+// — hard-stop paused (resumable). The orchestrator caps exploration at sampleSize×(1+OVERSHOOT_PCT),
+// but whatever was produced is paid for. Internal per-attempt COGS (llm_steps) is the safety fuse.
 //
-// REPLAY (D7): при рестарте состояние реконструируется РЕ-ПРОГОНОМ (replayFromLogs) с подачей
-// LLM из llm_steps и Apple из apple_cache; первый лог-промах = фронтир → останов, resumable.
+// REPLAY (D7): on restart, state is reconstructed by RE-RUNNING (replayFromLogs), feeding
+// LLM from llm_steps and Apple from apple_cache; first log miss = frontier → stop, resumable.
 //
-// Порядок probe→rate — последовательный (детерминированный); фоновый интерливинг rate во время
-// probe (aso-util rateInFlight) намеренно НЕ переносим: он усложняет реплей/паузу-на-границе-джобы
-// без выигрыша для throttle-bound прогона (spec 04.6) — rate идёт пакетом ПОСЛЕ probe.
+// probe→rate order is sequential (deterministic); background interleaving of rate during
+// probe (aso-util rateInFlight) is deliberately NOT ported: it complicates replay/pause-at-job-boundary
+// with no gain for a throttle-bound run (spec 04.6) — rate runs as a batch AFTER probe.
 
 import {
   normalizeKeyword, sampleCount, STOREFRONTS,
@@ -54,15 +54,15 @@ const AUX_WORDS = new Set([
 export interface OrchestratorDeps {
   gateway: AppleGateway;
   proxy: LlmProxy;
-  /** Персист read-проекции состояния (runs.state). */
+  /** Persist the read projection of state (runs.state). */
   persist: (s: ServerRunState) => Promise<void>;
-  /** Добавить событие в run_events; вернуть seq. */
+  /** Append an event to run_events; returns seq. */
   emitEvent: (runId: string, kind: string, text: string) => Promise<void>;
-  /** РЕАЛЬНОЕ списание одной проверенной кейфразы (D4 v4). ok=false → hard-stop paused. */
+  /** REAL debit of one verified keyphrase (D4 v4). ok=false → hard-stop paused. */
   chargeKeyphrase: (keyword: string) => Promise<{ ok: boolean; balance: number; price: number }>;
-  /** Пауза → run.paused клиенту с кодом причины (credits_out при исчерпании кредитов, D4 v4). */
+  /** Pause → run.paused to the client with a reason code (credits_out when credits run out, D4 v4). */
   onPaused?: (reason: string, code?: "credits_out" | "provider_error" | "client_offline" | "user") => void;
-  /** Финальный broadcast баланса + событие при завершении (без settle — usage-based). */
+  /** Final balance broadcast + event on completion (no settle — usage-based). */
   onDone?: (s: ServerRunState) => Promise<void>;
 }
 
@@ -76,36 +76,36 @@ export class Orchestrator {
   constructor(public state: ServerRunState, private deps: OrchestratorDeps) {}
 
   private get config(): RunConfig { return this.state.config; }
-  /** Кэп перебора (D4 v4): не заводим новые ветки после sampleSize×(1+OVERSHOOT_PCT). */
+  /** Overshoot cap (D4 v4): no new branches after sampleSize×(1+OVERSHOOT_PCT). */
   private get overshootCap(): number { return Math.floor(this.config.sampleSize * (1 + OVERSHOOT_PCT)); }
   private atOvershootCap(): boolean { return sampleCount(this.state.keywords) >= this.overshootCap; }
   private get storefront(): number {
     const sf = STOREFRONTS[this.config.country];
-    if (!sf) throw new Error(`неизвестная страна: ${this.config.country}`);
+    if (!sf) throw new Error(`unknown country: ${this.config.country}`);
     return sf.id;
   }
 
-  // ---------- публичное управление (spec 04.4) ----------
+  // ---------- public controls (spec 04.4) ----------
 
   requestPause() { this.pauseRequested = true; }
 
   requestStopAndAssemble() {
-    if (sampleCount(this.state.keywords) < 30) throw new Error("Досрочная сборка доступна при выборке ≥ 30");
+    if (sampleCount(this.state.keywords) < 30) throw new Error("Early assembly requires a sample of ≥ 30");
     this.stopAndAssembleRequested = true;
     if (!this.running) void this.run("assembling");
   }
 
   excludeKeyword(keyword: string) {
     const k = this.state.keywords.find((x) => x.keyword === normalizeKeyword(keyword));
-    if (!k) throw new Error(`Кейворд не найден: ${keyword}`);
+    if (!k) throw new Error(`Keyword not found: ${keyword}`);
     k.status = "excluded";
-    void this.event("⛔", `${k.keyword} исключён вручную`);
+    void this.event("⛔", `${k.keyword} excluded manually`);
   }
 
   editContext(patch: Partial<BusinessContext>) {
-    if (!this.state.context) throw new Error("Контекст ещё не извлечён");
+    if (!this.state.context) throw new Error("Context not extracted yet");
     this.state.context = { ...this.state.context, ...patch };
-    void this.event("✏️", "контекст отредактирован пользователем");
+    void this.event("✏️", "context edited by user");
   }
 
   async start() {
@@ -114,7 +114,7 @@ export class Orchestrator {
   }
 
   async confirmContext() {
-    if (this.state.phase !== "context_review") throw new Error("Прогон не ждёт подтверждения контекста");
+    if (this.state.phase !== "context_review") throw new Error("Run is not awaiting context confirmation");
     await this.run("seeding");
   }
 
@@ -132,12 +132,12 @@ export class Orchestrator {
   }
 
   async reassemble() {
-    if (this.state.phase !== "done") throw new Error("Пересборка доступна после завершения");
+    if (this.state.phase !== "done") throw new Error("Reassembly is only available after completion");
     for (const k of this.state.keywords) if (k.status === "selected" || k.status === "bench") k.status = "rated";
     await this.run("assembling");
   }
 
-  // ---------- главный цикл фаз ----------
+  // ---------- main phase loop ----------
 
   private async run(fromPhase: ServerRunState["phase"]) {
     this.running = true;
@@ -155,7 +155,7 @@ export class Orchestrator {
             phase = "context_review";
             this.state.phase = phase;
             await this.save();
-            return; // единственная блокирующая на пользователе фаза
+            return; // the only phase that blocks on the user
           case "seeding":
             await this.phaseSeeding();
             phase = "loop";
@@ -172,7 +172,7 @@ export class Orchestrator {
             await this.phaseAssembling();
             phase = "done";
             this.state.phase = phase;
-            await this.event("🏁", "прогон завершён — метаданные собраны");
+            await this.event("🏁", "run finished — metadata assembled");
             await this.save();
             await this.deps.onDone?.(this.state);
             return;
@@ -185,63 +185,63 @@ export class Orchestrator {
         }
       }
     } catch (e: any) {
-      if (e instanceof ReplayFrontier) throw e; // реплей: наверх, реконструкция остановлена на фронтире
+      if (e instanceof ReplayFrontier) throw e; // replay: rethrow, reconstruction stopped at the frontier
       let pauseCode: "credits_out" | "provider_error" | "client_offline" | "user" | undefined;
       if (e instanceof PauseInterrupt) {
         this.state.paused = true;
-        this.state.notice = "Прогон на паузе.";
+        this.state.notice = "Run paused.";
         pauseCode = "user";
-        await this.event("⏸", "пауза");
+        await this.event("⏸", "paused");
       } else if (e instanceof InsufficientCredits) {
         this.state.paused = true;
-        this.state.notice = `Кредиты кончились (кейфраза стоит ${e.needCredits}, на балансе ${e.haveCredits.toFixed(2)}). Пополните — продолжим с этого места.`;
+        this.state.notice = `Out of credits (a keyphrase costs ${e.needCredits}, balance is ${e.haveCredits.toFixed(2)}). Top up and we'll resume from here.`;
         pauseCode = "credits_out";
         await this.event("💳", this.state.notice);
       } else if (e instanceof CogsExceededCeiling) {
         this.state.paused = true;
-        this.state.notice = `Прогон приостановлен предохранителем себестоимости. ${e.message}`;
+        this.state.notice = `Run paused by the COGS safety fuse. ${e.message}`;
         await this.event("🛑", this.state.notice);
       } else if (e instanceof LlmAuthError) {
         this.state.paused = true;
-        this.state.notice = `Проблема с провайдером: ${e.message}.`;
+        this.state.notice = `Provider issue: ${e.message}.`;
         pauseCode = "provider_error";
         await this.event("⚠️", this.state.notice);
       } else if (e?.name === "ClientGoneError" || e instanceof JobError) {
         this.state.paused = true;
-        this.state.notice = `Клиент отключился — прогон на паузе (D7). ${e?.message ?? ""}`;
+        this.state.notice = `Client disconnected — run paused (D7). ${e?.message ?? ""}`;
         pauseCode = "client_offline";
         await this.event("🔌", this.state.notice);
       } else {
         this.state.paused = true;
-        this.state.notice = `Ошибка: ${e?.message ?? e}. Нажмите «Возобновить».`;
+        this.state.notice = `Error: ${e?.message ?? e}. Press "Resume".`;
         await this.event("⚠️", this.state.notice);
       }
       await this.save();
-      this.deps.onPaused?.(this.state.notice ?? "Прогон на паузе.", pauseCode);
+      this.deps.onPaused?.(this.state.notice ?? "Run paused.", pauseCode);
     } finally {
       this.running = false;
       await this.save();
     }
   }
 
-  // ---------- фазы ----------
+  // ---------- phases ----------
 
   private async phaseContext() {
-    await this.event("🧠", "извлекаю бизнес-контекст из брифа");
+    await this.event("🧠", "extracting business context from the brief");
     const system = renderPrompt("context", {
       COUNTRY: this.config.country,
       SEMANTIC_LANGUAGE: this.config.semanticLanguage,
     });
-    const res = await this.llm<BusinessContext>("context", system, `Бриф продукта:\n\n${this.state.brief}`, undefined);
+    const res = await this.llm<BusinessContext>("context", system, `Product brief:\n\n${this.state.brief}`, undefined);
     const ctx = { ...res, targetLanguage: this.config.semanticLanguage };
-    if (ctx.jobsToBeDone.length < 3) throw new Error("контекст: слишком мало jobsToBeDone");
+    if (ctx.jobsToBeDone.length < 3) throw new Error("context: too few jobsToBeDone");
     this.state.context = ctx;
-    await this.event("✅", "контекст извлечён — подтвердите или отредактируйте");
+    await this.event("✅", "context extracted — confirm or edit");
   }
 
   private async phaseSeeding() {
     this.mustContext();
-    await this.event("🌱", "генерирую сид-гипотезы");
+    await this.event("🌱", "generating seed hypotheses");
     const system = renderPrompt("seeds", {
       SEMANTIC_LANGUAGE: this.config.semanticLanguage,
       COUNTRY: this.config.country,
@@ -249,10 +249,10 @@ export class Orchestrator {
       BATCH_SIZE: this.config.batchSize,
     });
     const res = await this.llm<{ keywords: { keyword: string; type: string }[] }>(
-      "seeds", system, `Сгенерируй ${this.config.batchSize} сид-гипотез.`, this.contextBlock(),
+      "seeds", system, `Generate ${this.config.batchSize} seed hypotheses.`, this.contextBlock(),
     );
     const added = await this.addCandidates(res.keywords.map((k) => ({ ...k, source: "seed" as const })));
-    await this.event("🌱", `посев: +${added} гипотез`);
+    await this.event("🌱", `seeding: +${added} hypotheses`);
   }
 
   private async phaseLoop() {
@@ -261,7 +261,7 @@ export class Orchestrator {
       await this.probeAll(true);
       await this.rateAll();
       const count = sampleCount(this.state.keywords);
-      await this.event("📊", `выборка: ${count}/${this.config.sampleSize}`);
+      await this.event("📊", `sample: ${count}/${this.config.sampleSize}`);
       if (this.stopAndAssembleRequested) return;
       if (count >= this.config.sampleSize) return;
       await this.hypothesize();
@@ -273,8 +273,8 @@ export class Orchestrator {
     while (this.state.improvementState.roundsSpent < this.config.improvementRounds) {
       this.checkPause();
       if (this.stopAndAssembleRequested) return;
-      if (this.atOvershootCap()) return; // кэп перебора (D4 v4)
-      await this.event("🔁", `раунд улучшения ${this.state.improvementState.roundsSpent + 1}/${this.config.improvementRounds}`);
+      if (this.atOvershootCap()) return; // overshoot cap (D4 v4)
+      await this.event("🔁", `improving round ${this.state.improvementState.roundsSpent + 1}/${this.config.improvementRounds}`);
       await this.hypothesize();
       await this.probeAll();
       await this.rateAll();
@@ -283,17 +283,17 @@ export class Orchestrator {
       const changed = newTop.some((k) => !snapshot.has(k));
       if (changed) {
         this.state.improvementState.roundsSpent = 0;
-        await this.event("📈", "топ-20 обновился — счётчик раундов сброшен");
+        await this.event("📈", "top-20 changed — round counter reset");
       } else {
         this.state.improvementState.roundsSpent += 1;
-        await this.event("🔁", "раунд без обновления топ-20");
+        await this.event("🔁", "round with no top-20 change");
       }
       this.state.improvementState.topSnapshot = newTop;
       await this.save();
     }
   }
 
-  // ---------- probe/rate (инвертированный I/O) ----------
+  // ---------- probe/rate (inverted I/O) ----------
 
   private async probeAll(stopAtSample = false) {
     const sampleFull = () => sampleCount(this.state.keywords) >= this.config.sampleSize;
@@ -309,11 +309,11 @@ export class Orchestrator {
     for (const k of candidates()) {
       this.checkPause();
       if (stopAtSample && sampleFull()) {
-        await this.event("📊", "выборка набрана — остальные подождут раундов улучшения");
+        await this.event("📊", "sample complete — the rest will wait for improving rounds");
         break;
       }
       try {
-        // P — через ProbeJob (клиент фетчит; сервер считает над prefill∪fetched, D2/D3).
+        // P — via ProbeJob (client fetches; server computes over prefill∪fetched, D2/D3).
         if (!this.state.hintsEndpointDown) {
           try {
             const raw = await this.deps.gateway.probe(k.keyword, this.storefront);
@@ -331,7 +331,7 @@ export class Orchestrator {
             this.hintFailStreak++;
             if (this.hintFailStreak >= 3) {
               this.state.hintsEndpointDown = true;
-              await this.event("⚠️", `эндпоинт подсказок недоступен (${e?.message ?? e}) — Popularity в деградации (P=50)`);
+              await this.event("⚠️", `hints endpoint unavailable (${e?.message ?? e}) — Popularity degraded (P=50)`);
             } else {
               throw e;
             }
@@ -341,7 +341,7 @@ export class Orchestrator {
           k.metrics.P = null; k.metrics.L = null; k.metrics.rank = null;
           k.metrics.unsuggested = false; k.degraded = true;
         }
-        // D — через SerpJob.
+        // D — via SerpJob.
         const serp = await this.deps.gateway.serp(k.keyword, this.storefront, this.config.language);
         const diff = computeDifficulty(k.keyword, serp.results, serp.resultCount, this.config.serpTop, this.config.weights.difficulty);
         k.metrics.D = diff.D;
@@ -349,7 +349,7 @@ export class Orchestrator {
         k.metrics.topApps = diff.topApps;
         k.metrics.brandQuery = isDeadBrandQuery(k.keyword, diff.topApps);
         if (k.metrics.brandQuery) {
-          await this.event("🏷", `${k.keyword}: имя непопулярной апки — Score занулён`);
+          await this.event("🏷", `${k.keyword}: name of an unpopular app — Score zeroed`);
         }
         k.status = "verified";
         k.probedAt = new Date().toISOString();
@@ -363,12 +363,12 @@ export class Orchestrator {
         if (e?.name === "ClientGoneError") throw e;
         k.status = "error";
         k.error = String(e?.message ?? e);
-        await this.event("✗", `${k.keyword}: ошибка Apple (${k.error}) — продолжаю`);
+        await this.event("✗", `${k.keyword}: Apple error (${k.error}) — continuing`);
       }
       await this.save();
     }
-    // rate вызывается фазой (phaseLoop/phaseImproving) ПОСЛЕ probe — последовательно и
-    // детерминированно (см. решение об отказе от rateInFlight в шапке файла).
+    // rate is invoked by the phase (phaseLoop/phaseImproving) AFTER probe — sequentially and
+    // deterministically (see the decision to drop rateInFlight in the file header).
   }
 
   private async prescreenCandidates() {
@@ -382,7 +382,7 @@ export class Orchestrator {
       const system = renderPrompt("rate", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
       const items = batch.map((k) => ({ keyword: k.keyword, P: null, D: null, top3: [] }));
       const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string }[] }>(
-        "rate", system, `ПРЕСКРИН (P/D ещё не измерены) — оцени чисто семантически:\n${JSON.stringify(items, null, 2)}`,
+        "rate", system, `PRESCREEN (P/D not measured yet) — rate purely semantically:\n${JSON.stringify(items, null, 2)}`,
         this.contextBlock(),
       );
       let accepted = 0;
@@ -392,7 +392,7 @@ export class Orchestrator {
         if (!k || k.status !== "candidate") continue;
         if (!rating.reason?.trim()) continue;
         k.metrics.R = rating.r;
-        k.metrics.reason = `[прескрин] ${rating.reason.slice(0, 180)}`;
+        k.metrics.reason = `[prescreen] ${rating.reason.slice(0, 180)}`;
         accepted++;
         if (rating.r === 0) drop.add(k.keyword);
       }
@@ -401,14 +401,14 @@ export class Orchestrator {
         this.state.rejected.push(...drop);
       }
       await this.save();
-      if (accepted > 0) await this.event("🧹", `прескрин: ${accepted} оценено, ${drop.size} снесено (R=0)`);
+      if (accepted > 0) await this.event("🧹", `prescreen: ${accepted} rated, ${drop.size} dropped (R=0)`);
       if (accepted === 0) {
         missRounds++;
         if (missRounds >= 2) {
           for (const k of batch) {
             if (k.status === "candidate" && k.metrics.R === null) {
               k.metrics.R = 1;
-              k.metrics.reason = "[прескрин] оценка не получена — пропущен в probe";
+              k.metrics.reason = "[prescreen] no rating received — passed through to probe";
             }
           }
           await this.save();
@@ -432,7 +432,7 @@ export class Orchestrator {
       top3: k.metrics.topApps.slice(0, 3).map((a) => a.trackName),
     }));
     const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string }[] }>(
-      "rate", system, `Оцени пакет кейвордов:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
+      "rate", system, `Rate this batch of keywords:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
     );
     let ratedCount = 0;
     for (const rating of res.ratings) {
@@ -440,9 +440,9 @@ export class Orchestrator {
       if (!k || k.status !== "verified") continue;
       if (!rating.reason?.trim()) continue;
       if (rating.r >= 1) {
-        // Кэп перебора (D4 v4): не набираем сверх sampleSize×(1+OVERSHOOT_PCT).
+        // Overshoot cap (D4 v4): don't accumulate beyond sampleSize×(1+OVERSHOOT_PCT).
         if (this.atOvershootCap()) break;
-        // РЕАЛЬНОЕ списание проверенной кейфразы (D4 v4). Не хватило → hard-stop (paused, резюмируемо).
+        // REAL debit of a verified keyphrase (D4 v4). Insufficient → hard-stop (paused, resumable).
         const charge = await this.deps.chargeKeyphrase(k.keyword);
         if (!charge.ok) throw new InsufficientCredits(charge.price, charge.balance);
       }
@@ -466,7 +466,7 @@ export class Orchestrator {
       if (ratedCount === 0) {
         missRounds++;
         if (missRounds >= 3) {
-          for (const k of batch) { k.status = "error"; k.error = "LLM не вернул оценку R"; }
+          for (const k of batch) { k.status = "error"; k.error = "LLM returned no R rating"; }
           await this.save();
           missRounds = 0;
         }
@@ -476,11 +476,11 @@ export class Orchestrator {
     }
   }
 
-  // ---------- расширение suggest-графа (runWave → job-emit) ----------
+  // ---------- suggest-graph expansion (runWave → job-emit) ----------
 
   private async expansionWave(): Promise<number> {
     if (this.state.hintsEndpointDown) return 0;
-    if (this.atOvershootCap()) return 0; // кэп перебора (D4 v4): не заводим новые ветки
+    if (this.atOvershootCap()) return 0; // overshoot cap (D4 v4): no new branches
     const exp = this.state.expansion;
     if (this.state.phase === "improving") {
       if ((exp.improvingWaves ?? 0) >= this.config.improvementRounds) return 0;
@@ -514,7 +514,7 @@ export class Orchestrator {
     });
     if (tasks.length === 0) return 0;
 
-    // ЭМИТ HintsJob на каждую задачу; «break on throttle» = серверный back-pressure.
+    // EMIT a HintsJob per task; "break on throttle" = server-side back-pressure.
     const results: { task: ExpansionTask; terms: string[] | null; permanentError?: boolean }[] = [];
     for (const task of tasks) {
       if (this.pauseRequested) break;
@@ -523,7 +523,7 @@ export class Orchestrator {
         results.push({ task, terms });
       } catch (e: any) {
         if (e instanceof ReplayFrontier) throw e;
-        if (e instanceof JobError && e.throttle) break; // back-pressure: остаток на след. волну
+        if (e instanceof JobError && e.throttle) break; // back-pressure: remainder goes to the next wave
         if (e?.name === "ClientGoneError") throw e;
         results.push({ task, terms: null, permanentError: true });
       }
@@ -553,14 +553,14 @@ export class Orchestrator {
       { relaxWordLength: true },
     );
     if (result.requestsSpent > 0) {
-      await this.event("🕸", `расширение suggest-графа: ${result.requestsSpent} запросов → +${added} кандидатов`);
+      await this.event("🕸", `suggest-graph expansion: ${result.requestsSpent} requests → +${added} candidates`);
     }
     await this.save();
     return added;
   }
 
   private async hypothesize() {
-    if (this.atOvershootCap()) return; // кэп перебора (D4 v4): не набираем сверх +10%
+    if (this.atOvershootCap()) return; // overshoot cap (D4 v4): don't accumulate beyond +10%
     await this.expansionWave();
 
     let top = this.top20().filter((k) => (k.metrics.R ?? 0) >= 2);
@@ -570,7 +570,7 @@ export class Orchestrator {
       .sort((a, b) => (a.metrics.score ?? 0) - (b.metrics.score ?? 0))
       .slice(0, 10);
 
-    // «Дети» лидеров — через HintsJob (не inline fetch).
+    // Leaders' "children" — via HintsJob (not inline fetch).
     const children: Record<string, string[]> = {};
     if (!this.state.hintsEndpointDown) {
       for (const k of top.slice(0, 10)) {
@@ -578,7 +578,7 @@ export class Orchestrator {
           try {
             const terms = await this.deps.gateway.hints(k.keyword + " ", this.storefront);
             children[k.keyword] = terms.filter((t) => normalizeKeyword(t).startsWith(k.keyword + " ")).slice(0, 10);
-          } catch (e) { if (e instanceof ReplayFrontier) throw e; /* иначе не критично */ }
+          } catch (e) { if (e instanceof ReplayFrontier) throw e; /* otherwise non-critical */ }
         }
       }
     }
@@ -598,17 +598,17 @@ export class Orchestrator {
     const expandedRoots = Object.keys(this.state.expansion.done);
     const queuedRoots = this.state.expansion.roots;
     const prompt = [
-      `Лидеры для развития (только R≥2): ${JSON.stringify(top.map((k) => ({ keyword: k.keyword, score: k.metrics.score, P: k.metrics.P, D: k.metrics.D, R: k.metrics.R, childCount: k.metrics.childCount })))}`,
-      `Худшие (антипримеры): ${JSON.stringify(worst.map((k) => ({ keyword: k.keyword, score: k.metrics.score ?? 0, R: k.metrics.R, reason: k.metrics.reason })))}`,
-      `Отклонено прескрином: ${JSON.stringify(this.state.rejected.slice(-30))}`,
-      `Уже раскрытые краулером направления: ${JSON.stringify(expandedRoots.slice(-60))}`,
-      `Направления в очереди краулера: ${JSON.stringify(queuedRoots)}`,
-      `«Дети» лидеров: ${JSON.stringify(children)}`,
-      `Заголовки слабых конкурентов: ${JSON.stringify([...weakTitles].slice(0, 25))}`,
-      `ВСЕ известные кейворды: ${JSON.stringify(known)}`,
+      `Leaders to develop (R≥2 only): ${JSON.stringify(top.map((k) => ({ keyword: k.keyword, score: k.metrics.score, P: k.metrics.P, D: k.metrics.D, R: k.metrics.R, childCount: k.metrics.childCount })))}`,
+      `Worst (anti-examples): ${JSON.stringify(worst.map((k) => ({ keyword: k.keyword, score: k.metrics.score ?? 0, R: k.metrics.R, reason: k.metrics.reason })))}`,
+      `Rejected by prescreen: ${JSON.stringify(this.state.rejected.slice(-30))}`,
+      `Directions already expanded by the crawler: ${JSON.stringify(expandedRoots.slice(-60))}`,
+      `Directions queued for the crawler: ${JSON.stringify(queuedRoots)}`,
+      `Leaders' "children": ${JSON.stringify(children)}`,
+      `Weak competitors' titles: ${JSON.stringify([...weakTitles].slice(0, 25))}`,
+      `ALL known keywords: ${JSON.stringify(known)}`,
     ].join("\n\n");
 
-    await this.event("🧠", "hypothesize: направления для графа + короткие гипотезы");
+    await this.event("🧠", "hypothesize: graph directions + short hypotheses");
     const res = await this.llm<{ roots: string[]; keywords: { keyword: string; type: string; strategy: "exploit" | "explore" }[] }>(
       "hypothesize", system, prompt, this.contextBlock(),
     );
@@ -626,7 +626,7 @@ export class Orchestrator {
     const added = await this.addCandidates(
       res.keywords.map((k) => ({ keyword: k.keyword, type: k.type, strategy: k.strategy, source: "expansion" as const })),
     );
-    await this.event("🧠", `hypothesize: +${newRoots} направлений, +${added} гипотез`);
+    await this.event("🧠", `hypothesize: +${newRoots} directions, +${added} hypotheses`);
   }
 
   private async harvestSuggestions(sourceKeyword: string, seenTerms: string[]) {
@@ -657,7 +657,7 @@ export class Orchestrator {
     }
     if (picked.length > 0) {
       const added = await this.addCandidates(picked.map((keyword) => ({ keyword, source: "suggest" as const })));
-      if (added > 0) await this.event("🔦", `подсказки при probe «${sourceKeyword}»: +${added} (suggest)`);
+      if (added > 0) await this.event("🔦", `hints during probe of "${sourceKeyword}": +${added} (suggest)`);
     }
   }
 
@@ -676,11 +676,11 @@ export class Orchestrator {
     return new Set(this.productVocabWords().map((w) => foldKey(w, this.config.semanticLanguage)));
   }
 
-  // ---------- сборка (spec 05) ----------
+  // ---------- assembly (spec 05) ----------
 
   private async phaseAssembling() {
     this.mustContext();
-    await this.event("🧩", "собираю метаданные: фразы ядра — в title/subtitle, слова — в keywords");
+    await this.event("🧩", "assembling metadata: core phrases into title/subtitle, words into keywords");
     const brandWords = wordsOf(this.config.brand);
     const lang = this.config.semanticLanguage;
     const stopSet = new Set(this.config.stopwords.map((s) => s.toLowerCase()));
@@ -708,14 +708,14 @@ export class Orchestrator {
     const extra = extraLocaleFor(this.config.country);
     if (this.config.extraLocale) {
       if (!extra) {
-        await this.event("ℹ️", `для ${this.config.country} доп. локаль неизвестна — проход 2 пропущен`);
+        await this.event("ℹ️", `no extra locale known for ${this.config.country} — pass 2 skipped`);
       } else {
         const universe2 = universe.filter((k) => {
           const keys = phraseKeys(k.keyword, stopSet, lang);
           return !keys.every((x) => keys1.has(x));
         });
         if (universe2.length === 0) {
-          await this.event("ℹ️", "всё покрыто первой корзиной — проход 2 пропущен");
+          await this.event("ℹ️", "everything covered by the first bucket — pass 2 skipped");
         } else {
           const bucket2 = await this.buildBucket(universe2, budgets, extra, keys1);
           buckets.push(bucket2);
@@ -768,7 +768,7 @@ export class Orchestrator {
       k.status = covered && (k.metrics.score ?? 0) > 0 ? "selected" : "bench";
     }
     await this.save();
-    await this.event("✅", `сборка готова: покрыто ${phrasesCovered} фраз, ${Math.round(this.state.assembly.coverage.coveredShare * 100)}% Score`);
+    await this.event("✅", `assembly ready: ${phrasesCovered} phrases covered, ${Math.round(this.state.assembly.coverage.coveredShare * 100)}% of Score`);
   }
 
   private coverageDetail(keyword: string, buckets: AssemblyBucket[], stopSet: Set<string>, brandKeys: Set<string>, lang: string) {
@@ -839,17 +839,17 @@ export class Orchestrator {
       const errors: string[] = [];
       const slogLower = slog.toLowerCase();
       const chosenTitle = titleCands.find((c) => slogLower.includes(c)) ?? "";
-      if (!chosenTitle) errors.push("слоган не содержит целиком ни одну фразу-кандидат");
+      if (!chosenTitle) errors.push("slogan does not contain any candidate phrase in full");
       else {
         const allowed = new Set(keysOf(chosenTitle));
-        for (const w of sig(slog)) if (!allowed.has(foldKey(w, lang))) errors.push(`лишнее слово в слогане: "${w}"`);
+        for (const w of sig(slog)) if (!allowed.has(foldKey(w, lang))) errors.push(`extra word in slogan: "${w}"`);
       }
       const subLower = sub.toLowerCase();
       const found = subPool.filter((c) => subLower.includes(c));
       const usedSub = found.filter((c) => !found.some((o) => o !== c && o.includes(c)));
-      if (usedSub.length === 0) errors.push("subtitle не содержит целиком ни одну фразу из пула");
+      if (usedSub.length === 0) errors.push("subtitle does not contain any pool phrase in full");
       const allowedSub = new Set(usedSub.flatMap((c) => keysOf(c)));
-      for (const w of sig(sub)) if (!allowedSub.has(foldKey(w, lang))) errors.push(`лишнее слово в subtitle: "${w}"`);
+      for (const w of sig(sub)) if (!allowedSub.has(foldKey(w, lang))) errors.push(`extra word in subtitle: "${w}"`);
       return { errors, chosenTitle, usedSub };
     };
 
@@ -870,10 +870,10 @@ export class Orchestrator {
       for (let attempt = 1; attempt <= MAX_PHRASE_ATTEMPTS && !ok; attempt++) {
         this.checkPause();
         const prompt =
-          `Кандидаты для title-слогана — реальные топ-запросы; выбери ОДИН:\n${JSON.stringify(titleCands.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
-          `Пул фраз для subtitle — 1–3 фразы ЦЕЛИКОМ:\n${JSON.stringify(subPool.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
-          `Локаль: ${locale}. Бюджеты: слоган ≤ ${budgets.titleSloganMax}, subtitle ≤ ${budgets.subtitleMax}.` +
-          (note ? `\n\nПредыдущая попытка отклонена:\n${note}\nИсправь.` : "");
+          `Title-slogan candidates — real top queries; pick ONE:\n${JSON.stringify(titleCands.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
+          `Subtitle phrase pool — use 1–3 phrases IN FULL:\n${JSON.stringify(subPool.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
+          `Locale: ${locale}. Budgets: slogan ≤ ${budgets.titleSloganMax}, subtitle ≤ ${budgets.subtitleMax}.` +
+          (note ? `\n\nPrevious attempt was rejected:\n${note}\nFix it.` : "");
         const res = await this.llm<{ titleSlogan: string; subtitle: string }>("phrase", system, prompt, this.contextBlock());
         const slog = res.titleSlogan.trim();
         const sub = res.subtitle.trim();
@@ -891,7 +891,7 @@ export class Orchestrator {
           ok = true;
         } else {
           note = allErrors.join("\n");
-          await this.event("♻️", `phrase (${locale}) попытка ${attempt}/${MAX_PHRASE_ATTEMPTS}: отклонено — ${allErrors.join("; ")}`);
+          await this.event("♻️", `phrase (${locale}) attempt ${attempt}/${MAX_PHRASE_ATTEMPTS}: rejected — ${allErrors.join("; ")}`);
         }
       }
     }
@@ -901,7 +901,7 @@ export class Orchestrator {
       subtitle = fbCombo.map(tc).join(" & ");
       titleWords = sig(fbTitle);
       subtitleWords = fbCombo.flatMap((c) => sig(c));
-      if (titleCands.length > 0) await this.event("🛟", `phrase (${locale}): детерминированный вариант — «${title}» / «${subtitle}»`);
+      if (titleCands.length > 0) await this.event("🛟", `phrase (${locale}): deterministic fallback — "${title}" / "${subtitle}"`);
     }
 
     const usedKeys = new Set<string>([...keysOf(title ?? ""), ...keysOf(subtitle ?? ""), ...otherBucketKeys, ...brandKeys]);
@@ -949,7 +949,7 @@ export class Orchestrator {
     const violations = doValidate(title ?? "", subtitle ?? "", titleWords, subtitleWords, keywordFieldDraft);
     const finalErrors = violations.filter((v) => v.level === "error");
     if (finalErrors.length > 0) {
-      throw new Error(`Сборка корзины ${locale} не прошла валидацию: ${finalErrors.map((v) => `${v.code}: ${v.message}`).join("; ")}`);
+      throw new Error(`Bucket assembly for ${locale} failed validation: ${finalErrors.map((v) => `${v.code}: ${v.message}`).join("; ")}`);
     }
 
     return { locale, titleWords, subtitleWords, keywordFieldDraft, title, subtitle, budgets, speculativeWords, violations };
@@ -977,7 +977,7 @@ export class Orchestrator {
     return best;
   }
 
-  // ---------- утилиты ----------
+  // ---------- utilities ----------
 
   private async addCandidates(
     items: { keyword: string; type?: string; strategy?: "exploit" | "explore"; source: KeywordSource }[],
@@ -1028,12 +1028,12 @@ export class Orchestrator {
   }
 
   private mustContext(): BusinessContext {
-    if (!this.state.context) throw new Error("Контекст не извлечён");
+    if (!this.state.context) throw new Error("Context not extracted");
     return this.state.context;
   }
 
   private contextBlock(): string {
-    return `Бизнес-контекст приложения:\n${JSON.stringify(this.mustContext(), null, 2)}`;
+    return `App business context:\n${JSON.stringify(this.mustContext(), null, 2)}`;
   }
 
   private async llm<T>(task: string, system: string, prompt: string, contextBlock?: string): Promise<T> {
@@ -1049,7 +1049,7 @@ export class Orchestrator {
           replay: this.replaying,
         });
         this.trackUsage(task, res.usage, res.costUsd);
-        // Предохранитель маржи (D4 v4): реальный COGS не должен вылезать за оценочный потолок.
+        // Margin fuse (D4 v4): actual COGS must not exceed the estimate ceiling.
         if (!this.replaying && this.state.usage.costUsd !== null && this.state.usage.costUsd > this.state.estimateCredits) {
           throw new CogsExceededCeiling(this.state.usage.costUsd, this.state.estimateCredits);
         }
@@ -1059,11 +1059,11 @@ export class Orchestrator {
         if (e instanceof LlmAuthError || e instanceof PauseInterrupt) throw e;
         if (e?.name === "ClientGoneError") throw e;
         lastError = e instanceof Error ? e : new Error(String(e));
-        await this.event("⚠️", `LLM ${task} не удался (${lastError.message}) — попытка ${attempt + 1}/3`);
+        await this.event("⚠️", `LLM ${task} failed (${lastError.message}) — attempt ${attempt + 1}/3`);
         await new Promise((r) => setTimeout(r, [2000, 8000, 20000][attempt]));
       }
     }
-    throw lastError ?? new Error("LLM-вызов не удался");
+    throw lastError ?? new Error("LLM call failed");
   }
 
   private trackUsage(task: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }, costUsd: number | null) {
@@ -1087,23 +1087,23 @@ export class Orchestrator {
   }
 
   private async event(kind: string, text: string) {
-    if (this.replaying) return; // реплей не дублирует прогресс-ленту/SSE
+    if (this.replaying) return; // replay does not duplicate the progress feed/SSE
     await this.deps.emitEvent(this.state.runId, kind, text);
   }
 
   private async save() {
-    if (this.replaying) return; // реплей не пишет проекцию (реконструкция в памяти)
+    if (this.replaying) return; // replay does not write the projection (in-memory reconstruction)
     this.state.updatedAt = new Date().toISOString();
     await this.deps.persist(this.state);
   }
 
-  // ---------- event-replay (D7): реконструкция из durable-логов ----------
+  // ---------- event-replay (D7): reconstruction from durable logs ----------
 
   /**
-   * Реконструировать состояние РЕ-ПРОГОНОМ пайплайна с подачей side-effects из логов:
-   * LLM — из llm_steps (proxy.replay), Apple — из apple_cache (gateway.setReplay). Первый
-   * лог-промах = ReplayFrontier → останов на границе resumable. Списания идемпотентны
-   * (уже в ledger), поэтому реплей их не двоит.
+   * Reconstruct state by RE-RUNNING the pipeline with side effects fed from logs:
+   * LLM from llm_steps (proxy.replay), Apple from apple_cache (gateway.setReplay). First
+   * log miss = ReplayFrontier → stop at a resumable boundary. Debits are idempotent
+   * (already in the ledger), so replay does not double-charge them.
    */
   async replayFromLogs(persistedPhase: ServerRunState["phase"]): Promise<void> {
     if (persistedPhase === "created") return;
@@ -1123,16 +1123,16 @@ export class Orchestrator {
       this.state.phase = "done";
     } catch (e: any) {
       if (e instanceof ReplayFrontier) {
-        // Достигнута граница durable-истории — состояние реконструировано до этой точки (resumable).
+        // Reached the edge of durable history — state reconstructed up to this point (resumable).
       } else if (e instanceof InsufficientCredits) {
         this.state.paused = true;
-        this.state.notice = "Кредиты кончились. Пополните — продолжим с этого места.";
+        this.state.notice = "Out of credits. Top up and we'll resume from here.";
       } else if (e instanceof CogsExceededCeiling) {
         this.state.paused = true;
       } else if (e instanceof LlmAuthError || e instanceof PauseInterrupt || e?.name === "ClientGoneError" || e instanceof JobError) {
         this.state.paused = true;
       } else {
-        throw e; // неожиданная — getOrchestrator откатится на снапшот-fallback
+        throw e; // unexpected — getOrchestrator falls back to the snapshot
       }
     } finally {
       this.replaying = false;

@@ -1,7 +1,7 @@
 {
   "name": "@aso/server",
   "version": "0.1.0",
-  "description": "ASOptimus сервер (мозг + касса): orchestrator, core, llm-proxy, billing, auth, db, api",
+  "description": "ASOptimus server (brain + till): orchestrator, core, llm-proxy, billing, auth, db, api",
   "private": true,
   "type": "module",
   "scripts": {

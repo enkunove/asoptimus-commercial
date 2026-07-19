@@ -1,9 +1,9 @@
-// @aso/core — таблица кросс-локализации extraLocale (spec 05.9) + placement-веса (05.2).
-// SERVER-ONLY (moat). BUILD-PLAN §3/§5: extraLocale и веса НЕ кладутся в @aso/shared —
-// туда идёт только storefronts.public {id, primaryLanguage}. Источник — aso-util
-// apple/storefronts.json (поле extraLocale).
+// @aso/core — extraLocale cross-localization table (spec 05.9) + placement weights (05.2).
+// SERVER-ONLY (moat). BUILD-PLAN §3/§5: extraLocale and weights do NOT go into @aso/shared —
+// only storefronts.public {id, primaryLanguage} goes there. Source — aso-util
+// apple/storefronts.json (extraLocale field).
 
-/** country → доп. локаль для второго прохода сборки (spec 05.9). null = второй проход нет. */
+/** country → extra locale for the second assembly pass (spec 05.9). null = no second pass. */
 export const EXTRA_LOCALE: Record<string, string | null> = {
   us: "es-MX",
   gb: "en-AU",
@@ -31,5 +31,5 @@ export function extraLocaleFor(country: string): string | null {
   return EXTRA_LOCALE[country] ?? null;
 }
 
-/** Позиционный вес поля (spec 05.2). Реэкспорт из assembly/place — единая точка moat. */
+/** Positional field weight (spec 05.2). Re-export from assembly/place — single moat entry point. */
 export { FIELD_WEIGHTS } from "./assembly/place.ts";

@@ -1,33 +1,33 @@
-// @aso/server/billing — модели, цены за кейфразу (D4 v3: то, что платит юзер) и живые
-// цены токенов (ВНУТРЕННИЙ COGS-учёт: маржа/предохранитель, НЕ чек юзеру).
+// @aso/server/billing — models, per-keyphrase prices (D4 v3: what the user pays) and live
+// token prices (INTERNAL COGS accounting: margin/fuse, NOT the user's bill).
 //
-// D4 v3: единица списания — проверенная кейфраза. 1 кредит = $1. quote = ceil(sampleSize ×
-// pricePerKeyphrase[model]). Мощнее модель → дороже кейфраза. Дефолт модели — Haiku.
-// Внутренний per-attempt COGS (токены × живая цена) сравнивается с зарезервированным квотом:
-// маржа зашита в pricePerKeyphrase; если реальный COGS вылез за квот — прогон ставится на паузу.
+// D4 v3: the debit unit is a verified keyphrase. 1 credit = $1. quote = ceil(sampleSize ×
+// pricePerKeyphrase[model]). More powerful model → pricier keyphrase. Default model — Haiku.
+// Internal per-attempt COGS (tokens × live price) is compared against the reserved quote:
+// margin is baked into pricePerKeyphrase; if real COGS overruns the quote — the run is paused.
 
 import type { ModelInfo } from "@aso/shared";
 import { optionalEnv } from "../env.ts";
 import { log } from "../log.ts";
 
-/** Дефолтная модель прогона (D4 v3): самая дешёвая кейфраза. Пользователь меняет в форме. */
+/** Default run model (D4 v3): the cheapest keyphrase. User changes it in the form. */
 export const DEFAULT_MODEL = "claude-haiku-4-5";
 
-/** До +10% кейфраз включено в цену (D4): оркестратор не заводит новые ветки после этого порога. */
+/** Up to +10% keyphrases included in the price (D4): the orchestrator opens no new branches past this threshold. */
 export const OVERSHOOT_PCT = 0.1;
 
 interface ModelDef { id: string; name: string; note?: string; }
 
-// Реестр моделей прогона (query kind="models"). ID — актуальные Anthropic-строки.
+// Run model registry (query kind="models"). IDs are current Anthropic strings.
 const MODELS: ModelDef[] = [
-  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", note: "быстрая, самая дешёвая кейфраза — по умолчанию" },
-  { id: "claude-sonnet-5", name: "Claude Sonnet 5", note: "баланс качества и цены" },
-  { id: "claude-opus-4-8", name: "Claude Opus 4.8", note: "высшее качество" },
-  { id: "claude-fable-5", name: "Claude Fable 5", note: "самая мощная модель" },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", note: "fast, cheapest keyphrase — default" },
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5", note: "balance of quality and price" },
+  { id: "claude-opus-4-8", name: "Claude Opus 4.8", note: "highest quality" },
+  { id: "claude-fable-5", name: "Claude Fable 5", note: "most powerful model" },
 ];
 
-// ── ВНУТРЕННИЙ COGS: живые цены токенов (D4: «цена из живого источника, не хардкод»). ──
-// Перекрывается env MODEL_PRICES_JSON (или БД-конфигом). costUsd считается ПО ЭТОЙ таблице.
+// ── INTERNAL COGS: live token prices (D4: "price from a live source, not hardcoded"). ──
+// Overridden by env MODEL_PRICES_JSON (or DB config). costUsd is computed FROM THIS table.
 export interface ModelPrice { inputPer1M: number; outputPer1M: number; }
 const DEFAULT_PRICES: Record<string, ModelPrice> = {
   "claude-opus-4-8": { inputPer1M: 5.0, outputPer1M: 25.0 },
@@ -36,17 +36,17 @@ const DEFAULT_PRICES: Record<string, ModelPrice> = {
   "claude-haiku-4-5": { inputPer1M: 1.0, outputPer1M: 5.0 },
 };
 
-// ── ЦЕНА ЗА КЕЙФРАЗУ (кредитов; 1 кредит = $1). Это ЧЕК ПОЛЬЗОВАТЕЛЮ (D4 v3). ──
-// Как выведен дефолт (ПЛЕЙСХОЛДЕР — точные числа финализирует пользователь, BUILD-PLAN §9):
-//   COGS/кейфразу ≈ (цена токенов) × (типичный расход токенов на кейфразу). Из spec 04.6:
-//   ~15–25 LLM-вызовов на прогон в 150 кейфраз, ~3k input / ~1.5k output на вызов.
-//   Haiku: 20 × (3000×$1 + 1500×$5)/1e6 = $0.21 за 150 кейфраз ≈ $0.0014/кейфраза COGS.
-//   Со здоровой маржой (инфраструктура, поддержка, чарджбэки, риск дрейфа цен) ×~10–15 и
-//   округление до «красивого» → таблица ниже. Дороже модель → пропорционально дороже кейфраза.
-//   ⚠️ ФИНАЛЬНЫЕ ЦИФРЫ — за пользователем. Правь через env PRICE_PER_KEYPHRASE_JSON или БД,
-//      НЕ редактируя код: {"claude-haiku-4-5":0.02,"claude-opus-4-8":0.08,...}
+// ── PRICE PER KEYPHRASE (credits; 1 credit = $1). This is THE USER'S BILL (D4 v3). ──
+// How the default was derived (PLACEHOLDER — exact numbers to be finalized by the user, BUILD-PLAN §9):
+//   COGS/keyphrase ≈ (token price) × (typical token spend per keyphrase). From spec 04.6:
+//   ~15–25 LLM calls per 150-keyphrase run, ~3k input / ~1.5k output per call.
+//   Haiku: 20 × (3000×$1 + 1500×$5)/1e6 = $0.21 per 150 keyphrases ≈ $0.0014/keyphrase COGS.
+//   With a healthy margin (infrastructure, support, chargebacks, price-drift risk) ×~10–15 and
+//   rounding to a "nice" number → the table below. Pricier model → proportionally pricier keyphrase.
+//   ⚠️ FINAL NUMBERS are up to the user. Adjust via env PRICE_PER_KEYPHRASE_JSON or DB,
+//      WITHOUT editing code: {"claude-haiku-4-5":0.02,"claude-opus-4-8":0.08,...}
 const DEFAULT_PRICE_PER_KEYPHRASE: Record<string, number> = {
-  "claude-haiku-4-5": 0.02, // дефолтная модель — самая дешёвая
+  "claude-haiku-4-5": 0.02, // default model — the cheapest
   "claude-sonnet-5": 0.05,
   "claude-opus-4-8": 0.08,
   "claude-fable-5": 0.15,
@@ -61,7 +61,7 @@ function loadJsonOverlay<T extends object>(envName: string, def: T): T {
   try {
     return { ...def, ...(JSON.parse(raw) as object) } as T;
   } catch {
-    log.warn(`${envName} не распарсился — использую дефолт`);
+    log.warn(`${envName} failed to parse — using default`);
     return def;
   }
 }
@@ -78,18 +78,18 @@ export function priceFor(model: string): ModelPrice {
   return p[model] ?? p[DEFAULT_MODEL];
 }
 
-/** Цена одной проверенной кейфразы в кредитах (D4 v3). */
+/** Price of one verified keyphrase in credits (D4 v3). */
 export function pricePerKeyphrase(model: string): number {
   const p = loadKeyphrasePrices();
   return p[model] ?? p[DEFAULT_MODEL];
 }
 
-/** Апфронт-квот прогона в кредитах = ceil(sampleSize × pricePerKeyphrase[model]) (D4). */
+/** Upfront run quote in credits = ceil(sampleSize × pricePerKeyphrase[model]) (D4). */
 export function quoteFor(sampleSize: number, model: string): number {
   return Math.max(1, Math.ceil(sampleSize * pricePerKeyphrase(model) - 1e-9));
 }
 
-/** ModelInfo[] для формы прогона (query kind="models" / REST /api/models). */
+/** ModelInfo[] for the run form (query kind="models" / REST /api/models). */
 export function modelInfos(): ModelInfo[] {
   return MODELS.map((m) => ({
     id: m.id,
@@ -103,8 +103,8 @@ export function knownModel(model: string): boolean {
   return MODELS.some((m) => m.id === model);
 }
 
-/** Себестоимость одной LLM-попытки в USD (cacheRead 0.1×input, cacheWrite 1.25×input; spec 06.2).
- *  Внутренний COGS-учёт (D4) — НЕ чек юзеру. */
+/** Cost of a single LLM attempt in USD (cacheRead 0.1×input, cacheWrite 1.25×input; spec 06.2).
+ *  Internal COGS accounting (D4) — NOT the user's bill. */
 export function costUsdFor(
   model: string,
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number },

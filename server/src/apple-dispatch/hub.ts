@@ -1,5 +1,5 @@
-// @aso/server/apple-dispatch — реестр живых клиент-коннектов (WSS) + маршрутизация
-// job.result → ожидающему промису. Один инстанс Фазы 1 → sticky-WS не нужен (BUILD-PLAN §5).
+// @aso/server/apple-dispatch — registry of live client connections (WSS) + routing of
+// job.result → the awaiting promise. Single Phase 1 instance → no sticky-WS needed (BUILD-PLAN §5).
 
 import type { ServerToClient, JobResult } from "@aso/shared";
 
@@ -16,9 +16,9 @@ interface Pending {
 }
 
 export class ClientHub {
-  /** userId → соединение (последнее победило; реконнект перекрывает). */
+  /** userId → connection (last one wins; a reconnect overrides). */
   private conns = new Map<string, ClientConnection>();
-  /** job_id → ожидающий диспатч. */
+  /** job_id → pending dispatch. */
   private pending = new Map<string, Pending>();
 
   register(conn: ClientConnection) {
@@ -27,7 +27,7 @@ export class ClientHub {
 
   unregister(userId: string) {
     this.conns.delete(userId);
-    // Живого клиента нет → все ожидающие джобы обрываются (D7: fetch невозможен → paused).
+    // No live client → all pending jobs abort (D7: fetch impossible → paused).
     for (const [jobId, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(new ClientGoneError());
@@ -39,7 +39,7 @@ export class ClientHub {
     return this.conns.has(userId);
   }
 
-  /** Отправить job.dispatch и ждать job.result по job_id (таймаут → reject). */
+  /** Send job.dispatch and await job.result by job_id (timeout → reject). */
   dispatchJob(userId: string, jobId: string, msg: ServerToClient, timeoutMs = 120_000): Promise<JobResult> {
     const conn = this.conns.get(userId);
     if (!conn) return Promise.reject(new ClientGoneError());
@@ -53,7 +53,7 @@ export class ClientHub {
     });
   }
 
-  /** Клиент вернул результат джобы. */
+  /** Client returned a job result. */
   resolveJob(result: JobResult) {
     const p = this.pending.get(result.job_id);
     if (!p) return;
@@ -62,7 +62,7 @@ export class ClientHub {
     p.resolve(result);
   }
 
-  /** Клиент сообщил об ошибке джобы. */
+  /** Client reported a job error. */
   rejectJob(jobId: string, reason: string, throttle?: boolean) {
     const p = this.pending.get(jobId);
     if (!p) return;
@@ -77,7 +77,7 @@ export class ClientHub {
 }
 
 export class ClientGoneError extends Error {
-  constructor() { super("клиент-коннект потерян — трата невозможна (D7)"); this.name = "ClientGoneError"; }
+  constructor() { super("client connection lost — spending impossible (D7)"); this.name = "ClientGoneError"; }
 }
 export class JobError extends Error {
   constructor(reason: string, public throttle?: boolean) { super(reason); this.name = "JobError"; }

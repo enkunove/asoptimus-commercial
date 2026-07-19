@@ -1,8 +1,8 @@
-# 06 — LLM-адаптеры и контракты промптов
+# 06 — LLM adapters and prompt contracts
 
-## 6.1 Интерфейс адаптера
+## 6.1 Adapter interface
 
-Оркестратор и UI знают только этот интерфейс. Реестр адаптеров — статический список в коде; в v1 одна запись (`claude`), но страница выбора провайдера рендерится из реестра.
+The orchestrator and the UI know only this interface. The adapter registry is a static list in code; v1 has a single entry (`claude`), but the provider selection page renders from the registry.
 
 ```js
 /** @typedef {Object} LlmAdapter */
@@ -11,103 +11,103 @@
   displayName: "Claude (Anthropic)",
   authMethods: ["subscription", "api_key"],
 
-  // проверка/установка авторизации (детали per-adapter)
-  async verifyAuth() {},            // → { ok: boolean, detail: string }  (detail: "API key •••Kf3, org ...", либо текст ошибки)
-  async setAuth(method, payload) {},// сохраняет креды в auth.json, делает пробный вызов
+  // verify/set authorization (details per-adapter)
+  async verifyAuth() {},            // → { ok: boolean, detail: string }  (detail: "API key •••Kf3, org ...", or an error message)
+  async setAuth(method, payload) {},// saves credentials to auth.json, makes a probe call
 
   listModels() {},                  // → [{ id, name, inputPer1M, outputPer1M, note? }]
 
-  // единственный рабочий метод: типизированный JSON-вызов
+  // the single workhorse method: a typed JSON call
   async completeJSON({ task, system, prompt, schema, model }) {},
-  // → { data: <объект, валидный по schema>, usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }, costUsd: number|null, durationMs }
+  // → { data: <object valid per schema>, usage: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }, costUsd: number|null, durationMs }
 }
 ```
 
-Правила для ЛЮБОГО адаптера:
-- каждый вызов целиком пишется в `llm-log.jsonl` прогона: `{ ts, task, model, system, prompt, response, usage, costUsd, durationMs, error? }` — это источник для журнала прозрачности в UI;
-- ретраи сетевых ошибок/429/5xx — внутри адаптера (у Claude — средствами SDK); 401/403 пробрасываются оркестратору как `AuthError`;
-- ответ валидируется по `schema` кодом даже если провайдер гарантирует схему; при невалидном ответе — один повтор с текстом ошибки валидации, затем ошибка наверх;
-- `costUsd` считается по прайсу из `listModels()`; `null`, если авторизация по подписке (стоимость не применима — показываем только токены).
+Rules for ANY adapter:
+- every call is written in full to the run's `llm-log.jsonl`: `{ ts, task, model, system, prompt, response, usage, costUsd, durationMs, error? }` — this is the source for the transparency log in the UI;
+- retries for network errors/429/5xx happen inside the adapter (for Claude — via the SDK); 401/403 propagate to the orchestrator as `AuthError`;
+- the response is validated against `schema` by code even if the provider guarantees the schema; on an invalid response — one retry with the validation error text, then the error bubbles up;
+- `costUsd` is computed from the price list in `listModels()`; `null` when authorized via subscription (cost is not applicable — we show tokens only).
 
-## 6.2 Claude-адаптер
+## 6.2 Claude adapter
 
-Реализация на официальном SDK `@anthropic-ai/sdk` (работает в Bun и компилируется в бинарь).
+Implemented on the official `@anthropic-ai/sdk` (works in Bun and compiles into the binary).
 
-### Модели (`listModels`)
+### Models (`listModels`)
 
-| id | Название в UI | $/1M input | $/1M output | Примечание |
+| id | Name in UI | $/1M input | $/1M output | Note |
 |---|---|---|---|---|
-| `claude-opus-4-8` | Claude Opus 4.8 | 5.00 | 25.00 | **дефолт** |
-| `claude-fable-5` | Claude Fable 5 | 10.00 | 50.00 | максимум качества |
-| `claude-sonnet-5` | Claude Sonnet 5 | 3.00 | 15.00 | интро-цена 2.00/10.00 до 2026-08-31 |
-| `claude-haiku-4-5` | Claude Haiku 4.5 | 1.00 | 5.00 | дёшево, для черновых прогонов |
+| `claude-opus-4-8` | Claude Opus 4.8 | 5.00 | 25.00 | **default** |
+| `claude-fable-5` | Claude Fable 5 | 10.00 | 50.00 | maximum quality |
+| `claude-sonnet-5` | Claude Sonnet 5 | 3.00 | 15.00 | intro price 2.00/10.00 until 2026-08-31 |
+| `claude-haiku-4-5` | Claude Haiku 4.5 | 1.00 | 5.00 | cheap, for draft runs |
 
-Прайс захардкожен рядом с реестром моделей (константа с датой актуальности; UI показывает эту дату в тултипе стоимости).
+The price list is hardcoded next to the model registry (a constant with an as-of date; the UI shows this date in the cost tooltip).
 
-### Способ авторизации 1: API-ключ
+### Auth method 1: API key
 
-- Поле ввода на странице авторизации; хранится в `auth.json` (`chmod 600`): `{ "claude": { "method": "api_key", "apiKey": "sk-ant-..." } }`.
-- Клиент: `new Anthropic({ apiKey })`.
-- `verifyAuth`: минимальный запрос `messages.create` (haiku, `max_tokens: 1`, "ping") → ok/ошибка с человекочитаемым текстом (401 → «ключ неверный или отозван»).
+- An input field on the authorization page; stored in `auth.json` (`chmod 600`): `{ "claude": { "method": "api_key", "apiKey": "sk-ant-..." } }`.
+- Client: `new Anthropic({ apiKey })`.
+- `verifyAuth`: a minimal `messages.create` request (haiku, `max_tokens: 1`, "ping") → ok/error with a human-readable message (401 → "the key is invalid or revoked").
 
-### Способ авторизации 2: подписка (OAuth-токен Anthropic)
+### Auth method 2: subscription (Anthropic OAuth token)
 
-Работает через OAuth-креды, которые пользователь получает штатными инструментами Anthropic — **мы не реализуем собственный OAuth-клиент** (меньше кода, не завязываемся на недокументированные детали):
+Works via OAuth credentials the user obtains with Anthropic's standard tooling — **we do not implement our own OAuth client** (less code, no dependence on undocumented details):
 
-1. **Автоматически через `ant` CLI (предпочтительно).** Если в PATH есть `ant` и `ant auth status` показывает активный профиль — адаптер получает короткоживущий токен командой `ant auth print-credentials --access-token` и пересоздаёт его при 401 или каждые N минут. В `auth.json` хранится только `{ "method": "subscription", "source": "ant" }` — сами токены не персистятся.
-2. **Ручная вставка OAuth-токена.** Пользователь вставляет токен, полученный через `claude setup-token` (Claude Code) — хранится как `{ "method": "subscription", "source": "manual", "token": "..." }`.
+1. **Automatically via the `ant` CLI (preferred).** If `ant` is on PATH and `ant auth status` shows an active profile — the adapter obtains a short-lived token with `ant auth print-credentials --access-token` and re-creates it on 401 or every N minutes. `auth.json` stores only `{ "method": "subscription", "source": "ant" }` — the tokens themselves are not persisted.
+2. **Manual OAuth token paste.** The user pastes a token obtained via `claude setup-token` (Claude Code) — stored as `{ "method": "subscription", "source": "manual", "token": "..." }`.
 
-Клиент в обоих случаях: `new Anthropic({ authToken, defaultHeaders: { "anthropic-beta": "oauth-2025-04-20" } })` — OAuth-токен идёт как Bearer, беta-заголовок обязателен для `/v1/messages`.
+The client in both cases: `new Anthropic({ authToken, defaultHeaders: { "anthropic-beta": "oauth-2025-04-20" } })` — the OAuth token goes as a Bearer token, and the beta header is mandatory for `/v1/messages`.
 
-Страница авторизации для этого метода показывает пошаговую инструкцию с копируемыми командами: «установи ant → `ant auth login` → нажми Проверить» и альтернативу «или вставь токен из `claude setup-token`». Если `ant` не найден — ссылка на установку. **Честная плашка в UI:** «Режим подписки использует ваши личные OAuth-креды Anthropic; для продакшн-нагрузок Anthropic рекомендует API-ключ».
+The authorization page for this method shows step-by-step instructions with copyable commands: "install ant → `ant auth login` → press Verify" plus the alternative "or paste a token from `claude setup-token`". If `ant` is not found — a link to the installation. **An honest banner in the UI:** "Subscription mode uses your personal Anthropic OAuth credentials; for production workloads Anthropic recommends an API key".
 
-### Параметры запросов
+### Request parameters
 
-- Все вызовы: `client.messages.create` с `thinking: { type: "adaptive" }` (на Fable 5 параметр опускается), `max_tokens: 8192`.
-- **Structured outputs:** каждый вызов передаёт `output_config: { format: { type: "json_schema", schema } }` — ответ гарантированно валидный JSON по схеме. Ограничения схем: везде `additionalProperties: false`, все поля в `required`, без рекурсии и numeric/string constraints (валидируем такие вещи кодом после парсинга).
-- **Кэширование промптов:** системный промпт каждой задачи стабилен (без дат/ID) и помечается `cache_control: {type: "ephemeral"}`; блок бизнес-контекста — вторым стабильным блоком с собственным breakpoint'ом. В цикле из ~16 вызовов это режет стоимость заметно; `usage.cache_read_input_tokens` учитывается в стоимости по льготной ставке (0.1× input) и показывается в журнале.
-- Ретраи: встроенные в SDK (дефолт 2) для 429/5xx/сети; таймаут 120 с.
+- All calls: `client.messages.create` with `thinking: { type: "adaptive" }` (omitted on Fable 5), `max_tokens: 8192`.
+- **Structured outputs:** every call passes `output_config: { format: { type: "json_schema", schema } }` — the response is guaranteed valid JSON per the schema. Schema restrictions: `additionalProperties: false` everywhere, all fields in `required`, no recursion and no numeric/string constraints (we validate such things in code after parsing).
+- **Prompt caching:** each task's system prompt is stable (no dates/IDs) and marked `cache_control: {type: "ephemeral"}`; the business-context block is the second stable block with its own breakpoint. In a loop of ~16 calls this cuts cost noticeably; `usage.cache_read_input_tokens` is counted toward the cost at the discounted rate (0.1× input) and shown in the log.
+- Retries: built into the SDK (default 2) for 429/5xx/network; timeout 120 s.
 
-## 6.3 Контракты промптов (5 задач)
+## 6.3 Prompt contracts (5 tasks)
 
-Для каждой задачи при сборке пишется полный системный промпт (файлы `src/llm/prompts/*.md`, вшиваются в бинарь). Ниже — обязательное содержание и схемы выходов. Общие требования к каждому системному промпту: язык генерации = `semanticLanguage` из конфига прогона (не угадывается моделью); полный текст рубрик/правил из спеки дословно; запрет пояснений вне JSON.
+For each task, a full system prompt is written during the build (files `src/llm/prompts/*.md`, embedded into the binary). Below is the mandatory content and output schemas. Common requirements for every system prompt: generation language = `semanticLanguage` from the run config (never guessed by the model); the full rubric/rule text from the spec verbatim; no explanations outside the JSON.
 
-### `context` — бриф → бизнес-контекст
-Вход: текст брифа + `country`/`semanticLanguage` из конфига. Выход — схема из `01.2` (все поля required; `jobsToBeDone` 5–10 элементов, `featureVocabulary` 10–20, `competitors` 0–10; `targetLanguage` = `semanticLanguage` конфига, поле остаётся в схеме для отображения). Системный промпт требует: словарь фич — словами, которыми ищут пользователи, а не маркетинговым жаргоном; анти-семантика обязана быть содержательной.
+### `context` — brief → business context
+Input: the brief text + `country`/`semanticLanguage` from the config. Output — the schema from `01.2` (all fields required; `jobsToBeDone` 5–10 items, `featureVocabulary` 10–20, `competitors` 0–10; `targetLanguage` = the config's `semanticLanguage`, the field stays in the schema for display). The system prompt requires: the feature vocabulary in the words users search with, not marketing jargon; the anti-semantics must be substantive.
 
-### `seeds` — контекст → первый пакет гипотез
-Вход: context.json + `batchSize` + список стоп-слов. Выход:
+### `seeds` — context → the first batch of hypotheses
+Input: context.json + `batchSize` + the stopword list. Output:
 ```json
 { "keywords": [ { "keyword": "sleep tracker", "type": "functional|problem|audience|adjacent|category" } ] }
 ```
-Промпт содержит правила гипотез из `04.2` дословно и требует покрыть все пять типов.
+The prompt contains the hypothesis rules from `04.2` verbatim and requires covering all five types.
 
-### `rate` — батч verified-кейвордов → оценки R
-Вход: context + массив до 25 кейвордов (каждый с его P, D и топ-3 названиями конкурентов из выдачи — это помогает модели понять, как Apple интерпретирует запрос). Выход:
+### `rate` — a batch of verified keywords → R scores
+Input: context + an array of up to 25 keywords (each with its P, D, and the top-3 competitor names from the search results — this helps the model understand how Apple interprets the query). Output:
 ```json
 { "ratings": [ { "keyword": "...", "r": 0, "reason": "..." } ] }
 ```
-Промпт = рубрика 0–3 из `03.3` дословно + анти-семантика + требование непустого reason (< 200 символов). Код сверяет, что каждый входной кейворд получил ровно одну оценку; недостающие уходят в повтор.
+The prompt = the 0–3 rubric from `03.3` verbatim + the anti-semantics + the requirement of a non-empty reason (< 200 characters). The code verifies that every input keyword received exactly one score; missing ones go into a retry.
 
-### `hypothesize` — состояние цикла → новый пакет гипотез
-Вход: context; топ-20 по Score (с метриками); 10 худших (антипримеры); «дети» лидеров из автоподсказок; заголовки слабых конкурентов (strength < 40) из выдачи лидеров; список ВСЕХ уже известных кейвордов (для дедупа на стороне модели); `batchSize`, `exploreRatio`. Выход — та же схема, что у `seeds`, плюс поле `"strategy": "exploit|explore"` у каждого элемента. Промпт требует долю explore ≈ `exploreRatio` и запрещает повторять известные кейворды.
+### `hypothesize` — loop state → a new batch of hypotheses
+Input: context; top 20 by Score (with metrics); the 10 worst (counter-examples); the leaders' "children" from autocomplete suggestions; titles of weak competitors (strength < 40) from the leaders' search results; the list of ALL already-known keywords (for model-side dedup); `batchSize`, `exploreRatio`. Output — the same schema as `seeds`, plus a `"strategy": "exploit|explore"` field on each item. The prompt requires an explore share ≈ `exploreRatio` and forbids repeating known keywords.
 
-### `phrase` — выбранные слова → тексты полей
-Вызывается по одному разу на корзину (основная локализация и кросс-локализация, `05.9`). Вход: brand; `locale` корзины; `titleWords`, `subtitleWords` (ровно в выданных формах); бюджеты символов; контекст (для тона); при повторе — список нарушений валидации прошлой попытки. Выход:
+### `phrase` — selected words → field texts
+Called once per bucket (primary localization and cross-localization, `05.9`). Input: brand; the bucket's `locale`; `titleWords`, `subtitleWords` (exactly in the given forms); character budgets; context (for tone); on retry — the list of validation violations from the previous attempt. Output:
 ```json
 { "titleSlogan": "Habit Tracker", "subtitle": "Daily Routine & Streaks" }
 ```
-Промпт: слоган и subtitle обязаны содержать все соответствующие слова в точных формах, влезать в бюджеты, быть человекочитаемыми и продающими; стоп-слова добавлять можно, менять формы слов — нельзя.
+The prompt: the slogan and subtitle must contain all of their respective words in exact forms, fit the budgets, and be human-readable and selling; adding stopwords is allowed, changing word forms is not.
 
-## 6.4 Ошибки адаптера → поведение UI
+## 6.4 Adapter errors → UI behavior
 
-| Ошибка | Поведение |
+| Error | Behavior |
 |---|---|
-| `AuthError` (401/403) | Прогон → paused; баннер «Авторизация слетела» + кнопка на страницу провайдера |
-| 429 после ретраев | Прогон → paused; баннер «Rate limit провайдера, подождите и возобновите» |
-| Невалидный JSON ×2 | Событие в журнал с полным ответом; шаг повторяется; ×3 → paused |
-| Сеть недоступна | paused + баннер с кнопкой «Повторить» |
+| `AuthError` (401/403) | Run → paused; banner "Authorization lost" + a button to the provider page |
+| 429 after retries | Run → paused; banner "Provider rate limit, wait and resume" |
+| Invalid JSON ×2 | Event in the log with the full response; the step repeats; ×3 → paused |
+| Network unavailable | paused + a banner with a "Retry" button |
 
-## 6.5 Учёт usage
+## 6.5 Usage accounting
 
-Оркестратор суммирует usage всех вызовов прогона в state: `{ inputTokens, outputTokens, cacheReadTokens, calls, costUsd|null }`. UI показывает в шапке прогона: «LLM: 14 вызовов · 182k токенов · ~$1.9» (в режиме подписки — без долларов). Клик раскрывает разбивку по задачам (context/seeds/rate/hypothesize/phrase).
+The orchestrator sums the usage of all the run's calls in state: `{ inputTokens, outputTokens, cacheReadTokens, calls, costUsd|null }`. The UI shows it in the run header: "LLM: 14 calls · 182k tokens · ~$1.9" (in subscription mode — without dollars). Clicking expands a breakdown by task (context/seeds/rate/hypothesize/phrase).

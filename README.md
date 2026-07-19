@@ -1,39 +1,39 @@
-# ASOptimus — commercial (монорепо)
+# ASOptimus — commercial (monorepo)
 
-Коммерческая версия ASO-инструмента: тонкий локальный клиент + толстый облачный сервер.
-Форма — «скачанная программа поднимает localhost-UI и делает Apple-запросы; ВСЯ остальная
-логика на сервере» (BUILD-PLAN D1). Один репозиторий, обычные папки.
+Commercial version of the ASO tool: thin local client + fat cloud server.
+Form factor — "a downloaded program brings up a localhost UI and makes the Apple requests; ALL other
+logic lives on the server" (BUILD-PLAN D1). One repository, plain folders.
 
-> **Приватность:** этот репозиторий обязан быть **private** — в `server/` лежит весь moat
-> (формулы, expander, промпты). Публичным делать нельзя.
+> **Privacy:** this repository must stay **private** — `server/` contains the entire moat
+> (formulas, expander, prompts). It must never be made public.
 
-## Планы (читать в этом порядке)
-- **`BUILD-PLAN.md`** — источник истины по стройке: решения, топология, wire-протокол,
-  модель данных, фазы. При расхождении верен он. (Структура репо в D5 описана как полирепо-
-  сабмодули — это **устарело**, выбран монорепо; см. раскладку ниже.)
-- `ARCHITECTURE.md` — обоснования/ресёрч (биллинг, лицензирование, подпись).
-- `PRODUCT.md` — картина продукта и путь пользователя.
-- `INTEGRATION.md` — лог сведения клиента и сервера.
-- `LANDING-ADDITIONS.md` — что добавить на лендинг (лендинг — отдельный репозиторий).
+## Plans (read in this order)
+- **`BUILD-PLAN.md`** — source of truth for the build: decisions, topology, wire protocol,
+  data model, phases. On any conflict, it wins. (The repo structure in D5 is described as polyrepo
+  submodules — that is **outdated**; monorepo was chosen instead, see the layout below.)
+- `ARCHITECTURE.md` — rationale/research (billing, licensing, code signing).
+- `PRODUCT.md` — product picture and the user journey.
+- `INTEGRATION.md` — log of wiring the client and server together.
+- `LANDING-ADDITIONS.md` — what to add to the landing page (the landing is a separate repository).
 
-## Раскладка (папки монорепо)
-| Папка | Что | Границы |
+## Layout (monorepo folders)
+| Folder | What | Boundaries |
 |---|---|---|
-| `shared/` | контракт: домен-типы + wire-протокол + публичные константы (`@aso/shared`) | zero-secret |
-| `server/` | **мозг + касса:** `core` (metrics/assembly/expander/**prompts**), orchestrator, llm-proxy, billing, auth, apple-dispatch, db, api | **весь moat здесь** |
-| `client/` | **локальная программа:** apple-fetch, cloud-link, localserver, web-ui + `desktop/` (Tauri .dmg) | ноль проприетарной логики |
-| `infra/` | docker-compose (сервер + Postgres), деплой, CI |  |
+| `shared/` | contract: domain types + wire protocol + public constants (`@aso/shared`) | zero-secret |
+| `server/` | **brain + till:** `core` (metrics/assembly/expander/**prompts**), orchestrator, llm-proxy, billing, auth, apple-dispatch, db, api | **the whole moat lives here** |
+| `client/` | **local program:** apple-fetch, cloud-link, localserver, web-ui + `desktop/` (Tauri .dmg) | zero proprietary logic |
+| `infra/` | docker-compose (server + Postgres), deploy, CI |  |
 
-`server` и `client` берут контракт по tsconfig-алиасу `@aso/shared → ../shared/src`. Границы
-moat теперь по папкам: формулы/expander/`locales.ts`/`prompts/` — только в `server/src/core`,
-в `client/` их нет как файлов.
+`server` and `client` consume the contract via the tsconfig alias `@aso/shared → ../shared/src`. The moat
+boundaries are now folder-based: formulas/expander/`locales.ts`/`prompts/` live only in `server/src/core`;
+`client/` has no such files at all.
 
-## Запуск
-- **Сервер (хостинг):** `colima start` → `cd infra && cp .env.example .env` (вписать секреты) →
-  `docker compose up --build -d` → `curl localhost:8787/health`. Docker-контекст = корень репо.
-- **Клиент (dev):** `cd client && bun install && bun run dev` (localhost-UI).
-- **Приложение (.dmg):** `cd client/desktop && bash scripts/build-dmg.sh both` (нужен Rust +
-  Apple Developer сертификат для подписи).
+## Running
+- **Server (hosted):** `colima start` → `cd infra && cp .env.example .env` (fill in secrets) →
+  `docker compose up --build -d` → `curl localhost:8787/health`. Docker context = repo root.
+- **Client (dev):** `cd client && bun install && bun run dev` (localhost UI).
+- **App (.dmg):** `cd client/desktop && bash scripts/build-dmg.sh both` (requires Rust +
+  an Apple Developer certificate for signing).
 
-Лендинг — отдельный репозиторий/деплой (`../asoptimus-landing`). `_legacy/` (gitignored) —
-старая монолитная копия aso-util, справочно.
+The landing page is a separate repository/deploy (`../asoptimus-landing`). `_legacy/` (gitignored) —
+the old monolithic copy of aso-util, kept for reference.

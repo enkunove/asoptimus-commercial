@@ -1,80 +1,80 @@
-# 04 — Оркестратор: пайплайн, цикл гипотез, точка остановки
+# 04 — Orchestrator: pipeline, hypothesis loop, stopping point
 
-Оркестратор — внутренний модуль бинаря, который ведёт прогон от брифа до финальных метаданных. Управляется из UI (старт/пауза/возобновление), пишет каждое изменение в `state.json` + событие в `events.jsonl`, LLM-вызовы делает через адаптер (`06`), запросы к Apple — через HTTP-слой (`02`).
+The orchestrator is the internal module of the binary that drives a run from the brief to the final metadata. It is controlled from the UI (start/pause/resume), writes every change to `state.json` + an event to `events.jsonl`, makes LLM calls through the adapter (`06`), and requests to Apple through the HTTP layer (`02`).
 
-## 4.1 Жизненный цикл кейворда (машина состояний)
+## 4.1 Keyword lifecycle (state machine)
 
 ```
 candidate ──probe──▶ verified ──rate──▶ rated ──assemble──▶ selected | bench
-                 └──▶ error (с причиной; ретраится при следующем probe-шаге)
-rated с R=0 ──▶ excluded (терминальный)
+                 └──▶ error (with reason; retried on the next probe step)
+rated with R=0 ──▶ excluded (terminal)
 ```
 
-**Счётчик выборки** = количество кейвордов в статусах `rated`+`selected`+`bench` с R ≥ 1. `excluded` и `error` не считаются.
+**Sample counter** = number of keywords in statuses `rated`+`selected`+`bench` with R ≥ 1. `excluded` and `error` do not count.
 
-## 4.2 Фазы прогона (машина состояний прогона)
+## 4.2 Run phases (run state machine)
 
 `created → context → context_review → seeding → loop → improving → assembling → done`
-Плюс ортогональные флаги: `paused` (пауза пользователем в любой фазе), `failed` (фатальная ошибка с текстом — например, отвал авторизации).
+Plus orthogonal flags: `paused` (user pause in any phase), `failed` (fatal error with a message — e.g., authorization dropped).
 
-### Фаза context
-LLM-вызов `context` (бриф → структура из `01`). Результат сохраняется, фаза → `context_review`.
+### Phase: context
+The `context` LLM call (brief → the structure from `01`). The result is saved, phase → `context_review`.
 
-### Фаза context_review (единственная блокирующая на пользователе)
-Прогон стоит, UI показывает контекст с кнопками «Поехали» / «Отредактировать». Подтверждение → `seeding`.
+### Phase: context_review (the only phase blocking on the user)
+The run is halted; the UI shows the context with buttons "Go" / "Edit". Confirmation → `seeding`.
 
-### Фаза seeding
-LLM-вызов `seeds`: контекст → первый пакет гипотез (`batchSize`, минимум по одной на каждый тип семантики):
+### Phase: seeding
+The `seeds` LLM call: context → the first batch of hypotheses (`batchSize`, at least one per semantic type):
 
-| Тип | Пример для трекера сна |
+| Type | Example for a sleep tracker |
 |---|---|
-| функциональные | sleep tracker, smart alarm |
-| проблемные | cant sleep, how to fall asleep fast |
-| аудиторные | insomnia help, shift worker sleep |
-| смежно-конкурентные | sleep sounds, white noise |
-| категорийные | health monitor, wellness |
+| functional | sleep tracker, smart alarm |
+| problem | cant sleep, how to fall asleep fast |
+| audience | insomnia help, shift worker sleep |
+| adjacent-competitive | sleep sounds, white noise |
+| category | health monitor, wellness |
 
-Правила гипотез (вшиты в промпт, и продублированы кодовой валидацией при приёме ответа): слова от 3 символов; без чужих брендовых имён (проверка по `competitors` из контекста — код отбрасывает молча с событием в журнал); без стоп-слов как самостоятельных кейвордов; нормализация и дедуп против всех уже известных.
+Hypothesis rules (embedded in the prompt, and duplicated by code validation when accepting the response): words of 3+ characters; no third-party brand names (checked against `competitors` from the context — the code drops them silently with an event in the log); no stopwords as standalone keywords; normalization and dedup against everything already known.
 
-### Фаза loop — ядро (повторяется, пока выборка < sampleSize)
+### Phase: loop — the core (repeats while sample < sampleSize)
 
-1. **Probe:** код обсчитывает всех `candidate` (P из подсказок, D из выдачи — `03`). Долгий шаг из-за троттлинга; прогресс виден в UI по каждому кейворду.
-2. **Rate:** LLM-вызов `rate` батчами по ≤25 verified-кейвордов → R + reason каждому; код пересчитывает Score.
-3. **Hypothesize:** LLM-вызов `hypothesize` — на вход текущий топ-20 по Score, статистика кластеров, «дети» лидеров из подсказок (код заранее дёргает `hints("<kw> ")` для топовых кейвордов с childCount>0 и передаёт результат в промпт), формулировки из названий слабых конкурентов. На выход — новый пакет `batchSize` гипотез: ~70% эксплуатация вокруг сильного, ~30% (`exploreRatio`) разведка нетронутых типов семантики. Код валидирует и добавляет как `candidate`.
-4. → шаг 1.
+1. **Probe:** the code evaluates all `candidate` keywords (P from suggestions, D from search results — `03`). A slow step due to throttling; progress is visible in the UI per keyword.
+2. **Rate:** the `rate` LLM call in batches of ≤25 verified keywords → R + reason for each; the code recomputes Score.
+3. **Hypothesize:** the `hypothesize` LLM call — input: the current top 20 by Score, cluster statistics, the leaders' "children" from suggestions (the code pre-fetches `hints("<kw> ")` for the top keywords with childCount>0 and passes the result into the prompt), phrasings from weak competitors' names. Output — a new batch of `batchSize` hypotheses: ~70% exploitation around what's strong, ~30% (`exploreRatio`) exploration of untouched semantic types. The code validates and adds them as `candidate`.
+4. → step 1.
 
-### Фаза improving (после заполнения выборки)
-Ещё до `improvementRounds` (дефолт 2) полных итераций loop. Если за раунд ни один новый кейворд не вошёл в топ-20 по Score — раунд потрачен; вошёл — счётчик сбрасывается. Оба потрачены → `assembling`.
+### Phase: improving (after the sample is filled)
+Up to `improvementRounds` (default 2) more full loop iterations. If during a round not a single new keyword entered the top 20 by Score — the round is spent; if one did — the counter resets. Both spent → `assembling`.
 
-### Фаза assembling
-Код: жадный отбор слов + раскладка по полям — **два прохода**: основная локализация, затем кросс-локализация по остатку непокрытых фраз (`05.4`, `05.9`). LLM-вызов `phrase` — по одному на корзину: выбранные слова → человекочитаемые title-слоган и subtitle. Код: валидация (`05.7`, включая межкорзинное X4); при нарушении — до 3 повторов `phrase` с текстом нарушений в промпте; после 3 неудач — фаза `failed` с понятным объяснением (на практике не должно случаться: валидатор проверяет то, что промпт требует). Успех → `done`.
+### Phase: assembling
+Code: greedy word selection + layout across fields — **two passes**: primary localization, then cross-localization over the remaining uncovered phrases (`05.4`, `05.9`). The `phrase` LLM call — one per bucket: selected words → a human-readable title slogan and subtitle. Code: validation (`05.7`, including the cross-bucket rule X4); on violation — up to 3 `phrase` retries with the violation text in the prompt; after 3 failures — phase `failed` with a clear explanation (in practice this should not happen: the validator checks exactly what the prompt requires). Success → `done`.
 
-### Фаза done
-Финальные поля в state; UI показывает результаты и экспорт. Пользователь может нажать «Пересобрать» (повторить assembling, например после ручного исключения кейвордов) или «Продолжить копать» (ещё один improving-раунд).
+### Phase: done
+Final fields in state; the UI shows the results and export. The user can press "Reassemble" (repeat assembling, e.g., after manually excluding keywords) or "Keep digging" (one more improving round).
 
-## 4.3 Точка остановки — формально
+## 4.3 The stopping point — formally
 
-Цикл завершён, когда: выборка ≥ `sampleSize` **и** `improvementRounds` раундов подряд без обновления топ-20. Никаких «пока не станет идеально» — только эти два условия. Оба параметра пользователь задал при создании прогона.
+The loop is complete when: sample ≥ `sampleSize` **and** `improvementRounds` consecutive rounds without a top-20 update. No "until it's perfect" — only these two conditions. The user set both parameters when creating the run.
 
-## 4.4 Управление прогоном
+## 4.4 Run controls
 
-| Действие в UI | Поведение |
+| UI action | Behavior |
 |---|---|
-| Пауза | Дорабатывается текущий атомарный шаг (один HTTP-запрос / один LLM-вызов), флаг `paused`, цикл останавливается |
-| Возобновить | Продолжение точно с места остановки (state на диске — источник истины) |
-| Остановить и собрать | Досрочный переход в `assembling` с тем, что уже накоплено (кнопка доступна при выборке ≥ 30) |
-| Исключить кейворд | Ручной перевод в `excluded` (например, юридически рискованное слово); доступно всегда |
-| Удалить прогон | С подтверждением; удаляет директорию прогона (общий кэш не трогает) |
+| Pause | The current atomic step finishes (one HTTP request / one LLM call), flag `paused`, the loop stops |
+| Resume | Continues exactly from where it stopped (state on disk is the source of truth) |
+| Stop and assemble | Early transition to `assembling` with what has been accumulated (button available at sample ≥ 30) |
+| Exclude keyword | Manual transition to `excluded` (e.g., a legally risky word); always available |
+| Delete run | With confirmation; deletes the run directory (does not touch the shared cache) |
 
-Перезапуск бинаря: прогоны в фазах `loop/improving` НЕ продолжаются автоматически — становятся `paused` (пользователь возобновляет из UI; никаких сюрпризов с фоновой тратой токенов).
+Binary restart: runs in phases `loop/improving` do NOT resume automatically — they become `paused` (the user resumes from the UI; no surprises with background token spend).
 
-## 4.5 Обработка ошибок
+## 4.5 Error handling
 
-- Ошибка Apple по одному кейворду → `error` на кейворде, пайплайн продолжается; вечная пометка не ставится — следующий probe-шаг ретраит.
-- Ошибка LLM-вызова → 3 ретрая с бэкоффом (детали в `06`); после — `paused` с плашкой «проблема с провайдером: <текст>, проверьте авторизацию» и кнопкой «Повторить».
-- 401/403 от провайдера → сразу `paused` + редирект-подсказка на страницу авторизации.
-- Невалидный JSON от LLM после всех ретраев валидации → событие в журнал с полным ответом, шаг повторяется; 3 неудачи подряд → `paused`.
+- An Apple error on a single keyword → `error` on the keyword, the pipeline continues; no permanent mark — the next probe step retries.
+- An LLM call error → 3 retries with backoff (details in `06`); afterwards — `paused` with a banner "provider problem: <text>, check your authorization" and a "Retry" button.
+- 401/403 from the provider → immediately `paused` + a redirect hint to the authorization page.
+- Invalid JSON from the LLM after all validation retries → an event in the log with the full response, the step repeats; 3 consecutive failures → `paused`.
 
-## 4.6 Бюджеты (ориентир)
+## 4.6 Budgets (guideline)
 
-При `sampleSize=150`: ~600–1000 запросов к Apple ≈ 35–55 минут троттлинга (кэш делает повторные прогоны почти мгновенными) и ~15–25 LLM-вызовов (1 context + 1 seeds + ~8 rate + ~8 hypothesize + 1–3 phrase). Токены и стоимость каждого вызова учитываются и показываются в UI (`06.5`, `07`).
+At `sampleSize=150`: ~600–1000 requests to Apple ≈ 35–55 minutes of throttling (the cache makes repeat runs nearly instant) and ~15–25 LLM calls (1 context + 1 seeds + ~8 rate + ~8 hypothesize + 1–3 phrase). Tokens and cost of every call are tracked and shown in the UI (`06.5`, `07`).

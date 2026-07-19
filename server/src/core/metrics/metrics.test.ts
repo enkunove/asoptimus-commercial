@@ -1,5 +1,5 @@
-// Приёмка 08.4 п.1: числовые примеры из spec 03 сходятся до цифры.
-// Порт из aso-util/test/metrics.test.ts. parseHints опущен (client-only concern).
+// Acceptance 08.4 item 1: numeric examples from spec 03 match to the digit.
+// Port of aso-util/test/metrics.test.ts. parseHints omitted (client-only concern).
 
 import { describe, expect, test } from "bun:test";
 import { popularityScore, computePopularity } from "./popularity.ts";
@@ -11,20 +11,20 @@ const DW = { volume: 0.45, quality: 0.15, freshness: 0.15, match: 0.25 };
 const OW = { popularityExp: 0.6, easeExp: 0.4 };
 
 describe("Popularity (spec 03.1)", () => {
-  test("пример спеки: habit tracker, N=13, L=4, rank=2 → P=80", () => {
+  test("spec example: habit tracker, N=13, L=4, rank=2 → P=80", () => {
     expect(popularityScore(13, 4, 2, PW)).toBe(80);
   });
-  test("L=1, rank=1 → P=100; L=N → только RankScore", () => {
+  test("L=1, rank=1 → P=100; L=N → RankScore only", () => {
     expect(popularityScore(10, 1, 1, PW)).toBe(100);
     expect(popularityScore(10, 10, 1, PW)).toBe(30);
     expect(popularityScore(10, 10, 10, PW)).toBe(3);
   });
 });
 
-describe("computePopularity над сырьём prefill∪fetched (D2/D3)", () => {
-  test("habit tracker найден на префиксе 'habi' (L=4) на ранге 2 → P=80", () => {
-    // K = "habit tracker" (N=13). Подсказки под ключами-префиксами; точное вхождение
-    // K впервые встречается на префиксе длины 4 ("habi") на позиции idx=1 → rank=2.
+describe("computePopularity over prefill∪fetched raw data (D2/D3)", () => {
+  test("habit tracker found on prefix 'habi' (L=4) at rank 2 → P=80", () => {
+    // K = "habit tracker" (N=13). Suggestions keyed by prefix; the exact occurrence
+    // of K first appears on the length-4 prefix ("habi") at position idx=1 → rank=2.
     const prefixHints = {
       h: ["health", "hbo max"],
       ha: ["habit", "hair"],
@@ -38,7 +38,7 @@ describe("computePopularity над сырьём prefill∪fetched (D2/D3)", () =
     expect(res.unsuggested).toBe(false);
   });
 
-  test("флаг unsuggested → P=0, unsuggested:true", () => {
+  test("unsuggested flag → P=0, unsuggested:true", () => {
     const res = computePopularity("nonexistent phrase", {}, null, true, PW);
     expect(res.P).toBe(0);
     expect(res.unsuggested).toBe(true);
@@ -46,7 +46,7 @@ describe("computePopularity над сырьём prefill∪fetched (D2/D3)", () =
 });
 
 describe("Difficulty (spec 03.2)", () => {
-  test("пример спеки: 250k рейтингов, 4.7, 30 дней, точное вхождение → AppStrength=93", () => {
+  test("spec example: 250k ratings, 4.7, 30 days, full match → AppStrength=93", () => {
     const s = appStrength(
       "habit tracker",
       { userRatingCount: 250_000, averageUserRating: 4.7, updatedDaysAgo: 30, trackName: "Habit Tracker Pro" },
@@ -54,12 +54,12 @@ describe("Difficulty (spec 03.2)", () => {
     );
     expect(s).toBe(93);
   });
-  test("matchScore: целиком / все слова / ничего", () => {
+  test("matchScore: full / all words / nothing", () => {
     expect(matchScore("habit tracker", "Best Habit Tracker App")).toBe(1.0);
     expect(matchScore("habit tracker", "Tracker of Habit")).toBe(0.5);
     expect(matchScore("habit tracker", "Sleep Sounds")).toBe(0.0);
   });
-  test("мало результатов → D падает пропорционально n/serpTop", () => {
+  test("few results → D drops proportionally to n/serpTop", () => {
     const app = {
       trackId: 1, trackName: "Habit Tracker", averageUserRating: 4.7, userRatingCount: 250_000,
       currentVersionReleaseDate: new Date(Date.now() - 30 * 86_400_000).toISOString(),
@@ -69,17 +69,17 @@ describe("Difficulty (spec 03.2)", () => {
     const half = computeDifficulty("habit tracker", Array(5).fill(app), 5, 10, DW);
     expect(full.D).toBeGreaterThan(half.D);
     expect(full.serpSize).toBe(25);
-    // вся десятка одинаково сильна → D ≈ AppStrength
+    // all ten equally strong → D ≈ AppStrength
     expect(full.D).toBe(93);
   });
 });
 
-describe("Детектор мёртвого брендового запроса", () => {
+describe("Dead brand query detector", () => {
   const app = (trackName: string, ratingCount: number, match: number) =>
     ({ trackId: 1, trackName, ratingCount, rating: 4, updatedDaysAgo: 30, match, strength: 50 });
 
-  test("реальные сигнатуры: имя мёртвой апки в её же выдаче → true", () => {
-    // 007 Breathalyzer, 0 рейтингов (реальный кейс из прогона sober-time)
+  test("real signatures: dead app's name in its own results → true", () => {
+    // 007 Breathalyzer, 0 ratings (real case from the sober-time run)
     expect(isDeadBrandQuery("007 breathalyzer", [
       app("007 Breathalyzer", 0, 1), app("BACtrack", 1048, 0), app("Smart Sense BAC Breathalyzer", 2, 0),
     ])).toBe(true);
@@ -88,16 +88,16 @@ describe("Детектор мёртвого брендового запроса"
     ])).toBe(true);
   });
 
-  test("легитимные запросы не зануляются", () => {
-    // имя содержит фразу + хвост — не точное совпадение (bac calculator - alcocurve)
+  test("legitimate queries are not zeroed out", () => {
+    // name contains the phrase + a tail — not an exact match (bac calculator - alcocurve)
     expect(isDeadBrandQuery("bac calculator", [
       app("BAC calculator - Alcocurve", 8, 1), app("Drink Tracker - BAC Buddy", 23, 0), app("Ok To Drive", 41, 0),
     ])).toBe(false);
-    // категорийный термин: фразу целиком содержат НЕСКОЛЬКО апок
+    // category term: MULTIPLE apps contain the phrase in full
     expect(isDeadBrandQuery("alcohol tracker", [
       app("DrinkControl: Alcohol Tracker", 4199, 1), app("I Am Sober", 182336, 0), app("Alcohol Tracker°", 37, 1),
     ])).toBe(false);
-    // сильный бренд: рейтингов выше пола — реальный трафик, не зануляем
+    // strong brand: ratings above the floor — real traffic, do not zero out
     expect(isDeadBrandQuery("i am sober", [
       app("I Am Sober", 182336, 1), app("Sober Time", 39730, 0), app("Nomo", 5000, 0),
     ])).toBe(false);
@@ -105,12 +105,12 @@ describe("Детектор мёртвого брендового запроса"
 });
 
 describe("Opportunity Score (spec 03.4)", () => {
-  test("примеры спеки", () => {
+  test("spec examples", () => {
     expect(opportunityScore(80, 70, 3, OW)).toBe(54);
     expect(opportunityScore(35, 25, 3, OW)).toBe(47);
     expect(opportunityScore(80, 70, 1, OW)).toBe(18);
   });
-  test("Score(80,63,3) по формуле", () => {
+  test("Score(80,63,3) by the formula", () => {
     const expected = Math.round(100 * Math.pow(0.8, 0.6) * Math.pow(0.37, 0.4));
     expect(opportunityScore(80, 63, 3, OW)).toBe(expected);
   });
@@ -118,7 +118,7 @@ describe("Opportunity Score (spec 03.4)", () => {
     expect(opportunityScore(0, 20, 3, OW)).toBe(0);
     expect(opportunityScore(80, 20, 0, OW)).toBe(0);
   });
-  test("тай-брейки: больший P → меньший D → короче кейворд", () => {
+  test("tie-breakers: higher P → lower D → shorter keyword", () => {
     const a = { score: 50, P: 80, D: 40, keyword: "aaa" };
     const b = { score: 50, P: 70, D: 30, keyword: "bb" };
     expect(compareKeywords(a, b)).toBeLessThan(0);

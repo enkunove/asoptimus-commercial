@@ -1,62 +1,62 @@
-# Лендинг: что добавить для коммерческой версии (спека, НЕ трогаем сайт сейчас)
+# Landing: what to add for the commercial version (spec, do NOT touch the site now)
 
-Текущий `asoptimus-landing/` — маркетинговая страница с waitlist. Для коммерции на неё нужно
-добавить нижеперечисленное. Дизайн-систему не меняем (бумага `#FAFAF7`, чертёжный синий,
-Source Serif 4 + IBM Plex Mono) — всё новое вписывать в неё. Реализовать отдельной итерацией.
+The current `asoptimus-landing/` is a marketing page with a waitlist. For commerce it needs the
+additions listed below. The design system stays as is (paper `#FAFAF7`, blueprint blue,
+Source Serif 4 + IBM Plex Mono) — everything new must fit into it. Implement as a separate iteration.
 
-## Приоритет 1 — воронка «получил ключ → скачал → купил кредиты»
+## Priority 1 — the "got a key → downloaded → bought credits" funnel
 
-### 1. Signup вместо waitlist (email → активационный ключ)
-- Поле email + кнопка «Get your key». Сабмит → `POST {API}/signup {email}`.
-- Бэкенд (репо `server`): создать `User` + Stripe `Customer` + `wallet` (опц. N free-кредитов),
-  сгенерировать ключ `asop_live_…`, выслать письмом. Ответ — «проверьте почту».
-- Анти-абьюз (BUILD-PLAN §9): free-кредиты только при verified-email; при желании — later.
-- Двойная отправка одного email — идемпотентно (не плодить Customer’ов).
+### 1. Signup instead of waitlist (email → activation key)
+- Email field + "Get your key" button. Submit → `POST {API}/signup {email}`.
+- Backend (`server` repo): create `User` + Stripe `Customer` + `wallet` (opt. N free credits),
+  generate an `asop_live_…` key, send it by email. Response — "check your inbox".
+- Anti-abuse (BUILD-PLAN §9): free credits only on verified email; optionally — later.
+- Submitting the same email twice — idempotent (do not multiply Customers).
 
-### 2. Секция Download (детект ОС + все платформы)
-- Крупная кнопка под ОС посетителя + список всех: `.dmg` (macOS arm64/x64), `.exe/.msi`
+### 2. Download section (OS detection + all platforms)
+- Big button for the visitor's OS + a list of all: `.dmg` (macOS arm64/x64), `.exe/.msi`
   (Windows x64), `.AppImage/.deb` (Linux x64).
-- Ссылки — на артефакты релиза (GitHub Releases репо `client` или CDN). Версия + чексуммы.
-- Микротекст «зачем скачивать программу, а не просто сайт»: программа делает запросы к Apple
-  с твоего IP (не банится, приватно) — это продающая честность (D1).
+- Links — to release artifacts (GitHub Releases of the `client` repo, or a CDN). Version + checksums.
+- Microcopy on "why download a program rather than just use a website": the program makes Apple
+  requests from your own IP (no bans, private) — honesty that sells (D1).
 
-### 3. Секция Pricing / кредиты
-- Объяснить модель: **1 кредит = $0.01** (если выберешь денежную модель) или пакеты.
-- Пакеты top-up (напр. $10/$25/$50 с бонусом за объём — маржа зашита в цену покупки, D4).
-- Ориентир «сколько стоит один прогон» (честная вилка по COGS).
-- CTA «Buy credits» → `POST {API}/checkout {packageId, email|customer}` → редирект на Stripe
-  Checkout (домен Stripe). Возврат — на `/checkout/success` и `/checkout/cancel`.
+### 3. Pricing / credits section
+- Explain the model: **1 credit = $0.01** (if you pick the monetary model) or packages.
+- Top-up packages (e.g. $10/$25/$50 with a volume bonus — margin is baked into the purchase price, D4).
+- A "what one run costs" reference point (an honest range based on COGS).
+- CTA "Buy credits" → `POST {API}/checkout {packageId, email|customer}` → redirect to Stripe
+  Checkout (Stripe's domain). Return — to `/checkout/success` and `/checkout/cancel`.
 
-### 4. Пост-checkout и активация
-- `/checkout/success` — «кредиты начислены» (реальное начисление — по вебхуку сервера, не по
-  этой странице; страница лишь подтверждает и предлагает открыть программу).
-- `/activate` (или блок в onboarding) — как вставить ключ в программу, как пройти первый прогон.
+### 4. Post-checkout and activation
+- `/checkout/success` — "credits granted" (the actual grant happens via the server webhook, not via
+  this page; the page merely confirms and suggests opening the program).
+- `/activate` (or an onboarding block) — how to paste the key into the program, how to complete the first run.
 
-## Приоритет 2 — веб-аккаунт (тонкий, magic-link)
+## Priority 2 — web account (thin, magic-link)
 
-Чтобы можно было купить/проверить баланс без запуска программы:
-- `/account` — вход по magic-link (email → ссылка), без паролей (BUILD-PLAN §5: паролей нет).
-- Показывает: баланс кредитов, историю списаний (`ledger`, тип+delta+дата), кнопку top-up,
-  повторную отправку ключа. Данные — `GET {API}/account` по короткоживущему токену из ссылки.
-- Это опционально для MVP: минимум — signup + download + buy. Полный баланс/журнал есть в
-  самой программе (web-ui). Веб-аккаунт удобен для покупки «без установки».
+So one can buy/check the balance without launching the program:
+- `/account` — magic-link sign-in (email → link), no passwords (BUILD-PLAN §5: there are no passwords).
+- Shows: credit balance, debit history (`ledger`, type+delta+date), a top-up button,
+  resend-key. Data — `GET {API}/account` with a short-lived token from the link.
+- Optional for the MVP: the minimum is signup + download + buy. The full balance/journal lives in
+  the program itself (web-ui). The web account is convenient for buying "without installing".
 
-## Приоритет 3 — юридическое (обязательно до приёма денег)
-- **Terms of Service**, **Privacy Policy**: что уходит на сервер (текст брифа; НЕ уходят
-  Apple-креды — их нет), что запросы к Apple идут с IP пользователя, что храним (email,
-  прогоны, ledger). **Refund Policy** — важна для чарджбэк-позиции (D4/§9): условия возврата
-  неиспользованных кредитов, невозврат потраченных.
-- Ссылки в футере.
+## Priority 3 — legal (mandatory before taking money)
+- **Terms of Service**, **Privacy Policy**: what goes to the server (the brief text; Apple credentials
+  do NOT go — there are none), that Apple requests come from the user's IP, what we store (email,
+  runs, ledger). **Refund Policy** — important for the chargeback position (D4/§9): terms for refunding
+  unused credits, no refund for spent ones.
+- Links in the footer.
 
-## Эндпоинты сервера, которые дёргает сайт (репо `server/src/api`, публичные)
-| Метод | Путь | Назначение |
+## Server endpoints the site calls (`server/src/api` repo, public)
+| Method | Path | Purpose |
 |---|---|---|
-| POST | `/signup` | email → создать User+Customer+wallet, выслать ключ |
-| POST | `/checkout` | создать Stripe Checkout Session на пакет → `{checkoutUrl}` |
-| POST | `/webhooks/stripe` | `checkout.session.completed` → grant в ledger (идемпотентно) |
-| GET | `/account` | (magic-link токен) баланс + ledger |
-| POST | `/account/resend-key` | повторно выслать ключ на email |
-| GET | `/download/manifest` | версии/ссылки/чексуммы артефактов под ОС |
+| POST | `/signup` | email → create User+Customer+wallet, send the key |
+| POST | `/checkout` | create a Stripe Checkout Session for a package → `{checkoutUrl}` |
+| POST | `/webhooks/stripe` | `checkout.session.completed` → grant in the ledger (idempotent) |
+| GET | `/account` | (magic-link token) balance + ledger |
+| POST | `/account/resend-key` | resend the key to the email |
+| GET | `/download/manifest` | versions/links/checksums of artifacts per OS |
 
-Signup/checkout/webhook — Приоритет 1 (без них нельзя продавать). Account/magic-link —
-Приоритет 2. Юридическое — до первого реального платежа.
+Signup/checkout/webhook — Priority 1 (no selling without them). Account/magic-link —
+Priority 2. Legal — before the first real payment.

@@ -1,385 +1,392 @@
-# ASOptimus — архитектура коммерческой версии
+# ASOptimus — commercial version architecture
 
-Документ-план. Основан на живом ресёрче 2026-07 (Tauri/подпись, Stripe billing,
-лицензирование, backend-паттерны). Технические термины — английские, рассуждения — на русском.
+Planning document. Based on live research 2026-07 (Tauri/signing, Stripe billing,
+licensing, backend patterns). Technical terms in English; reasoning originally in Russian.
 
-> **Актуальный источник истины по стройке — `BUILD-PLAN.md`** (топология «вариант β»,
-> сабмодули, wire-протокол, биллинг D4, фазы). Этот документ — обоснования/ресёрч под ним;
-> при расхождении верен BUILD-PLAN.
-
----
-
-## −1. Решение №0: почему нельзя «просто сайт» (от него зависит всё)
-
-**Браузер не может сам ходить на эндпоинт автоподсказок Apple** — а это источник
-Popularity, сердце продукта. Две жёсткие причины:
-1. **CORS**: Apple не отдаёт `Access-Control-Allow-Origin` для твоего домена → браузер
-   блокирует чтение ответа cross-origin.
-2. **Запрещённые заголовки**: хинтам нужен кастомный `X-Apple-Store-Front` (триггерит
-   preflight, на который Apple не отвечает разрешающе), а `User-Agent` браузер вообще не
-   даёт выставлять из JS.
-
-Значит, есть только два пути, и это ФУНДАМЕНТАЛЬНАЯ развилка:
-
-- **Путь A — сайт + серверный фетчинг Apple.** Проще всего по UX (никаких установок), но
-  все запросы идут с ТВОЕГО серверного IP → Apple банит по мере роста → нужна
-  **прокси-ферма** (резидентные прокси, деньги + серая зона). Теряешь moat (бесплатный
-  распределённый краулинг) и local-privacy-историю. Становишься «ещё одним ASO-SaaS».
-  На старте при малом объёме может выжить на серверном IP + агрессивный кэш — но ставка
-  протухает с ростом.
-- **Путь B — сайт + тонкий локальный агент (РЕКОМЕНДУЕТСЯ).** Весь UI/биллинг/туториал/баланс
-  живут на **обычном сайте**; локально стоит только **крошечный headless-агент** (или
-  браузерное расширение), умеющий ровно одно: «сервер сказал сходить на эти Apple-URL →
-  сходил IP пользователя → вернул сырой ответ». Сохраняет moat и local-историю, и он в разы
-  меньше полного десктоп-приложения — не нужно паковать UI и сервер в Tauri, только fetch-агент.
-
-**Важное упрощение относительно разделов ниже:** «десктоп-приложение» в этом документе можно
-свести к **тонкому локальному агенту без UI**, а весь интерфейс держать веб-сайтом. Варианты
-агента: браузерное расширение (легко ставится, но ревью сторов + ограничения MV3 на UA) или
-мини десктоп-бинарник (надёжнее, но install-трение + подпись под 3 ОС). Разделы 2–3 (разворот
-ролей, тонкий клиент) остаются в силе — просто «клиент» теперь маленький агент, а UI на вебе.
-
-Рекомендация: **Путь B.** Твой продукт продаётся именно локальностью/прозрачностью/дешёвым
-небанящимся краулингом — это отличие от дорогих SaaS; убив локальность (Путь A), выходишь на
-их поле без их бюджетов.
+> **The current source of truth for the build is `BUILD-PLAN.md`** ("variant β" topology,
+> submodules, wire protocol, D4 billing, phases). This document holds the rationale/research
+> behind it; where they diverge, BUILD-PLAN wins.
 
 ---
 
-## 0. Вердикт по твоей идее
+## −1. Decision #0: why "just a website" won't work (everything depends on this)
 
-Идея **в основе здравая и реализуемая**, ничего «хуёвого». Она сложнее, чем кажется,
-но эта сложность неизбежна для метрового коммерческого инструмента — не потому что ты
-переусложнил, а потому что «usage-based оплата + локальное исполнение + защита логики»
-объективно требует бэка-источника-истины.
+**The browser cannot hit Apple's autosuggest endpoint on its own** — and that is the source
+of Popularity, the heart of the product. Two hard reasons:
+1. **CORS**: Apple does not return `Access-Control-Allow-Origin` for your domain → the browser
+   blocks reading the cross-origin response.
+2. **Forbidden headers**: hints require a custom `X-Apple-Store-Front` (triggers a
+   preflight that Apple never answers permissively), and the browser won't let JS set
+   `User-Agent` at all.
 
-Три поправки к твоему плану, по убыванию важности:
+So there are only two paths, and this is a FUNDAMENTAL fork:
 
-1. **Разворот ролей (главное).** Не пытайся прятать логику на машине пользователя — это
-   невозможно (консенсус индустрии: скомпилированный/обфусцированный/WASM-код «покупает
-   время, а не секретность», AI-реверс только ускорился). Вместо этого **вынеси всю
-   ценную логику на сервер, а локальный клиент сделай тупым исполнителем**. Тогда
-   реверс-инжиниринг клиента не даёт ничего проприетарного — красть нечего.
+- **Path A — website + server-side Apple fetching.** Simplest UX (no installs), but
+  all requests come from YOUR server IP → Apple bans you as you grow → you need a
+  **proxy farm** (residential proxies, money + gray zone). You lose the moat (free
+  distributed crawling) and the local-privacy story. You become "yet another ASO SaaS".
+  At the start, with low volume, it may survive on a server IP + aggressive cache — but the
+  bet rots as you grow.
+- **Path B — website + thin local agent (RECOMMENDED).** All UI/billing/tutorial/balance
+  live on a **regular website**; locally there is only a **tiny headless agent** (or a
+  browser extension) that can do exactly one thing: "the server told me to hit these Apple
+  URLs → fetched from the user's IP → returned the raw response". Preserves the moat and the
+  local story, and it is far smaller than a full desktop app — no need to pack UI and server
+  into Tauri, only a fetch agent.
 
-2. **Твой реальный риск — не защита логики, а экономика LLM + чарджбэки.** Переменная
-   стоимость прогона (расход токенов) и 100%-риск чарджбэка на тебе. Это лечится
-   архитектурой биллинга (reserve-then-settle, маржа на покупке, hard-stop на нуле), и
-   этому в плане уделено столько же места, сколько защите.
+**Important simplification relative to the sections below:** the "desktop app" in this
+document can be reduced to a **thin local agent with no UI**, keeping the entire interface
+as a website. Agent options: a browser extension (easy install, but store review + MV3
+limits on UA) or a mini desktop binary (more reliable, but install friction + signing for
+3 OSes). Sections 2–3 (role inversion, thin client) still hold — the "client" is now just a
+small agent, and the UI lives on the web.
 
-3. **Stripe-кредиты ≠ real-time кошелёк.** Нативные Stripe Billing Credits списываются
-   при финализации инвойса (на границе биллинг-цикла), а НЕ синхронно на каждый прогон.
-   Источником истины по балансу обязана быть **твоя БД**, Stripe — только приём денег и
-   отчётность.
-
-Всё остальное из твоего плана — верно: активационный ключ как идентификатор, баланс в
-программе, пополнение из программы и с лендинга через Stripe, hard-stop на нуле, «фронт
-ничего не умеет без бэка».
-
----
-
-## 1. Модель доверия (фундамент всего)
-
-> **Машина пользователя — НЕДОВЕРЕННАЯ и одноразовая. Сервер — единственная доверенная
-> сторона.** Проектируем так, что полностью вскрытый клиент не выдаёт ничего ценного —
-> только возможность сходить на Apple-URL, которые ему велел сервер.
-
-Отсюда три следствия, которые надо принять как данность:
-
-- Спрятать код на клиенте нельзя. Компиляция в бинарник поднимает стоимость атаки
-  (это полезно — «покупает время»), но не даёт секретности.
-- HMAC-подпись/секрет в клиенте не мешает вызвать твой бэк напрямую (секрет извлекаем).
-  Цель не «невозможно обойти», а «нет смысла обходить»: обходчик получит лишь право
-  дёргать Apple-URL, которые всё равно диктует сервер, а его ключ метрируется,
-  rate-лимитируется и отзывается.
-- Fingerprint устройства подделываем — это эвристика для аномалий, не жёсткая аутентификация.
+Recommendation: **Path B.** Your product sells precisely on locality/transparency/cheap
+unbannable crawling — that's the differentiator from expensive SaaS; kill locality (Path A)
+and you enter their field without their budgets.
 
 ---
 
-## 2. Целевая архитектура (end-state)
+## 0. Verdict on your idea
+
+The idea is **fundamentally sound and buildable** — nothing wrong with it. It's harder than
+it looks, but that complexity is unavoidable for a metered commercial tool — not because you
+overcomplicated it, but because "usage-based payment + local execution + logic protection"
+objectively requires a source-of-truth backend.
+
+Three corrections to your plan, in descending order of importance:
+
+1. **Role inversion (the big one).** Don't try to hide logic on the user's machine — it's
+   impossible (industry consensus: compiled/obfuscated/WASM code "buys time, not secrecy",
+   and AI-assisted reversing has only gotten faster). Instead, **move all valuable logic to
+   the server and make the local client a dumb executor**. Then reverse-engineering the
+   client yields nothing proprietary — there's nothing to steal.
+
+2. **Your real risk is not logic protection but LLM economics + chargebacks.** The variable
+   cost of a run (token spend) and 100% chargeback risk sit on you. This is cured by billing
+   architecture (reserve-then-settle, margin on purchase, hard-stop at zero), and the plan
+   gives it as much space as protection.
+
+3. **Stripe credits ≠ real-time wallet.** Native Stripe Billing Credits are debited at
+   invoice finalization (at the billing-cycle boundary), NOT synchronously per run.
+   The source of truth for the balance must be **your DB**; Stripe is only for taking money
+   and reporting.
+
+Everything else in your plan is right: activation key as identifier, balance in the
+app, top-up from the app and from the landing page via Stripe, hard-stop at zero, "the
+frontend can do nothing without the backend".
+
+---
+
+## 1. Trust model (foundation of everything)
+
+> **The user's machine is UNTRUSTED and disposable. The server is the only trusted
+> party.** We design so that a fully cracked client gives away nothing valuable —
+> only the ability to hit the Apple URLs the server told it to.
+
+Three consequences follow, to be accepted as given:
+
+- Code cannot be hidden on the client. Compiling to a binary raises the cost of attack
+  (useful — it "buys time") but provides no secrecy.
+- An HMAC signature/secret in the client doesn't stop calling your backend directly (the
+  secret is extractable). The goal isn't "impossible to bypass" but "pointless to bypass":
+  a bypasser only gains the right to hit Apple URLs the server dictates anyway, and their
+  key is metered, rate-limited, and revocable.
+- Device fingerprints are spoofable — a heuristic for anomalies, not hard authentication.
+
+---
+
+## 2. Target architecture (end-state)
 
 ```
-┌───────────────── МАШИНА ПОЛЬЗОВАТЕЛЯ (недоверенная) ──────────────┐
-│  Tauri-шелл (нативный webview)                                    │
-│   ├─ туториал / активация / баланс / кнопка «Запустить»          │
-│   └─ UI прогона  ── localhost ──►  ЛОКАЛЬНЫЙ ВОРКЕР (Bun sidecar) │
-│                                     ├─ хранит session-token       │
-│                                     ├─ WSS ──────────────────────┼──►  СЕРВЕР
-│                                     └─ ТОЛЬКО: fetch Apple URL,   │      (мозг)
-│                                        локальный 429-backoff,     │
-│                                        возврат сырого ответа      │
+┌───────────────── USER'S MACHINE (untrusted) ──────────────────────┐
+│  Tauri shell (native webview)                                     │
+│   ├─ tutorial / activation / balance / "Run" button               │
+│   └─ run UI  ── localhost ──►  LOCAL WORKER (Bun sidecar)         │
+│                                     ├─ holds session-token        │
+│                                     ├─ WSS ──────────────────────┼──►  SERVER
+│                                     └─ ONLY: fetch Apple URL,     │      (brain)
+│                                        local 429 backoff,         │
+│                                        return raw response        │
 └───────────────────────────────────────────────────────────────────┘
                                                                         │
-┌─────────────────────────── СЕРВЕР (доверенный) ───────────────────────┘
-│  Orchestrator: машина состояний прогона, expander suggest-графа,
-│                метрики P/D/Score, сборка title/subtitle/keywords
-│  LLM-proxy:    промпты собираются ЗДЕСЬ из шаблонов (run_id, stage);
-│                клиент шлёт только структурированные данные, не текст
-│  Billing:      wallet + ledger (источник истины), reserve/settle,
-│                hard-stop на нуле
-│  Auth:         активация ключа → короткоживущий session-token
+┌─────────────────────────── SERVER (trusted) ──────────────────────────┘
+│  Orchestrator: run state machine, suggest-graph expander,
+│                P/D/Score metrics, title/subtitle/keywords assembly
+│  LLM-proxy:    prompts are assembled HERE from templates (run_id, stage);
+│                the client sends only structured data, not text
+│  Billing:      wallet + ledger (source of truth), reserve/settle,
+│                hard-stop at zero
+│  Auth:         key activation → short-lived session-token
 │  Postgres:     wallet, ledger, users, licenses, run event-log, job queue
-│  Stripe:       приём top-up, вебхуки, отчётность
+│  Stripe:       top-up intake, webhooks, reporting
 └───────────────────────────────────────────────────────────────────────┘
-        Apple (autocomplete + search) ◄─── запросы идут с IP ПОЛЬЗОВАТЕЛЯ
+        Apple (autocomplete + search) ◄─── requests go out from the USER'S IP
 ```
 
-**Кто что держит:**
+**Who holds what:**
 
-| Компонент | Ответственность | Что НЕ содержит |
+| Component | Responsibility | What it does NOT contain |
 |---|---|---|
-| Tauri-шелл | нативный webview с UI, туториал, активация, показ баланса, кнопка запуска, автообновление | никакой бизнес-логики, ключа провайдера, session-token (он в воркере) |
-| Локальный воркер (Bun sidecar) | отдаёт UI на localhost; держит WSS к серверу; **исполняет только fetch к Apple по указанным сервером URL** + локальный backoff; хранит session-token в OS-secure-store | метрик, промптов, expander'а, оркестрации — ничего проприетарного |
-| Сервер | ВСЯ логика: оркестратор, expander, метрики, LLM-вызовы, гейтинг кредитов, auth | — |
+| Tauri shell | native webview with UI, tutorial, activation, balance display, run button, auto-update | no business logic, no provider key, no session-token (that's in the worker) |
+| Local worker (Bun sidecar) | serves the UI on localhost; holds WSS to the server; **executes only fetches to Apple at server-specified URLs** + local backoff; stores session-token in the OS secure store | metrics, prompts, expander, orchestration — nothing proprietary |
+| Server | ALL logic: orchestrator, expander, metrics, LLM calls, credit gating, auth | — |
 
-Почему Apple-запросы локальные: распределение исходящих по IP пользователей обходит
-per-IP throttling Apple (наше ключевое преимущество, которое мы уже проверяли). Если бы
-краулинг шёл с сервера — сервер бы забанили. Поэтому I/O к Apple делегируется клиенту, а
-**стратегия** этих запросов остаётся на сервере.
-
----
-
-## 3. Поток одного прогона (end-state)
-
-```
-1. UI (webview) → localhost-воркер: "старт прогона, бриф X"
-2. Воркер → сервер (WSS, session-token): run.create
-3. Сервер: auth ok? → RESERVE кредитов (оценка max-стоимости) в одной DB-транзакции
-           баланс < reserve → отказ ("пополните баланс"), прогон не стартует
-4. Сервер (оркестратор) гоняет машину состояний. Когда нужен Apple-запрос:
-      Сервер → воркер (WSS): job {job_id, run_id, stage, apple_urls, deadline}
-      Воркер: fetch с IP пользователя, 429 → локальный backoff, возврат raw
-      Сервер: парсит сырой ответ, считает P/D, копит suggest-урожай
-5. Когда нужен LLM (context/rate/hypothesize/phrase):
-      Сервер сам собирает промпт из шаблона стадии + структурных данных,
-      перед вызовом — HARD-STOP: остаток > 0? иначе стоп с понятным статусом
-      вызывает LLM своим ключом, метрит вход+выход токены
-6. Прогресс стримится в UI по SSE (Last-Event-ID, replay-then-tail при обрыве)
-7. Финиш: SETTLE — списать фактическую стоимость, вернуть разницу резерва,
-           записать в ledger, отчёт в Stripe Meter (для reconciliation)
-```
-
-Ключевое: **фронт физически ничего не может сделать без сервера** — каждый прогон
-требует и Apple-fetch-заданий (их шлёт сервер), и LLM-вызовов (только у сервера ключ), и
-одобрения по кредитам. Нет соединения / нет баланса → воркер простаивает.
+Why Apple requests are local: distributing outbound traffic across user IPs sidesteps
+Apple's per-IP throttling (our key advantage, already verified). If crawling ran from
+the server, the server would get banned. So the Apple I/O is delegated to the client while
+the **strategy** of those requests stays on the server.
 
 ---
 
-## 4. Биллинг: usage-based кредиты (самая денежно-опасная часть)
+## 3. Flow of a single run (end-state)
 
-**Источник истины — твоя БД, не Stripe.** Stripe Billing Credits применяются автоматически
-только при финализации инвойса, не синхронно — гейтить прогон ими нельзя.
+```
+1. UI (webview) → localhost worker: "start run, brief X"
+2. Worker → server (WSS, session-token): run.create
+3. Server: auth ok? → RESERVE credits (max-cost estimate) in one DB transaction
+           balance < reserve → refusal ("top up your balance"), the run does not start
+4. Server (orchestrator) drives the state machine. When an Apple request is needed:
+      Server → worker (WSS): job {job_id, run_id, stage, apple_urls, deadline}
+      Worker: fetch from the user's IP, 429 → local backoff, return raw
+      Server: parses the raw response, computes P/D, accumulates the suggest harvest
+5. When an LLM is needed (context/rate/hypothesize/phrase):
+      The server itself assembles the prompt from the stage template + structured data,
+      before the call — HARD-STOP: remainder > 0? otherwise stop with a clear status
+      calls the LLM with its own key, meters input+output tokens
+6. Progress streams to the UI via SSE (Last-Event-ID, replay-then-tail on disconnect)
+7. Finish: SETTLE — debit the actual cost, return the reserve difference,
+           write to the ledger, report to Stripe Meter (for reconciliation)
+```
 
-### Объектная карта
-- **Stripe**: `Customer` (1:1 с юзером, храним `cus_...`), `Checkout Session` mode=payment
-  на каждый top-up-пакет с `metadata={user_id, activation_key, credits}` +
-  `client_reference_id=user_id`; опционально `Meter` (event `run_cost`) для отчётности.
-- **Твои таблицы**:
+Key point: **the frontend physically cannot do anything without the server** — every run
+requires both Apple-fetch jobs (sent by the server) and LLM calls (only the server has the
+key), plus credit approval. No connection / no balance → the worker sits idle.
+
+---
+
+## 4. Billing: usage-based credits (the most financially dangerous part)
+
+**The source of truth is your DB, not Stripe.** Stripe Billing Credits apply automatically
+only at invoice finalization, not synchronously — you cannot gate a run with them.
+
+### Object map
+- **Stripe**: `Customer` (1:1 with the user, store `cus_...`), `Checkout Session` mode=payment
+  for each top-up package with `metadata={user_id, activation_key, credits}` +
+  `client_reference_id=user_id`; optionally a `Meter` (event `run_cost`) for reporting.
+- **Your tables**:
   - `wallet(user_id, balance_cents)`
-  - `ledger(id, user_id, delta_cents, type[grant|reserve|settle|refund|chargeback], run_id, stripe_event_id UNIQUE, created_at)` — иммутабельный журнал
-  - `processed_events(stripe_event_id UNIQUE)` — идемпотентность вебхуков
+  - `ledger(id, user_id, delta_cents, type[grant|reserve|settle|refund|chargeback], run_id, stripe_event_id UNIQUE, created_at)` — immutable journal
+  - `processed_events(stripe_event_id UNIQUE)` — webhook idempotency
 
-### Определение кредита и маржа
-- **1 кредит = фиксированная денежная единица** (например $0.01), чтобы кредиты чисто
-  маппились на COGS.
-- **Маржа берётся на ПОКУПКЕ, не на списании.** Продаёшь $10 покупательной способности за
-  $12–15 (или N кредитов дешевле их себестоимости). Тогда списание за прогон = сырой
-  COGS-в-кредитах, и маржа зафиксирована, даже если прогон окажется неожиданно дорогим.
-- COGS = стоимость LLM-токенов (вход+выход+cached по текущим ставкам модели) + оверхед
-  сервера на прогон. Добавь **per-run floor** (минимальное списание), чтобы дешёвые с
-  виду прогоны с длинным контекстом покрывали фиксированный оверхед.
+### Credit definition and margin
+- **1 credit = a fixed monetary unit** (e.g. $0.01), so credits map cleanly onto COGS.
+- **Margin is taken on the PURCHASE, not on the debit.** You sell $10 of purchasing power for
+  $12–15 (or N credits below their cost). Then the per-run debit = raw
+  COGS-in-credits, and the margin is locked in even if a run turns out unexpectedly expensive.
+- COGS = LLM token cost (input+output+cached at current model rates) + server overhead
+  per run. Add a **per-run floor** (minimum debit) so seemingly cheap runs with long
+  context cover the fixed overhead.
 
-### Reserve-then-settle (каждый шаг — одна DB-транзакция)
-1. **Reserve** на старте: оценка MAX-стоимости = `max_tokens × output_rate × markup`.
-   `UPDATE wallet SET balance=balance-:res WHERE user_id=:u AND balance>=:res` — атомарный
-   условный апдейт (или `SELECT ... FOR UPDATE`) сериализует параллельные прогоны одного
-   юзера, чтобы оба не прошли проверку и не увели баланс в минус.
-2. **Hard-stop перед КАЖДОЙ дорогой LLM-стадией**, не только на старте — фактический
-   расход заранее неизвестен.
-3. **Settle** в конце: заменить резерв фактической стоимостью, вернуть разницу. Ключ
-   идемпотентности каждого reserve/settle — `run_id`, чтобы ретраи/дубли вебхуков были no-op.
+### Reserve-then-settle (each step is one DB transaction)
+1. **Reserve** at start: MAX-cost estimate = `max_tokens × output_rate × markup`.
+   `UPDATE wallet SET balance=balance-:res WHERE user_id=:u AND balance>=:res` — an atomic
+   conditional update (or `SELECT ... FOR UPDATE`) serializes one user's concurrent runs
+   so both can't pass the check and drive the balance negative.
+2. **Hard-stop before EVERY expensive LLM stage**, not just at start — actual
+   spend is unknown up front.
+3. **Settle** at the end: replace the reserve with the actual cost, return the difference.
+   The idempotency key for each reserve/settle is `run_id`, so retries/duplicate webhooks are no-ops.
 
-### Top-up вебхук
-`checkout.session.completed` → проверить подпись Stripe → `payment_status==='paid'` →
-`INSERT processed_events(event.id)` (уже есть → 200 и выход) → начислить `grant`-строку в
-ledger атомарно → 200 за секунды, тяжёлое — в фон. Тестировать `stripe listen` + test-режим,
-live/test webhook-секреты строго раздельно.
+### Top-up webhook
+`checkout.session.completed` → verify the Stripe signature → `payment_status==='paid'` →
+`INSERT processed_events(event.id)` (already there → 200 and exit) → credit a `grant` row to
+the ledger atomically → 200 within seconds, heavy work in the background. Test with `stripe listen` +
+test mode; keep live/test webhook secrets strictly separate.
 
-### Финансовые дыры (обязательно закрыть)
-- **Чарджбэк после траты = двойной убыток на тебе.** Юзер пополнил → потратил (ты уже
-  заплатил LLM-провайдеру) → оспорил платёж. Stripe возвращает деньги + берёт невозвратный
-  dispute-fee, кредиты/COGS никто не откатывает. Митигация: **Stripe Radar** (пройти до
-  начисления), кап на размер top-up для новых юзеров, задержка spendability крупных первых
-  пополнений. Остаточный риск — твой.
-- **Отрицательный баланс из-за гонки резерва.** Только атомарный `WHERE balance>=reserve`
-  или `FOR UPDATE`.
-- **Недооценка input-токенов** (особенно с большим контекстом) занижает списание в разы —
-  метрить вход И выход.
-- **Дрейф цен модели** молча делает прогоны убыточными — привязывай списание к текущим
-  ставкам, не хардкодь.
-- Опция-бэкстоп: у Stripe есть managed **«Billing for LLM tokens»** (синхронизирует
-  токен-цены OpenAI/Anthropic/Google, markup%, умеет отклонять запросы при нуле кредитов) —
-  можно взять как второй серверный предохранитель, но источник истины всё равно твой ledger.
-
----
-
-## 5. Идентичность и лицензирование
-
-- **Ключ = якорь идентичности и entitlement**, но **не bearer на каждый запрос**. При
-  активации обменять ключ (по TLS) на **короткоживущий session-token, привязанный к
-  fingerprint устройства**. Его слать per-request, периодически рефрешить. Это даёт отзыв,
-  экспирацию и device-binding без паролей.
-- **HMAC-подпись каждого запроса** (per-session секрет) + timestamp (±5 мин) + nonce
-  (сервер кэширует, отбивает наивный replay). Не останавливает реверсера, но делает
-  переиспользование перехваченного запроса и шаринг ключа бессмысленным.
-- **Rate-limit на ПОЛЬЗОВАТЕЛЯ** (не на IP — исходящий IP всё равно пользовательский), по
-  токенам/стоимости/конкуренции + жёсткий cap одновременных активных прогонов на юзера.
-  Кредиты предоплачены → шаринг ключа просто сливает баланс шарящего (естественный
-  экономический дизинсентив).
-- **Пароли/OAuth не нужны** для prepaid-инструмента — добавляют credential-stuffing и
-  саппорт, не защищая баланс лучше отзываемого device-bound ключа. Email-привязка — только
-  ради восстановления доступа и чеков (и она тебе нужна: ключ шлётся на почту при скачивании).
-- **Купить, а не строить лицензирование.** Самопал = переизобретать fingerprint-активацию,
-  node-lock, heartbeat/lease, отзыв, secure-storage. Варианты: **Keygen** (open-source,
-  self-host рядом с твоим бэком, макс. контроль) либо **Merchant-of-Record** (Paddle /
-  Lemon Squeezy — берут на себя мировой налог + тонкий license-API). Свой код — только на
-  слой session-token/HMAC, не на переизобретение активации.
+### Financial holes (must be closed)
+- **Chargeback after spend = double loss on you.** User topped up → spent (you already
+  paid the LLM provider) → disputed the payment. Stripe returns the money + charges a
+  non-refundable dispute fee; nobody rolls back the credits/COGS. Mitigation: **Stripe Radar**
+  (pass before crediting), a cap on top-up size for new users, delayed spendability of large
+  first top-ups. Residual risk is yours.
+- **Negative balance from a reserve race.** Only atomic `WHERE balance>=reserve`
+  or `FOR UPDATE`.
+- **Underestimating input tokens** (especially with large context) understates the debit
+  severalfold — meter input AND output.
+- **Model price drift** silently makes runs unprofitable — peg the debit to current
+  rates, don't hardcode.
+- Backstop option: Stripe offers a managed **"Billing for LLM tokens"** (syncs
+  OpenAI/Anthropic/Google token prices, markup %, can reject requests at zero credits) —
+  usable as a second server-side fuse, but the source of truth is still your ledger.
 
 ---
 
-## 6. Десктоп-паковка и распространение
+## 5. Identity and licensing
 
-- **Tauri 2.x, не Electron.** Шелл тонкий, вся логика в Bun-воркере → Tauri (5–10 МБ,
-  низкий RAM, deny-by-default security) — чистый выигрыш; разница рендеринга между
-  webview'ами для туториал-UI несущественна.
-- **Бэкенд-воркер как sidecar:** `bun build --compile --target=<triple>` → один бинарник на
-  таргет (macOS arm64+x64, Windows x64, Linux x64), регистрируется в `bundle.externalBin`
-  (имя обязано иметь суффикс target-triple). Spawn требует `shell:allow-execute` в
+- **The key = identity and entitlement anchor**, but **not a bearer for every request.** On
+  activation, exchange the key (over TLS) for a **short-lived session-token bound to the
+  device fingerprint**. Send it per-request, refresh periodically. This gives revocation,
+  expiry, and device-binding without passwords.
+- **HMAC signature on every request** (per-session secret) + timestamp (±5 min) + nonce
+  (server caches it, kills naive replay). Doesn't stop a reverser, but makes
+  replaying an intercepted request and key sharing pointless.
+- **Rate-limit per USER** (not per IP — the outbound IP is the user's anyway), by
+  tokens/cost/concurrency + a hard cap on simultaneous active runs per user.
+  Credits are prepaid → key sharing simply drains the sharer's balance (a natural
+  economic disincentive).
+- **Passwords/OAuth are unnecessary** for a prepaid tool — they add credential stuffing and
+  support load without protecting the balance better than a revocable device-bound key.
+  Email binding — only for access recovery and receipts (and you do need it: the key is
+  emailed on download).
+- **Buy licensing, don't build it.** Rolling your own = reinventing fingerprint activation,
+  node-lock, heartbeat/lease, revocation, secure storage. Options: **Keygen** (open-source,
+  self-host next to your backend, max control) or a **Merchant-of-Record** (Paddle /
+  Lemon Squeezy — they take on worldwide tax + a thin license API). Your own code — only for
+  the session-token/HMAC layer, not for reinventing activation.
+
+---
+
+## 6. Desktop packaging and distribution
+
+- **Tauri 2.x, not Electron.** The shell is thin, all logic lives in the Bun worker → Tauri
+  (5–10 MB, low RAM, deny-by-default security) is a clean win; webview rendering differences
+  don't matter for a tutorial UI.
+- **Backend worker as a sidecar:** `bun build --compile --target=<triple>` → one binary per
+  target (macOS arm64+x64, Windows x64, Linux x64), registered in `bundle.externalBin`
+  (the name must carry the target-triple suffix). Spawning requires `shell:allow-execute` in
   `capabilities/*.json`.
-- **Lifecycle (главный footgun):** динамический свободный порт (не хардкод), health-check
-  `/health` перед открытием UI, убивать stale-процесс на порту и дерево дочерних при выходе,
-  разное поведение сигналов на Windows.
-- **Подпись (без неё — предупреждения ОС):**
-  - macOS: Apple Developer ($99/год), Developer ID cert, **notarization** через notarytool +
-    stapling. Без этого Gatekeeper блокирует. Оборот — минуты.
-  - Windows: с 2023 приватный ключ обязан быть на HSM-токене; **EV с 2024 больше НЕ даёт
-    мгновенный обход SmartScreen** — репутация копится как у OV. Лучший вариант 2026 —
-    **Azure Trusted Signing** (без токена, интеграция с CI, дёшево), но для физлиц пока
-    только US/Canada. Иначе OV-cert ~$100–700/год.
-  - Linux: единой подписи нет; AppImage можно GPG-подписать, но он сам подпись не проверяет.
-    Неподписанный AppImage/.deb не даёт scare-screen как macOS/Windows → низкий приоритет.
-- **Автообновление:** Tauri updater plugin (`tauri signer generate`, публичный ключ в
-  конфиг, приватный в CI-секретах). **Важно:** updater-подпись ОТДЕЛЬНА от OS-подписи —
-  каждый новый бинарник всё равно нужно нотаризовать/Authenticode-подписать. Потеря
-  приватного updater-ключа = навсегда нельзя обновить уже установленных.
-- **CI:** `tauri-action` + GitHub Actions matrix (macOS-раннер для нотаризации, Windows-раннер
-  для Authenticode). Годовой прайс подписи: ~$100 (Apple) + $0–700 (Windows) + $0 (Linux).
+- **Lifecycle (the main footgun):** dynamic free port (no hardcode), health-check
+  `/health` before opening the UI, kill any stale process on the port and the child-process
+  tree on exit, signal behavior differs on Windows.
+- **Signing (without it — OS warnings):**
+  - macOS: Apple Developer ($99/yr), Developer ID cert, **notarization** via notarytool +
+    stapling. Without it, Gatekeeper blocks. Turnaround — minutes.
+  - Windows: since 2023 the private key must live on an HSM token; **EV since 2024 NO longer
+    grants instant SmartScreen bypass** — reputation accrues like OV. Best 2026 option —
+    **Azure Trusted Signing** (no token, CI integration, cheap), but for individuals it's
+    US/Canada only so far. Otherwise an OV cert ~$100–700/yr.
+  - Linux: no unified signing; an AppImage can be GPG-signed, but it doesn't verify the
+    signature itself. An unsigned AppImage/.deb produces no scare screen like macOS/Windows →
+    low priority.
+- **Auto-update:** Tauri updater plugin (`tauri signer generate`, public key in the
+  config, private key in CI secrets). **Important:** the updater signature is SEPARATE from
+  OS signing — every new binary still needs notarization/Authenticode signing. Losing the
+  private updater key = existing installs can never be updated again.
+- **CI:** `tauri-action` + GitHub Actions matrix (macOS runner for notarization, Windows runner
+  for Authenticode). Annual signing cost: ~$100 (Apple) + $0–700 (Windows) + $0 (Linux).
 
-### Кнопка «Запустить» в твоём понимании
-Остаётся: шелл показывает туториал/баланс/активацию, кнопка спавнит sidecar-воркер, тот
-поднимает локальный UI (как сейчас aso-util) и открывает его в webview. Отличие от текущего
-— UI теперь общается не с локальной логикой, а через воркер с сервером, и всё метрируется.
-
----
-
-## 7. Backend-стек (без оверинжиниринга)
-
-- **Один долгоживущий процесс** (Node/Bun/Go/Python) на Railway/Fly.io/Render или VPS +
-  Docker Compose. WebSocket/SSE требуют долгоживущего процесса — serverless не подходит.
-- **Postgres = БД + очередь заданий** (`pg-boss`/`graphile-worker`, `FOR UPDATE SKIP LOCKED`) —
-  до десятков тысяч задач/сек без отдельного брокера. Redis добавить ТОЛЬКО когда понадобится
-  буфер возобновляемого стрима или pub/sub для второго инстанса.
-- **Один инстанс на старте** → sticky-роутинг WS не нужен. Как появится второй сервер, WSS
-  пиннится к инстансу → понадобится шина (Redis pub/sub/NATS) или sticky-routing.
-- **Транспорт:** сервер→воркер команды по WSS (full-duplex); прогресс в UI по SSE с уникальным
-  event-id, Last-Event-ID, replay-then-tail; на клиенте монотонный seq для дедупликации.
-- **Идемпотентность заданий обязательна:** `job = {job_id, run_id, stage, apple_urls, deadline}`;
-  при реконнекте воркер сообщает выполненные job_id; результат дедуплицируется. Таймауты
-  адаптивные и щедрые (Apple throttling), ретраи идемпотентные.
-- **LLM-proxy — НЕ открытый /chat:** сервер собирает промпты из server-side шаблонов,
-  привязанных к `(run_id, stage)`; от клиента — только структурные данные, не текст промпта
-  (иначе юзер гоняет что угодно твоим ключом = кража compute, обход цен). Governance-слой —
-  **LiteLLM Proxy / Helicone**: virtual keys, per-user бюджеты, spend-tracking, audit-log.
-- **Контроль LLM-стоимости:** роутинг модели по стоимости стадии (Haiku для дешёвого, дорогая
-  точечно), prompt caching стабильных системных частей, кэш ответов на детерминированные
-  входы (но НЕ на стадии, зависящие от свежих Apple-данных — выдаст устаревший результат).
-- **Машина состояний прогона — event-sourced лог шагов в Postgres** (идемпотентные шаги,
-  реплей до последнего состояния): возобновляемость без Temporal. Temporal/Inngest — не на
-  старте, но оставь путь на них, если вырастешь.
+### The "Run" button as you envision it
+It stays: the shell shows tutorial/balance/activation, the button spawns the sidecar worker,
+which brings up the local UI (like aso-util today) and opens it in the webview. The difference
+from today — the UI now talks not to local logic but through the worker to the server, and
+everything is metered.
 
 ---
 
-## 8. Что переиспользуется из aso-util
+## 7. Backend stack (no overengineering)
 
-Разделение «код считает, LLM судит», которое уже есть, идеально ложится на разворот:
+- **One long-lived process** (Node/Bun/Go/Python) on Railway/Fly.io/Render or a VPS +
+  Docker Compose. WebSocket/SSE require a long-lived process — serverless doesn't fit.
+- **Postgres = DB + job queue** (`pg-boss`/`graphile-worker`, `FOR UPDATE SKIP LOCKED`) —
+  up to tens of thousands of jobs/sec without a separate broker. Add Redis ONLY when you need
+  a resumable-stream buffer or pub/sub for a second instance.
+- **One instance at the start** → no sticky WS routing needed. Once a second server appears,
+  WSS pins to an instance → you'll need a bus (Redis pub/sub/NATS) or sticky routing.
+- **Transport:** server→worker commands over WSS (full-duplex); progress to the UI via SSE
+  with a unique event-id, Last-Event-ID, replay-then-tail; a monotonic seq on the client for
+  deduplication.
+- **Job idempotency is mandatory:** `job = {job_id, run_id, stage, apple_urls, deadline}`;
+  on reconnect the worker reports completed job_ids; results are deduplicated. Timeouts are
+  adaptive and generous (Apple throttling), retries idempotent.
+- **The LLM-proxy is NOT an open /chat:** the server assembles prompts from server-side
+  templates bound to `(run_id, stage)`; from the client — only structured data, never prompt
+  text (otherwise the user runs anything on your key = compute theft, price bypass). Governance
+  layer — **LiteLLM Proxy / Helicone**: virtual keys, per-user budgets, spend tracking, audit log.
+- **LLM cost control:** route the model by stage cost (Haiku for the cheap parts, the expensive
+  model selectively), prompt caching for stable system parts, response caching for deterministic
+  inputs (but NOT for stages depending on fresh Apple data — it would serve a stale result).
+- **The run state machine is an event-sourced step log in Postgres** (idempotent steps,
+  replay up to the last state): resumability without Temporal. Temporal/Inngest — not at
+  the start, but keep a path to them if you grow.
 
-| Модуль aso-util | Куда в коммерческой версии |
+---
+
+## 8. What is reused from aso-util
+
+The "code computes, LLM judges" split that already exists maps perfectly onto the inversion:
+
+| aso-util module | Where it goes in the commercial version |
 |---|---|
-| `metrics/*`, `assembly/*`, `pipeline/orchestrator.ts`, `pipeline/expander.ts`, `llm/prompts/*`, `llm/schemas.ts` | **на сервер** (это и есть проприетарная логика) |
-| `http.ts` (token bucket, кэш, ретраи) + `apple/hints.ts` + `apple/search.ts` | **в локальный воркер** (это и есть «тупой fetch к Apple»), но БЕЗ решения *что* фетчить — URL диктует сервер |
-| `llm/claude.ts` | **на сервер**, за LLM-proxy; клиентский ключ/подписка — удаляются полностью |
-| `server/public/*` (UI) | остаётся UI, но данные тянет через воркер↔сервер |
-| `store/*` (локальные прогоны на диске) | прогоны переезжают в серверный Postgres; локально — только кэш Apple |
+| `metrics/*`, `assembly/*`, `pipeline/orchestrator.ts`, `pipeline/expander.ts`, `llm/prompts/*`, `llm/schemas.ts` | **to the server** (this IS the proprietary logic) |
+| `http.ts` (token bucket, cache, retries) + `apple/hints.ts` + `apple/search.ts` | **to the local worker** (this IS the "dumb fetch to Apple"), but WITHOUT deciding *what* to fetch — the server dictates the URLs |
+| `llm/claude.ts` | **to the server**, behind the LLM-proxy; the client key/subscription is removed entirely |
+| `server/public/*` (UI) | stays the UI, but pulls data via worker↔server |
+| `store/*` (local runs on disk) | runs move into the server's Postgres; locally — only the Apple cache |
 
-Формулы и жадный отбор уже чистые функции без I/O — переносятся на сервер один-в-один.
-
----
-
-## 9. Фазированная сборка (для соло)
-
-Полный end-state — большой рефактор. Не строй его целиком сразу. Порядок:
-
-- **Фаза 0 — валидация спроса (сейчас).** Держи текущий локальный free-beta aso-util живым
-  для лендинга/waitlist. Пока люди записываются — строишь коммерцию. Не строй коммерцию,
-  пока нет сигнала спроса.
-- **Фаза 1 — тонкий вертикальный срез (MVP-money).** Цель: доказать, что деньги гейтятся.
-  - Сервер: auth (ключ→session-token), wallet+ledger, **LLM-proxy** (перенести туда LLM-вызовы
-    прогона), reserve/settle, hard-stop, один Stripe Checkout top-up + вебхук.
-  - Клиент: пока БЕЗ Tauri — та же локальная программа, но LLM ходит через твой сервер по
-    ключу; Apple-fetch и оркестрация временно остаются локально.
-  - **Осознанный компромисс MVP:** метрики/expander на этом этапе ещё локальны (экспонированы),
-    зато **деньги уже под контролем** — каждый прогон невозможен без серверного LLM +
-    одобрения по кредитам. Это гейтит COGS (главный риск) и даёт продать. Проприетарную
-    логику прячем в скомпилированный Bun-бинарник (буквально «покупаем время»).
-  - Один VPS, Postgres, Stripe test→live. Лицензирование — Keygen или простой самопис ключей.
-- **Фаза 2 — десктоп-обёртка.** Tauri-шелл + sidecar, подпись/нотаризация под 3 ОС,
-  updater, кнопки скачивания на лендинге, письмо с ключом при скачивании, экран баланса и
-  top-up внутри программы.
-- **Фаза 3 — hardening через разворот.** Перенести оркестрацию + метрики + expander на
-  сервер, локальный воркер ужать до чистого Apple-fetch (полная модель раздела 2). Делать,
-  когда появится выручка/трафик, оправдывающий защиту (раньше — преждевременно).
-- **Фаза 4 — масштаб.** Второй инстанс + шина для WS, durable-стрим (Ably/Redis), возможно
-  Temporal, ASA-провайдер (официальная популярность), мониторинг позиций как подписочный
-  апселл.
+The formulas and greedy selection are already pure functions with no I/O — they port to the
+server one-to-one.
 
 ---
 
-## 10. Открытые решения (за тобой)
+## 9. Phased assembly (for a solo dev)
 
-1. **Лицензирование:** self-host Keygen (контроль, +инфра) vs Merchant-of-Record Paddle/
-   Lemon Squeezy (берут мировой налог, но слабее offline). Если продаёшь глобально —
-   налог MoR перевешивает.
-2. **Модель кредита:** «1 кредит = $0.01» (прозрачно, маппится на COGS) vs абстрактные
-   кредиты (гибче в маркетинге, но легче ошибиться в марже). Рекомендация — денежный.
-3. **Windows-подпись:** проверить, доступен ли тебе Azure Trusted Signing (US/Canada для
-   физлиц) — если да, это дёшево; иначе OV-cert + HSM-токен.
-4. **Насколько рано делать разворот (Фаза 3):** зависит от того, кто твоя угроза. Для
-   первых платящих инди-девов реверс маловероятен → MVP-light ок. Растёт трафик/появляются
-   клоны → двигай разворот вперёд.
-5. **Free-tier:** дать ли N бесплатных кредитов новому ключу (снижает трение onboarding,
-   но открывает абьюз через генерацию ключей — тогда привязывай free-tier к
-   verified-email/карте).
+The full end-state is a big refactor. Don't build it all at once. Order:
+
+- **Phase 0 — demand validation (now).** Keep the current local free-beta aso-util alive
+  for the landing page/waitlist. While people sign up — you build the commercial side. Don't
+  build commerce until there's a demand signal.
+- **Phase 1 — thin vertical slice (MVP-money).** Goal: prove that money is gated.
+  - Server: auth (key→session-token), wallet+ledger, **LLM-proxy** (move the run's LLM calls
+    there), reserve/settle, hard-stop, one Stripe Checkout top-up + webhook.
+  - Client: no Tauri yet — the same local program, but the LLM goes through your server by
+    key; Apple fetch and orchestration temporarily stay local.
+  - **Deliberate MVP compromise:** metrics/expander are still local at this stage (exposed),
+    but **the money is already under control** — every run is impossible without the server's
+    LLM + credit approval. This gates COGS (the main risk) and lets you sell. The proprietary
+    logic hides in a compiled Bun binary (literally "buying time").
+  - One VPS, Postgres, Stripe test→live. Licensing — Keygen or a simple home-rolled key scheme.
+- **Phase 2 — desktop wrapper.** Tauri shell + sidecar, signing/notarization for 3 OSes,
+  updater, download buttons on the landing page, key email on download, balance and top-up
+  screens inside the app.
+- **Phase 3 — hardening via the inversion.** Move orchestration + metrics + expander to the
+  server, shrink the local worker to pure Apple fetch (the full model of section 2). Do it
+  when revenue/traffic justifies the protection (earlier is premature).
+- **Phase 4 — scale.** Second instance + a bus for WS, durable stream (Ably/Redis), possibly
+  Temporal, an ASA provider (official popularity), position monitoring as a subscription
+  upsell.
 
 ---
 
-## 11. Сводка рисков (по убыванию)
+## 10. Open decisions (yours to make)
 
-1. **Экономика LLM + чарджбэки** — можно уйти в минус. Лечится маржой-на-покупке,
-   reserve/settle с атомарным гейтом, per-run floor, Radar, кап top-up новым юзерам.
-2. **Зависимость от недокументированного Apple-эндпоинта** — может умереть в любой день.
-   Страховка: ASA-провайдер (официальная популярность) как вторая нога (Фаза 4).
-3. **Защита логики** — принципиально неполная; смягчается разворотом (Фаза 3), но никогда
-   не абсолютна. Не трать на неё непропорционально сил на старте.
-4. **Оверинжиниринг** — Temporal/K8s/микросервисы съедят время соло-разработчика. Postgres-
-   очередь + один контейнер закрывают всё до десятков тысяч задач/сек.
-5. **Латентность под throttling** — цепочка сервер→клиент→Apple→клиент→сервер под 429 даёт
-   задания в десятки секунд. Таймауты адаптивные, ретраи идемпотентные, UX честно
-   показывает прогресс.
+1. **Licensing:** self-host Keygen (control, +infra) vs Merchant-of-Record Paddle/
+   Lemon Squeezy (they handle worldwide tax, but weaker offline). If you sell globally —
+   the MoR tax handling outweighs.
+2. **Credit model:** "1 credit = $0.01" (transparent, maps onto COGS) vs abstract
+   credits (more marketing flexibility, but easier to botch the margin). Recommendation —
+   monetary.
+3. **Windows signing:** check whether Azure Trusted Signing is available to you (US/Canada
+   for individuals) — if yes, it's cheap; otherwise an OV cert + HSM token.
+4. **How early to do the inversion (Phase 3):** depends on who your threat is. For the
+   first paying indie devs, reversing is unlikely → MVP-light is fine. Traffic grows/clones
+   appear → pull the inversion forward.
+5. **Free tier:** whether to grant N free credits to a new key (lowers onboarding friction,
+   but opens abuse via key generation — then bind the free tier to a
+   verified email/card).
+
+---
+
+## 11. Risk summary (descending)
+
+1. **LLM economics + chargebacks** — you can go into the red. Cured by margin-on-purchase,
+   reserve/settle with an atomic gate, per-run floor, Radar, a top-up cap for new users.
+2. **Dependence on an undocumented Apple endpoint** — can die any day.
+   Insurance: an ASA provider (official popularity) as a second leg (Phase 4).
+3. **Logic protection** — fundamentally incomplete; softened by the inversion (Phase 3), but
+   never absolute. Don't spend disproportionate effort on it at the start.
+4. **Overengineering** — Temporal/K8s/microservices will eat a solo dev's time. A Postgres
+   queue + one container covers everything up to tens of thousands of jobs/sec.
+5. **Latency under throttling** — the server→client→Apple→client→server chain under 429
+   yields jobs taking tens of seconds. Adaptive timeouts, idempotent retries, and a UX that
+   honestly shows progress.

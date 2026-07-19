@@ -1,5 +1,5 @@
-// @aso/core — Opportunity Score (spec 03.4). ПРОПРИЕТАРНО, чистая функция + тай-брейки.
-// Порт 1:1 из aso-util.
+// @aso/core — Opportunity Score (spec 03.4). PROPRIETARY, pure function + tie-breakers.
+// 1:1 port from aso-util.
 
 export interface OpportunityWeights {
   popularityExp: number;
@@ -12,7 +12,7 @@ export function opportunityScore(P: number, D: number, R: number, w: Opportunity
   return Math.round(value);
 }
 
-/** Тай-брейки при равном Score: больший P → меньший D → меньшая длина K (spec 03.4). */
+/** Tie-breakers on equal Score: higher P → lower D → shorter K (spec 03.4). */
 export function compareKeywords(
   a: { score: number; P: number; D: number; keyword: string },
   b: { score: number; P: number; D: number; keyword: string },

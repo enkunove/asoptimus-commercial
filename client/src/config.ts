@@ -1,22 +1,22 @@
-// Единая точка разрешения окружения: облачные endpoint'ы + DEV-флаг.
-// Прод-путь — дефолты на api.asoptimus.com; env их переопределяет; dev-стаб облака —
-// ТОЛЬКО за DEV=1. Никакой доменной логики.
+// Single point of environment resolution: cloud endpoints + DEV flag.
+// Prod path — defaults on api.asoptimus.com; env overrides them; the dev cloud stub is
+// ONLY behind DEV=1. No domain logic.
 
-/** Прод-дефолты (перекрываются env). 1 источник истины, чтобы не разъезжались по файлам. */
+/** Prod defaults (overridable via env). 1 source of truth so files don't drift apart. */
 export const DEFAULT_WSS = "wss://api.asoptimus.com/ws";
 export const DEFAULT_HTTPS = "https://api.asoptimus.com";
 
-/** DEV=1 — единственный способ поднять оффлайн-стаб облака и синтетическую активацию. */
+/** DEV=1 — the only way to bring up the offline cloud stub and synthetic activation. */
 export function isDev(): boolean {
   return process.env.DEV === "1";
 }
 
-/** WSS-endpoint облака (джобы/прогресс/чтения). Env ASO_CLOUD_WSS, иначе прод-дефолт. */
+/** Cloud WSS endpoint (jobs/progress/reads). Env ASO_CLOUD_WSS, otherwise prod default. */
 export function wssUrl(): string {
   return process.env.ASO_CLOUD_WSS || DEFAULT_WSS;
 }
 
-/** HTTPS-endpoint (активация, top-up-redirect). Env ASO_CLOUD_HTTPS, иначе прод-дефолт. */
+/** HTTPS endpoint (activation, top-up-redirect). Env ASO_CLOUD_HTTPS, otherwise prod default. */
 export function httpsBase(): string {
   return process.env.ASO_CLOUD_HTTPS || DEFAULT_HTTPS;
 }

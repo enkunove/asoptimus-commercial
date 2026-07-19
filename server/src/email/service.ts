@@ -1,7 +1,7 @@
-// @aso/server/email — провайдеро-агностичный SMTP-сервис (BUILD-PLAN §9). Транзакционные письма:
-// активационный ключ (на /signup) и чеки об оплате (на Stripe-webhook). Конфиг — ТОЛЬКО env:
-// SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (любой транзакционный SMTP-relay).
-// В ПРОДЕ отсутствие SMTP → жёсткий отказ (письма не теряем молча). DEV=1 без SMTP → лог-only.
+// @aso/server/email — provider-agnostic SMTP service (BUILD-PLAN §9). Transactional emails:
+// activation key (on /signup) and payment receipts (on Stripe webhook). Config — env ONLY:
+// SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM (any transactional SMTP relay).
+// In PROD, missing SMTP → hard failure (we don't silently drop emails). DEV=1 without SMTP → log-only.
 
 import { IS_DEV, ProdConfigError, optionalEnv, hasEnv } from "../env.ts";
 import { log } from "../log.ts";
@@ -24,29 +24,29 @@ const FROM_FALLBACK = "ASOptimus <noreply@asoptimus.com>";
 
 function activationEmail(to: string, key: string): EmailMessage {
   const text = [
-    "Спасибо за интерес к ASOptimus!",
+    "Thank you for your interest in ASOptimus!",
     "",
-    "Ваш активационный ключ:",
+    "Your activation key:",
     "",
     `    ${key}`,
     "",
-    "Вставьте его в программе при первом запуске. Ключ привязывается к устройству.",
-    "Оплата — по факту (кредиты списываются за проверенные кейфразы). Пополнить баланс можно",
-    "в самой программе.",
+    "Enter it in the app on first launch. The key is bound to your device.",
+    "Billing is usage-based (credits are debited per verified keyphrase). You can top up",
+    "your balance right in the app.",
   ].join("\n");
-  return { to, subject: "Ваш ключ активации ASOptimus", text };
+  return { to, subject: "Your ASOptimus activation key", text };
 }
 
 function receiptEmail(to: string, credits: number, chargeUsd: number, balance: number): EmailMessage {
   const text = [
-    "Спасибо за пополнение ASOptimus!",
+    "Thank you for topping up ASOptimus!",
     "",
-    `Начислено кредитов: ${credits} (оплачено $${chargeUsd.toFixed(2)}, 1 кредит = $1).`,
-    `Текущий баланс: ${balance.toFixed(2)} кредитов.`,
+    `Credits granted: ${credits} (paid $${chargeUsd.toFixed(2)}, 1 credit = $1).`,
+    `Current balance: ${balance.toFixed(2)} credits.`,
     "",
-    "Кредиты списываются за проверенные кейфразы по ходу прогона.",
+    "Credits are debited per verified keyphrase as the run progresses.",
   ].join("\n");
-  return { to, subject: "Чек ASOptimus — пополнение баланса", text };
+  return { to, subject: "ASOptimus receipt — balance top-up", text };
 }
 
 class SmtpEmailService implements EmailService {
@@ -59,7 +59,7 @@ class SmtpEmailService implements EmailService {
     this.transport = nodemailer.createTransport({
       host,
       port,
-      secure: port === 465, // 465 = implicit TLS; 587/25 = STARTTLS (nodemailer поднимает сам)
+      secure: port === 465, // 465 = implicit TLS; 587/25 = STARTTLS (nodemailer handles it)
       auth: user ? { user, pass } : undefined,
     });
     this.from = from;
@@ -67,7 +67,7 @@ class SmtpEmailService implements EmailService {
 
   async send(msg: EmailMessage): Promise<void> {
     await this.transport.sendMail({ from: this.from, to: msg.to, subject: msg.subject, text: msg.text, html: msg.html });
-    log.info("[email] отправлено", { to: msg.to, subject: msg.subject });
+    log.info("[email] sent", { to: msg.to, subject: msg.subject });
   }
   async sendActivationKey(to: string, key: string) { await this.send(activationEmail(to, key)); }
   async sendReceipt(to: string, credits: number, chargeUsd: number, balance: number) {
@@ -78,7 +78,7 @@ class SmtpEmailService implements EmailService {
 class DevLogEmailService implements EmailService {
   readonly kind = "dev-log" as const;
   async send(msg: EmailMessage): Promise<void> {
-    log.warn("[email] DEV-log (SMTP не задан; письмо НЕ отправлено)", { to: msg.to, subject: msg.subject, preview: msg.text.slice(0, 160) });
+    log.warn("[email] DEV-log (SMTP not configured; email NOT sent)", { to: msg.to, subject: msg.subject, preview: msg.text.slice(0, 160) });
   }
   async sendActivationKey(to: string, key: string) { await this.send(activationEmail(to, key)); }
   async sendReceipt(to: string, credits: number, chargeUsd: number, balance: number) {
@@ -97,8 +97,8 @@ export function createEmailService(): EmailService {
     return new SmtpEmailService(host, port, user, pass, from);
   }
   if (IS_DEV) {
-    log.warn("[email] DEV-log EmailService (SMTP_HOST не задан)");
+    log.warn("[email] DEV-log EmailService (SMTP_HOST not set)");
     return new DevLogEmailService();
   }
-  throw new ProdConfigError("SMTP_HOST", "транзакционный SMTP-relay для писем (ключ активации + чеки)");
+  throw new ProdConfigError("SMTP_HOST", "transactional SMTP relay for emails (activation key + receipts)");
 }

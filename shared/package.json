@@ -1,7 +1,7 @@
 {
   "name": "@aso/shared",
   "version": "0.1.0",
-  "description": "ASOptimus wire-контракт: домен-типы, протокол программа↔сервер, публичные константы",
+  "description": "ASOptimus wire contract: domain types, program↔server protocol, public constants",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

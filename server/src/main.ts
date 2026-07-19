@@ -1,6 +1,6 @@
-// @aso/server — точка входа: Bun.serve (HTTP + WSS), env-валидация на старте (fail-fast в проде),
-// структурное логирование, graceful shutdown. HTTP: REST + SSE (api/http). WSS на /ws: команды
-// клиента + диспатч Apple-джоб (api/wss).
+// @aso/server — entry point: Bun.serve (HTTP + WSS), env validation at startup (fail-fast in prod),
+// structured logging, graceful shutdown. HTTP: REST + SSE (api/http). WSS at /ws: client
+// commands + Apple job dispatch (api/wss).
 
 import { createApp } from "./app.ts";
 import { handleHttp } from "./api/http.ts";
@@ -8,25 +8,25 @@ import { wssMessage, wssClose, type WsData } from "./api/wss.ts";
 import { IS_DEV, ProdConfigError } from "./env.ts";
 import { log } from "./log.ts";
 
-// @ts-ignore — Bun global (типы из @types/bun; вне bun среда всё равно целевая).
+// @ts-ignore — Bun global (types from @types/bun; bun is the target environment regardless).
 if (typeof Bun === "undefined") {
-  log.error("[main] требуется Bun-рантайм (bun run src/main.ts). Node не поддерживает Bun.serve/text-import промптов.");
+  log.error("[main] Bun runtime required (bun run src/main.ts). Node does not support Bun.serve/text-import of prompts.");
   process.exit(1);
 }
 
 const PORT = Number(process.env.PORT ?? 8787);
 
-// createApp() конструирует все сервисы; в проде их фабрики бросают ProdConfigError при
-// отсутствии обязательного секрета (DATABASE_URL / ANTHROPIC_API_KEY / STRIPE_* / SMTP_*).
+// createApp() constructs all services; in prod their factories throw ProdConfigError when
+// a required secret is missing (DATABASE_URL / ANTHROPIC_API_KEY / STRIPE_* / SMTP_*).
 let app: ReturnType<typeof createApp>;
 try {
   app = createApp();
 } catch (e: any) {
   if (e instanceof ProdConfigError) {
     log.error(e.message);
-    log.error("[main] запуск прерван: заполните обязательные секреты (.env.example) или запустите с DEV=1.");
+    log.error("[main] startup aborted: fill in the required secrets (.env.example) or run with DEV=1.");
   } else {
-    log.error("[main] ошибка инициализации", { err: String(e?.message ?? e) });
+    log.error("[main] initialization error", { err: String(e?.message ?? e) });
   }
   process.exit(1);
 }
@@ -54,10 +54,10 @@ const server = Bun.serve<WsData>({
   },
 });
 
-log.info("[main] ASOptimus server слушает", {
+log.info("[main] ASOptimus server listening", {
   http: `http://localhost:${server.port}`,
   wss: `ws://localhost:${server.port}/ws`,
-  mode: IS_DEV ? "DEV (моки разрешены)" : "PROD",
+  mode: IS_DEV ? "DEV (mocks allowed)" : "PROD",
   llm: process.env.ANTHROPIC_API_KEY ? "anthropic" : "mock",
   db: process.env.DATABASE_URL ? "postgres" : "memory",
   stripe: process.env.STRIPE_SECRET_KEY ? "live" : "mock",

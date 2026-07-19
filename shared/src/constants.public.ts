@@ -1,17 +1,17 @@
-// @aso/shared — ТОЛЬКО публичные константы. Zero-secret.
-// NB: placement-веса (05.2) и extraLocale-таблица (05.9) — НЕ здесь. Они moat и живут
-// в приватном репо server (server/src/core/locales.ts). Сюда класть их нельзя.
+// @aso/shared — public constants ONLY. Zero-secret.
+// NB: placement weights (05.2) and the extraLocale table (05.9) are NOT here. They are the moat and live
+// in the private server repo (server/src/core/locales.ts). They must not be put here.
 
-/** Дефолтные стоп-слова (spec 01.3). Пользователь может переопределить в конфиге. */
+/** Default stopwords (spec 01.3). The user may override them in the config. */
 export const DEFAULT_STOPWORDS: string[] = [
   "app", "apps", "free", "best", "top", "new",
   "a", "an", "the", "and", "or", "for", "of", "with", "your", "my", "&",
 ];
 
-/** Символьные лимиты полей App Store (spec 00/05). */
+/** App Store field character limits (spec 00/05). */
 export const FIELD_LIMITS = { title: 30, subtitle: 30, keywords: 100 } as const;
 
-/** Дефолты HTTP-слоя клиента (spec 02.4). */
+/** Client HTTP-layer defaults (spec 02.4). */
 export const HTTP_DEFAULTS = {
   requestsPerMinute: 18,
   cacheTtlDays: 7,
@@ -20,6 +20,6 @@ export const HTTP_DEFAULTS = {
 } as const;
 
 import storefronts from "./storefronts.public.json" with { type: "json" };
-/** country → { id, primaryLanguage }. ТОЛЬКО это нужно клиенту для построения URL.
- *  extraLocale (кросс-локализация 05.9) — server-only, здесь его нет. */
+/** country → { id, primaryLanguage }. This is ALL the client needs to build URLs.
+ *  extraLocale (cross-localization 05.9) is server-only and not here. */
 export const STOREFRONTS = storefronts as Record<string, { id: number; primaryLanguage: string }>;

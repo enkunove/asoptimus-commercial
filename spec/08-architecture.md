@@ -1,104 +1,104 @@
-# 08 — Архитектура, стек, сборка бинарей, критерии приёмки
+# 08 — Architecture, stack, binary builds, acceptance criteria
 
-## 8.1 Стек
+## 8.1 Stack
 
-- **Bun ≥ 1.1** как рантайм и компилятор: `bun build --compile` даёт самодостаточный исполняемый файл под каждую платформу (кросс-компиляция флагом `--target`).
-- Язык: TypeScript (Bun выполняет напрямую, без tsc-шага).
-- HTTP-сервер: встроенный `Bun.serve` (без Express).
-- Зависимости — минимум: `@anthropic-ai/sdk` (Claude-адаптер), `fast-xml-parser` (plist подсказок). Всё остальное — стандартные API. Никаких фронтенд-фреймворков и сборщиков: статика (`index.html`, `app.js`, `styles.css`) и промпты (`src/llm/prompts/*.md`) вшиваются в бинарь через Bun-импорты файлов.
-- Тесты: `bun test`.
+- **Bun ≥ 1.1** as runtime and compiler: `bun build --compile` produces a self-contained executable for each platform (cross-compilation via the `--target` flag).
+- Language: TypeScript (Bun runs it directly, no tsc step).
+- HTTP server: the built-in `Bun.serve` (no Express).
+- Dependencies — minimal: `@anthropic-ai/sdk` (Claude adapter), `fast-xml-parser` (suggestions plist). Everything else — standard APIs. No frontend frameworks or bundlers: static assets (`index.html`, `app.js`, `styles.css`) and prompts (`src/llm/prompts/*.md`) are embedded into the binary via Bun file imports.
+- Tests: `bun test`.
 
-## 8.2 Структура репозитория
+## 8.2 Repository structure
 
 ```
 aso-util/
 ├── package.json
-├── build.ts                  # скрипт сборки бинарей под все платформы
+├── build.ts                  # binary build script for all platforms
 ├── src/
-│   ├── main.ts               # entrypoint: флаги (--port,--no-open,--data-dir), сервер, открытие браузера
+│   ├── main.ts               # entrypoint: flags (--port,--no-open,--data-dir), server, browser opening
 │   ├── server/
-│   │   ├── routes.ts         # HTTP API из 07.2
+│   │   ├── routes.ts         # HTTP API from 07.2
 │   │   ├── sse.ts            # /api/events
-│   │   └── public/           # index.html, app.js, styles.css (вшиваются в бинарь)
+│   │   └── public/           # index.html, app.js, styles.css (embedded into the binary)
 │   ├── store/
-│   │   ├── paths.ts          # dataDir, раскладка из 01.4
-│   │   ├── runs.ts           # CRUD прогонов, атомарная запись state, events.jsonl
+│   │   ├── paths.ts          # dataDir, layout from 01.4
+│   │   ├── runs.ts           # run CRUD, atomic state writes, events.jsonl
 │   │   └── auth.ts           # auth.json (chmod 600), settings.json
-│   ├── http.ts               # ЕДИНЫЙ слой запросов к Apple: token bucket, кэш, ретраи (02.4)
+│   ├── http.ts               # the SINGLE Apple request layer: token bucket, cache, retries (02.4)
 │   ├── apple/
-│   │   ├── hints.ts          # подсказки: запрос + парсер plist/JSON (02.1)
+│   │   ├── hints.ts          # suggestions: request + plist/JSON parser (02.1)
 │   │   ├── search.ts         # iTunes Search API (02.2)
 │   │   └── storefronts.json
 │   ├── metrics/
-│   │   ├── popularity.ts     # probing + формула P (03.1)
+│   │   ├── popularity.ts     # probing + P formula (03.1)
 │   │   ├── difficulty.ts     # AppStrength + D (03.2)
 │   │   └── score.ts          # Opportunity (03.4)
 │   ├── assembly/
-│   │   ├── folding.ts        # фолдинг форм (05.3)
-│   │   ├── select.ts         # жадный отбор — чистая функция (05.4)
-│   │   ├── place.ts          # размещение по полям (05.5)
-│   │   └── validate.ts       # правила T/S/K/X/W (05.7)
+│   │   ├── folding.ts        # form folding (05.3)
+│   │   ├── select.ts         # greedy selection — pure function (05.4)
+│   │   ├── place.ts          # placement across fields (05.5)
+│   │   └── validate.ts       # T/S/K/X/W rules (05.7)
 │   ├── llm/
-│   │   ├── adapter.ts        # интерфейс + реестр (06.1)
-│   │   ├── claude.ts         # Claude-адаптер: auth, completeJSON, usage (06.2)
+│   │   ├── adapter.ts        # interface + registry (06.1)
+│   │   ├── claude.ts         # Claude adapter: auth, completeJSON, usage (06.2)
 │   │   ├── prompts/          # context.md, seeds.md, rate.md, hypothesize.md, phrase.md
-│   │   └── schemas.ts        # JSON-схемы выходов всех задач (06.3)
+│   │   └── schemas.ts        # JSON schemas of all task outputs (06.3)
 │   └── pipeline/
-│       ├── orchestrator.ts   # машина состояний прогона, цикл (04)
+│       ├── orchestrator.ts   # run state machine, the loop (04)
 │       └── controls.ts       # pause/resume/stopAndAssemble/exclude (04.4)
 ├── test/
-│   ├── fixtures/             # снятые ответы Apple + записанные LLM-ответы
-│   ├── metrics.test.ts       # примеры из 03 сходятся до цифры
-│   ├── assembly.test.ts      # фолдинг, жадный, валидация
-│   ├── pipeline.test.ts      # машина состояний с мок-адаптером и мок-Apple
-│   ├── adapter.test.ts       # валидация схем, обработка ошибок (мок-транспорт)
-│   └── smoke.live.test.ts    # живые запросы Apple (только вручную: bun run smoke)
+│   ├── fixtures/             # captured Apple responses + recorded LLM responses
+│   ├── metrics.test.ts       # the examples from 03 match to the digit
+│   ├── assembly.test.ts      # folding, greedy, validation
+│   ├── pipeline.test.ts      # state machine with a mock adapter and mock Apple
+│   ├── adapter.test.ts       # schema validation, error handling (mock transport)
+│   └── smoke.live.test.ts    # live Apple requests (manual only: bun run smoke)
 └── spec/
 ```
 
-Главные правила: формулы и жадный отбор — чистые функции без I/O; весь I/O — в `http.ts` / `store/` / `llm/claude.ts`; оркестратор тестируем с мок-адаптером (детерминированные записанные ответы).
+Key rules: formulas and greedy selection are pure functions with no I/O; all I/O lives in `http.ts` / `store/` / `llm/claude.ts`; the orchestrator is testable with a mock adapter (deterministic recorded responses).
 
-## 8.3 Сборка дистрибутива
+## 8.3 Distribution build
 
-`bun run build` (скрипт `build.ts`) собирает в `dist/`:
+`bun run build` (the `build.ts` script) builds into `dist/`:
 
-| Файл | Target |
+| File | Target |
 |---|---|
 | `aso-util-macos-arm64` | `bun-darwin-arm64` |
 | `aso-util-macos-x64` | `bun-darwin-x64` |
 | `aso-util-linux-x64` | `bun-linux-x64` |
 | `aso-util-windows-x64.exe` | `bun-windows-x64` |
 
-Проверка после сборки: каждый бинарь запускается с `--help` и `--port 0 --no-open` (сервер поднялся, `GET /api/providers` отвечает). Открытие браузера: `open` (macOS) / `xdg-open` (Linux) / `start` (Windows). Никаких инсталляторов и автообновлений в v1 — просто файл.
+Post-build check: each binary is launched with `--help` and `--port 0 --no-open` (the server came up, `GET /api/providers` responds). Browser opening: `open` (macOS) / `xdg-open` (Linux) / `start` (Windows). No installers or auto-updates in v1 — just a file.
 
-## 8.4 Критерии приёмки (definition of done)
+## 8.4 Acceptance criteria (definition of done)
 
-**Юнит (`bun test`, без сети и без LLM):**
-1. Числовые примеры из `03` сходятся точно: P(«habit tracker», L=4, rank=2)=80; AppStrength примера=93; Score(80,63,3) по формуле; P=0 → Score=0.
-2. Фолдинг — позитивные: `habits→habit`, `stories→story`, `boxes→box`, `games→game`, `notes→note`, `planes→plane`, `watches→watch`; негативные (ключ = слово): `focus`, `status`, `class`, `press`, `business`, `analysis`, `news`, `lens`, `ios`; критично: key(`planes`) ≠ key(`plan`), key(`news`) ≠ key(`new`).
-3. Жадный отбор на фикстуре из 30 фраз: стабильный повторяемый результат, нет повторов слов между полями, бюджеты не превышены.
-4. `validate()` ловит каждое правило T1–W1 (негативная фикстура на правило).
-5. Машина состояний с мок-адаптером: полный путь created→…→done; R=0 → excluded; счётчик выборки игнорирует excluded/error; пауза посреди loop и возобновление не ломают счётчики.
-6. Адаптер (мок-транспорт): невалидный JSON → один повтор → ошибка; 401 → AuthError; расчёт costUsd по прайсу; логирование вызова в llm-log.jsonl.
+**Unit (`bun test`, no network and no LLM):**
+1. The numeric examples from `03` match exactly: P("habit tracker", L=4, rank=2)=80; the example's AppStrength=93; Score(80,63,3) per the formula; P=0 → Score=0.
+2. Folding — positive: `habits→habit`, `stories→story`, `boxes→box`, `games→game`, `notes→note`, `planes→plane`, `watches→watch`; negative (key = the word): `focus`, `status`, `class`, `press`, `business`, `analysis`, `news`, `lens`, `ios`; critical: key(`planes`) ≠ key(`plan`), key(`news`) ≠ key(`new`).
+3. Greedy selection on a 30-phrase fixture: a stable repeatable result, no word repeats across fields, budgets not exceeded.
+4. `validate()` catches every rule T1–W1 (a negative fixture per rule).
+5. The state machine with a mock adapter: the full path created→…→done; R=0 → excluded; the sample counter ignores excluded/error; a pause mid-loop and a resume don't break the counters.
+6. The adapter (mock transport): invalid JSON → one retry → error; 401 → AuthError; costUsd computed from the price list; call logging to llm-log.jsonl.
 
-**Смоук (`bun run smoke`, с сетью, вручную):**
-7. hints US `photo` → непустой список; RU `фото` → русские подсказки.
-8. search `habit tracker` US → ≥10 результатов с рейтингами.
-9. Троттлинг: 40 некэшированных запросов занимают ≥ 60 с; повторный probe того же кейворда — 0 сетевых запросов.
+**Smoke (`bun run smoke`, with network, manual):**
+7. hints US `photo` → non-empty list; RU with the Russian word for "photo" as the term → Russian-language suggestions.
+8. search `habit tracker` US → ≥10 results with ratings.
+9. Throttling: 40 uncached requests take ≥ 60 s; re-probing the same keyword — 0 network requests.
 
-**E2E (вручную, с реальной авторизацией и `fixtures/sample-brief.md`):**
-10. Первый запуск бинаря: браузер открылся на `#/setup`; страница провайдеров показывает Claude + заглушку; авторизация по API-ключу проходит, `verifyAuth` зелёный; неверный ключ даёт понятную ошибку.
-11. Авторизация по подписке (при наличии `ant`): токен получен, пробный вызов прошёл.
-12. Новый прогон с sample-brief: контекст сгенерирован и показан на подтверждение; после «Поехали» цикл идёт, лента живая, кейворды наполняются с ненулевыми P/D/Score (или честным unsuggested).
-13. Пауза → убийство процесса → перезапуск бинаря → прогон в paused, возобновление продолжает с места остановки без потерь.
-14. Прогон с маленьким sampleSize=30 доходит до done: обе корзины (основная + кросс-локализация) валидны (validate зелёный, включая X4 — нет повторов слов между корзинами), покрытие показано, экспорт .md и .json скачиваются.
-15. Вкладка LLM-журнал показывает каждый вызов с полным промптом/ответом/usage; суммы в шапке сходятся с журналом.
-16. Раскрытие строки кейворда показывает выдачу и объяснение P человеческим текстом.
-17. Всё повторить на втором таргете ОС (минимум macOS + Linux; Windows — smoke `--help` + запуск сервера).
+**E2E (manual, with real authorization and `fixtures/sample-brief.md`):**
+10. First launch of the binary: the browser opened at `#/setup`; the providers page shows Claude + the placeholder; API-key authorization succeeds, `verifyAuth` is green; a wrong key gives a clear error.
+11. Subscription authorization (when `ant` is present): token obtained, the probe call succeeded.
+12. A new run with the sample brief: the context is generated and shown for confirmation; after "Go" the loop runs, the feed is live, keywords fill in with non-zero P/D/Score (or an honest unsuggested).
+13. Pause → kill the process → restart the binary → the run is paused, resuming continues from where it stopped with no losses.
+14. A run with a small sampleSize=30 reaches done: both buckets (primary + cross-localization) are valid (validate green, including X4 — no word repeats across buckets), coverage is shown, .md and .json exports download.
+15. The LLM log tab shows every call with the full prompt/response/usage; the header totals match the log.
+16. Expanding a keyword row shows the search results and a plain-language explanation of P.
+17. Repeat everything on a second OS target (at minimum macOS + Linux; Windows — smoke `--help` + server start).
 
-**Качество поведения:**
-18. Все сообщения об ошибках говорят, что делать дальше; отвал авторизации посреди прогона не теряет данные (paused + подсказка).
+**Behavioral quality:**
+18. Every error message says what to do next; an authorization drop mid-run loses no data (paused + a hint).
 
-## 8.5 Указания агенту-сборщику
+## 8.5 Instructions for the builder agent
 
-Порядок: `http.ts` → `apple/*` (+ снять живые фикстуры) → `metrics/*` (+ тесты по примерам) → `assembly/*` (+ тесты) → `llm/` (адаптер + промпты + схемы) → `pipeline/` → `server/` + фронт → `build.ts` → приёмка. Спека самодостаточна; при противоречии кода и спеки — правь код; при дыре в спеке — принимай консервативное решение и фиксируй его комментарием в коде и строкой в README. Единственное разрешённое исследовательское поведение — smoke-тест формата ответа эндпоинта подсказок (`02.1`).
+Order: `http.ts` → `apple/*` (+ capture live fixtures) → `metrics/*` (+ tests per the examples) → `assembly/*` (+ tests) → `llm/` (adapter + prompts + schemas) → `pipeline/` → `server/` + frontend → `build.ts` → acceptance. The spec is self-sufficient; if code and spec contradict — fix the code; on a gap in the spec — make the conservative decision and record it as a comment in the code and a line in the README. The only permitted exploratory behavior is the smoke test of the suggestions endpoint's response format (`02.1`).

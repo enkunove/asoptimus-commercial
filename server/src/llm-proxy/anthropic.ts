@@ -1,15 +1,15 @@
-// @aso/server/llm-proxy — реальный клиент Anthropic по СЕРВЕРНОМУ api_key (D4: не
-// subscription — иначе costUsd=null = бесплатные прогоны). Порт callOnce из aso-util
-// claude.ts БЕЗ подписочной ветки и без хардкод-цен (цена считается в billing/prices).
-// Промпты НИКОГДА не покидают сервер, кроме как в Anthropic (D9).
+// @aso/server/llm-proxy — real Anthropic client using a SERVER-SIDE api_key (D4: not
+// subscription — otherwise costUsd=null = free runs). Port of callOnce from aso-util
+// claude.ts WITHOUT the subscription branch and without hardcoded prices (pricing is
+// computed in billing/prices). Prompts NEVER leave the server except to Anthropic (D9).
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { CallOnceRequest, CallOnceResult, LlmClient } from "./client.ts";
 import { LlmAuthError } from "./client.ts";
 
-// Модели, принимающие `thinking:{type:"adaptive"}` (Opus 4.6+/Sonnet 4.6+/Sonnet 5/Fable 5).
-// Haiku 4.5 и старше adaptive НЕ поддерживают — для них thinking опускаем (structured-output-only).
-// Fable 5 отвергает thinking:{disabled}, но опускание/adaptive допустимы.
+// Models that accept `thinking:{type:"adaptive"}` (Opus 4.6+/Sonnet 4.6+/Sonnet 5/Fable 5).
+// Haiku 4.5 and older do NOT support adaptive — for them we omit thinking (structured-output-only).
+// Fable 5 rejects thinking:{disabled}, but omitting/adaptive are fine.
 function supportsAdaptiveThinking(modelId: string): boolean {
   return (
     modelId.startsWith("claude-opus-4-6") ||
@@ -45,7 +45,7 @@ export class AnthropicClient implements LlmClient {
     if (supportsAdaptiveThinking(req.model)) params.thinking = { type: "adaptive" };
 
     try {
-      // idempotencyKey (run_id+step_seq): рестарт посреди вызова не двоит COGS (D7).
+      // idempotencyKey (run_id+step_seq): a restart mid-call does not double COGS (D7).
       const res: any = await this.client.messages.create(params, {
         headers: { "Idempotency-Key": req.idempotencyKey },
       });
@@ -62,7 +62,7 @@ export class AnthropicClient implements LlmClient {
       return { text, usage };
     } catch (e: any) {
       if (e?.status === 401 || e?.status === 403) {
-        throw new LlmAuthError(`Anthropic auth (${e.status}): ключ неверный/без прав`);
+        throw new LlmAuthError(`Anthropic auth (${e.status}): key invalid/lacks permissions`);
       }
       throw e;
     }

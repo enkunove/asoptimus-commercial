@@ -1,20 +1,20 @@
-# 03 — Метрики: формулы и примеры
+# 03 — Metrics: formulas and examples
 
-Все метрики — целые числа, вычислимые из кэшированных ответов Apple. Пересчёт по кэшу всегда даёт тот же результат. Веса берутся из `aso.config.json` (в формулах ниже подставлены дефолты).
+All metrics are integers, computable from cached Apple responses. Recomputing from the cache always yields the same result. Weights come from `aso.config.json` (the formulas below use the defaults).
 
-Нормализация кейворда перед любыми вычислениями: `lowercase → trim → схлопнуть повторные пробелы → NFC`. Дубликаты после нормализации — один кейворд.
+Keyword normalization before any computation: `lowercase → trim → collapse repeated spaces → NFC`. Duplicates after normalization — a single keyword.
 
-## 3.1 Popularity (P), 0–100 — прокси-спрос из автоподсказок
+## 3.1 Popularity (P), 0–100 — demand proxy from autocomplete suggestions
 
-**Интуиция:** чем короче префикс, на котором Apple уже подсказывает фразу, и чем выше она в списке подсказок — тем чаще её ищут. Это и есть сигнал, по которому Apple ранжирует подсказки.
+**Intuition:** the shorter the prefix at which Apple already suggests the phrase, and the higher it sits in the suggestion list — the more often it is searched. That is precisely the signal Apple ranks suggestions by.
 
-**Процедура probing для кейворда K длиной N символов:**
-1. Запрашивать подсказки для префиксов `K[0:i]`, i = 1, 2, 3, … N (каждый запрос кэшируется — префиксы переиспользуются между кейвордами, реальная стоимость быстро падает).
-2. **L** = минимальная длина префикса, при которой K присутствует в подсказках (точное совпадение после нормализации). **rank** = позиция K в списке при этом префиксе (1..10).
-3. Ранняя остановка: как только K найден — прекратить (префиксы длиннее L не нужны).
-4. Если K не появился ни на одном префиксе вплоть до i = N → P = 0, флаг `unsuggested: true`.
+**Probing procedure for keyword K of length N characters:**
+1. Request suggestions for prefixes `K[0:i]`, i = 1, 2, 3, … N (each request is cached — prefixes are reused across keywords, so the real cost drops quickly).
+2. **L** = the minimum prefix length at which K appears in the suggestions (exact match after normalization). **rank** = K's position in the list at that prefix (1..10).
+3. Early stop: as soon as K is found — stop (prefixes longer than L are not needed).
+4. If K never appeared at any prefix up to i = N → P = 0, flag `unsuggested: true`.
 
-**Формула** (N ≥ 2; для N = 1 однобуквенных кейвордов не бывает — минимальная длина слова в гипотезах 3 символа):
+**Formula** (N ≥ 2; N = 1 cannot occur — single-letter keywords do not exist, the minimum word length in hypotheses is 3 characters):
 
 ```
 DepthScore = (N − L) / (N − 1)          // L=1 → 1.0; L=N → 0.0
@@ -22,73 +22,73 @@ RankScore  = (11 − rank) / 10           // rank 1 → 1.0; rank 10 → 0.1
 P = round(100 × (0.7 × DepthScore + 0.3 × RankScore))
 ```
 
-**Пример:** K = `habit tracker`, N = 13. Фраза появилась в подсказках на префиксе `habi` (L = 4) на позиции 2.
+**Example:** K = `habit tracker`, N = 13. The phrase appeared in the suggestions at prefix `habi` (L = 4) at position 2.
 DepthScore = (13−4)/12 = 0.75; RankScore = (11−2)/10 = 0.9; P = round(100 × (0.7×0.75 + 0.3×0.9)) = round(79.5) = **80**.
 
-**Дополнительный сигнал (сохраняется, в P не входит):** `childCount` — сколько подсказок на запрос `K + " "` начинаются с K (сколько «детей» порождает фраза). Показатель long-tail-потенциала, показывается в UI, используется пайплайном для выбора направлений расширения (`04-pipeline.md`).
+**Additional signal (stored, not part of P):** `childCount` — how many suggestions for the query `K + " "` start with K (how many "children" the phrase spawns). An indicator of long-tail potential, shown in the UI, used by the pipeline to pick expansion directions (`04-pipeline.md`).
 
-## 3.2 Difficulty (D), 0–100 — сила конкуренции из выдачи
+## 3.2 Difficulty (D), 0–100 — competition strength from search results
 
-**Интуиция:** обойти выдачу тяжело, если в топе сидят приложения с большим объёмом рейтингов, высокой оценкой, свежими обновлениями и точным вхождением кейворда в название (то есть они целенаправленно занимают этот запрос).
+**Intuition:** search results are hard to beat when the top is occupied by apps with a large volume of ratings, high scores, fresh updates, and an exact keyword match in the name (i.e., they deliberately own this query).
 
-Для каждого приложения i на позиции i = 1..`serpTop` (дефолт 10) выдачи по K:
+For each app i at position i = 1..`serpTop` (default 10) of the search results for K:
 
 ```
-V = min(1, log10(userRatingCount + 1) / 6)        // объём: 1M+ рейтингов → 1.0
-Q = averageUserRating / 5                          // качество
-F = max(0, 1 − daysSince(currentVersionReleaseDate) / 365)   // свежесть
-M = 1.0  если K целиком входит в trackName (подстрока, case-insensitive)
-    0.5  если все слова K входят в trackName в любом порядке
-    0.0  иначе
+V = min(1, log10(userRatingCount + 1) / 6)        // volume: 1M+ ratings → 1.0
+Q = averageUserRating / 5                          // quality
+F = max(0, 1 − daysSince(currentVersionReleaseDate) / 365)   // freshness
+M = 1.0  if K is contained whole in trackName (substring, case-insensitive)
+    0.5  if all words of K appear in trackName in any order
+    0.0  otherwise
 AppStrength_i = 100 × (0.45×V + 0.15×Q + 0.15×F + 0.25×M)
 ```
 
-Позиционные веса (топ выдачи важнее): `w_i = (serpTop + 1 − i) / Σ` (для serpTop=10: 10/55, 9/55, … 1/55).
+Positional weights (the top of the results matters more): `w_i = (serpTop + 1 − i) / Σ` (for serpTop=10: 10/55, 9/55, … 1/55).
 
 ```
 D_raw = Σ w_i × AppStrength_i
-n     = фактическое число результатов (resultCount, максимум serpTop)
-D     = round(D_raw × n / serpTop)     // мало результатов = слабая ниша → D падает
+n     = actual number of results (resultCount, capped at serpTop)
+D     = round(D_raw × n / serpTop)     // few results = weak niche → D drops
 ```
 
-Также сохраняется `resultCount` полного запроса (limit=25) как `serpSize` — показатель насыщенности ниши для UI.
+Also stored: `resultCount` of the full query (limit=25) as `serpSize` — a niche saturation indicator for the UI.
 
-**Пример:** конкурент №1 — 250 000 рейтингов, оценка 4.7, обновлён 30 дней назад, K в названии целиком:
+**Example:** competitor #1 — 250,000 ratings, score 4.7, updated 30 days ago, K whole in the name:
 V = log10(250001)/6 = 0.90; Q = 0.94; F = 1−30/365 = 0.92; M = 1.0
 AppStrength = 100 × (0.45×0.90 + 0.15×0.94 + 0.15×0.92 + 0.25×1.0) = **93**.
-Если вся десятка такая — D ≈ 93 (кровавая баня). Если после топ-3 идут мёртвые аппки без рейтингов и обновлений — D упадёт к 40–50, и это честный сигнал «сюда можно влезть».
+If all ten look like this — D ≈ 93 (a bloodbath). If after the top 3 come dead apps with no ratings or updates — D drops to 40–50, and that is an honest "you can squeeze in here" signal.
 
-## 3.3 Relevance (R), 0–3 — единственная LLM-метрика, по рубрике
+## 3.3 Relevance (R), 0–3 — the only LLM metric, by rubric
 
-Выставляет встроенный LLM батч-вызовом `rate` (контракт в `06-llm-adapters.md`), получая на вход бизнес-контекст и пакет verified-кейвордов. Рубрика жёсткая и вшита в промпт дословно:
+Assigned by the built-in LLM via the batch call `rate` (contract in `06-llm-adapters.md`), which receives the business context and a batch of verified keywords. The rubric is strict and embedded in the prompt verbatim:
 
-| R | Критерий |
+| R | Criterion |
 |---|---|
-| 3 | Запрос описывает ЯДРО продукта: пользователь, ищущий это, ищет именно такую апку |
-| 2 | Смежная задача: наша апка решает её, но это не главная её функция |
-| 1 | Касательное пересечение: часть искавших может быть довольна нашей апкой |
-| 0 | Нерелевантно или совпадает с анти-семантикой из aso-context.md → исключается |
+| 3 | The query describes the CORE of the product: a user searching for this is looking for exactly this kind of app |
+| 2 | An adjacent job: our app solves it, but it is not its main function |
+| 1 | A tangential overlap: some of the searchers might be satisfied with our app |
+| 0 | Irrelevant or matches the anti-semantics from aso-context.md → excluded |
 
-`reason` обязателен (непустой), хранится в state, показывается в UI рядом с оценкой; сам LLM-вызов целиком (промпт + ответ) доступен в журнале LLM-вызовов. Это делает LLM-суждение проверяемым человеком. Кейворды, совпадающие с анти-семантикой из контекста, обязаны получать R=0.
+`reason` is mandatory (non-empty), stored in state, shown in the UI next to the score; the entire LLM call itself (prompt + response) is available in the LLM call log. This makes the LLM's judgment human-verifiable. Keywords matching the anti-semantics from the context must receive R=0.
 
-## 3.4 Opportunity Score, 0–100 — итоговая сила
+## 3.4 Opportunity Score, 0–100 — final strength
 
 ```
 Score = round(100 × (P/100)^0.6 × ((100 − D)/100)^0.4 × (R/3))
 ```
 
-Степенная форма: оба фактора обязаны быть ненулевыми (популярный, но непробиваемый запрос ≈ бесполезен; пустой, но лёгкий — тоже), показатели 0.6/0.4 дают приоритет спросу. R — линейный множитель: смежные запросы (R=2) теряют треть силы.
+The power form: both factors must be non-zero (a popular but impenetrable query ≈ useless; an empty but easy one — likewise), and the exponents 0.6/0.4 prioritize demand. R is a linear multiplier: adjacent queries (R=2) lose a third of their strength.
 
-**Примеры:**
+**Examples:**
 - P=80, D=70, R=3 → 100 × 0.8^0.6 × 0.3^0.4 × 1 = 100 × 0.875 × 0.618 = **54**
-- P=35, D=25, R=3 → 100 × 0.533 × 0.891 × 1 = **47** — скромный спрос при слабой конкуренции почти догоняет хайповый запрос под гигантами. Это рабочая лошадка инди-ASO, формула сознательно так устроена.
-- P=80, D=70, R=1 → 54 × 1/3 = **18** — хайп без релевантности не даёт ничего: установившие по нерелевантному запросу не конвертируются и портят поведенческие метрики.
+- P=35, D=25, R=3 → 100 × 0.533 × 0.891 × 1 = **47** — modest demand with weak competition nearly catches up with a hyped query dominated by giants. This is the workhorse of indie ASO; the formula is deliberately built that way.
+- P=80, D=70, R=1 → 54 × 1/3 = **18** — hype without relevance yields nothing: users who install via an irrelevant query don't convert and hurt the behavioral metrics.
 
-Тай-брейки при равном Score (для сортировок и отбора): больший P → меньший D → меньшая длина K.
+Tie-breaks at equal Score (for sorting and selection): higher P → lower D → shorter K.
 
-**Кейворды с P=0** (`unsuggested`): Score = 0, в жадный отбор не попадают, но НЕ удаляются — это спекулятивный резерв для добивки keyword field (см. `05-assembly.md`, шаг «спекулятивная добивка»).
+**Keywords with P=0** (`unsuggested`): Score = 0, they do not enter greedy selection, but are NOT deleted — they are a speculative reserve for topping up the keyword field (see `05-assembly.md`, the "speculative top-up" step).
 
-## 3.5 Что обязано быть в state по каждому кейворду
+## 3.5 What must be in state for each keyword
 
 ```json
 {
@@ -99,7 +99,7 @@ Score = round(100 × (P/100)^0.6 × ((100 − D)/100)^0.4 × (R/3))
   "metrics": {
     "P": 80, "L": 4, "rank": 2, "unsuggested": false, "childCount": 6,
     "D": 63, "serpSize": 25, "topApps": [ { "trackId": 1, "trackName": "...", "ratingCount": 250000, "rating": 4.7, "updatedDaysAgo": 30, "match": 1.0, "strength": 93 } ],
-    "R": 3, "reason": "ядро продукта: ...",
+    "R": 3, "reason": "core of the product: ...",
     "score": 54
   },
   "degraded": false

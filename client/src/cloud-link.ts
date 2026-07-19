@@ -1,15 +1,15 @@
-// cloud-link — единственная нога наружу (D1). WSS-клиент к облаку по РЕКОНСИЛИРОВАННОМУ
-// контракту @aso/shared:
-//   • каждое клиент→сервер сообщение обёрнуто в SignedEnvelope (HMAC по per-session секрету,
-//     ts ±5м, nonce — ARCHITECTURE §5 / reconcile v2);
+// cloud-link — the only leg to the outside (D1). WSS client to the cloud over the RECONCILED
+// @aso/shared contract:
+//   • every client→server message is wrapped in a SignedEnvelope (HMAC over a per-session secret,
+//     ts ±5m, nonce — ARCHITECTURE §5 / reconcile v2);
 //   • hello{session_token, device_fp, resume_job_ids};
-//   • приём job.dispatch → apple-exec → job.result / job.error{throttle};
-//   • run.create{client_ref} → ack run.created{client_ref, run_id} (run_id узнаём в ответе);
-//   • браузерные чтения — query{query_id, kind, params} → query.result / query.error;
-//   • релей run.progress/phase/paused/balance в локальный UI; реконнект с resume_job_ids (D7).
-// top-up идёт по HTTPS (§4), не по WSS.
+//   • receive job.dispatch → apple-exec → job.result / job.error{throttle};
+//   • run.create{client_ref} → ack run.created{client_ref, run_id} (run_id learned from the reply);
+//   • browser reads — query{query_id, kind, params} → query.result / query.error;
+//   • relay run.progress/phase/paused/balance into the local UI; reconnect with resume_job_ids (D7).
+// top-up goes over HTTPS (§4), not over WSS.
 //
-// Здесь НЕТ проприетарной логики — только транспорт джоб/сырья, релей прогресса и подпись.
+// There is NO proprietary logic here — only job/raw-data transport, progress relay, and signing.
 
 import { createHmac, randomBytes } from "node:crypto";
 import type {
@@ -42,10 +42,10 @@ export interface CloudLink {
   start(): Promise<void>;
   stop(): void;
   status(): CloudStatus;
-  /** Подписка на события для релея в браузерный SSE. Возвращает отписку. */
+  /** Subscribe to events for relaying into browser SSE. Returns an unsubscribe. */
   subscribe(cb: (ev: RelayEvent) => void): () => void;
 
-  // Релей REST (браузер → localhost → WSS/HTTPS):
+  // REST relay (browser → localhost → WSS/HTTPS):
   listRuns(): Promise<RunSummary[]>;
   createRun(brief: string, config: unknown): Promise<{ run_id: string }>;
   getRun(runId: string): Promise<RunSnapshot>;
@@ -65,13 +65,13 @@ export interface CloudLinkDeps {
   http: AppleHttp;
 }
 
-/** Фабрика: прод-путь — реальный WSS (дефолт api.asoptimus.com). DEV=1 → оффлайн-стаб. */
+/** Factory: prod path — real WSS (default api.asoptimus.com). DEV=1 → offline stub. */
 export function makeCloudLink(deps: CloudLinkDeps): CloudLink {
   if (isDev() && !process.env.ASO_CLOUD_WSS) return new StubCloudLink(deps);
   return new WssCloudLink(wssUrl(), deps);
 }
 
-// ── Общая шина событий ───────────────────────────────────────────────────────
+// ── Shared event bus ───────────────────────────────────────────────────────
 
 class Emitter {
   private subs = new Set<(ev: RelayEvent) => void>();
@@ -81,12 +81,12 @@ class Emitter {
   }
   emit(ev: RelayEvent) {
     for (const cb of [...this.subs]) {
-      try { cb(ev); } catch { /* подписчик не должен ронять эмиттер */ }
+      try { cb(ev); } catch { /* a subscriber must not crash the emitter */ }
     }
   }
 }
 
-// ── Реальный WSS-клиент ───────────────────────────────────────────────────────
+// ── Real WSS client ───────────────────────────────────────────────────────────
 
 interface Pending { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout>; }
 
@@ -98,7 +98,7 @@ class WssCloudLink implements CloudLink {
   private connected = false;
   private balance: number | null = null;
   private completedJobIds = new Set<string>();
-  /** in-flight запрос-ответы: query_id и client_ref делят пространство корреляции. */
+  /** in-flight request-responses: query_id and client_ref share the correlation space. */
   private pending = new Map<string, Pending>();
   private seq = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -128,7 +128,7 @@ class WssCloudLink implements CloudLink {
     ws.addEventListener("open", () => {
       this.connected = true;
       this.emitter.emit({ type: "connection", connected: true });
-      // hello с device-binding и resume_job_ids (D7).
+      // hello with device-binding and resume_job_ids (D7).
       this.send({
         t: "hello",
         session_token: this.deps.session.sessionToken,
@@ -141,24 +141,24 @@ class WssCloudLink implements CloudLink {
       this.connected = false;
       this.ws = null;
       this.emitter.emit({ type: "connection", connected: false });
-      this.failAllPending(new Error("соединение с облаком разорвано"));
+      this.failAllPending(new Error("connection to the cloud was lost"));
       this.scheduleReconnect();
     });
     ws.addEventListener("error", () => {
-      // 'close' последует за 'error' — реконнект там.
+      // 'close' follows 'error' — reconnect happens there.
     });
   }
 
   private scheduleReconnect() {
     if (this.closed || this.reconnectTimer) return;
-    // Прогон на сервере авто-паузится, пока клиента нет (D7) — просто переподключаемся.
+    // The run auto-pauses on the server while the client is away (D7) — just reconnect.
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, 3000);
   }
 
-  /** Подписать каждое клиент→сервер сообщение (SignedEnvelope) и отправить. */
+  /** Sign every client→server message (SignedEnvelope) and send it. */
   private send(msg: ClientToServer): boolean {
     if (!this.ws || !this.connected) return false;
     const env = signEnvelope(msg, this.deps.session.hmacSecret);
@@ -186,7 +186,7 @@ class WssCloudLink implements CloudLink {
       }
       case "query.error": {
         const p = this.pending.get(m.query_id);
-        if (p) { clearTimeout(p.timer); this.pending.delete(m.query_id); p.reject(new Error(m.reason || "ошибка запроса")); }
+        if (p) { clearTimeout(p.timer); this.pending.delete(m.query_id); p.reject(new Error(m.reason || "query error")); }
         break;
       }
       case "run.created": {
@@ -218,7 +218,7 @@ class WssCloudLink implements CloudLink {
   }
 
   private async runJob(job: Job) {
-    if (this.completedJobIds.has(job.job_id)) return; // уже сделано — сервер дедупнёт по hello
+    if (this.completedJobIds.has(job.job_id)) return; // already done — the server dedupes via hello
     try {
       const result: JobResult = await executeJob(this.deps.http, job);
       this.completedJobIds.add(job.job_id);
@@ -233,7 +233,7 @@ class WssCloudLink implements CloudLink {
     }
   }
 
-  /** Запрос-ответ по контракту query/query.result (correlation по query_id). */
+  /** Request-response per the query/query.result contract (correlation by query_id). */
   private query<K extends QueryKind>(kind: K, params?: Record<string, unknown>): Promise<QueryData[K]> {
     const query_id = `q${++this.seq}`;
     return this.awaitCorrelated(query_id, () => this.send({ t: "query", query_id, kind, params }));
@@ -243,13 +243,13 @@ class WssCloudLink implements CloudLink {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error("таймаут ответа облака"));
+        reject(new Error("cloud response timed out"));
       }, REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       if (!send()) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(new Error("нет соединения с облаком"));
+        reject(new Error("no connection to the cloud"));
       }
     });
   }
@@ -273,17 +273,17 @@ class WssCloudLink implements CloudLink {
     );
   }
   async controlRun(runId: string, action: RunAction) {
-    if (!this.send({ t: "run.control", run_id: runId, action })) throw new Error("нет соединения с облаком");
+    if (!this.send({ t: "run.control", run_id: runId, action })) throw new Error("no connection to the cloud");
   }
   async deleteRun(runId: string) {
-    // reconcile v2: удаление — это run.control с action {type:"delete"} (не отдельная команда).
+    // reconcile v2: deletion is run.control with action {type:"delete"} (not a separate command).
     if (!this.send({ t: "run.control", run_id: runId, action: { type: "delete" } })) {
-      throw new Error("нет соединения с облаком");
+      throw new Error("no connection to the cloud");
     }
   }
 
   async topup(packageId: string): Promise<TopupResponse> {
-    // top-up идёт по HTTPS (§4), не по WSS: сервер (POST /api/topup) отдаёт Stripe Checkout URL.
+    // top-up goes over HTTPS (§4), not over WSS: the server (POST /api/topup) returns a Stripe Checkout URL.
     const res = await fetch(new URL("/api/topup", httpsBase()), {
       method: "POST",
       headers: {
@@ -293,20 +293,20 @@ class WssCloudLink implements CloudLink {
       body: JSON.stringify({ packageId }),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<TopupResponse> & { error?: string };
-    if (!res.ok) throw new Error(data?.error || `Пополнение не удалось (HTTP ${res.status}).`);
-    if (!data?.checkoutUrl) throw new Error("Облако не вернуло ссылку на оплату.");
+    if (!res.ok) throw new Error(data?.error || `Top-up failed (HTTP ${res.status}).`);
+    if (!data?.checkoutUrl) throw new Error("Cloud did not return a payment link.");
     return { checkoutUrl: data.checkoutUrl };
   }
 
   stop() {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    this.failAllPending(new Error("клиент остановлен"));
+    this.failAllPending(new Error("client stopped"));
     try { this.ws?.close(); } catch { /* ignore */ }
   }
 }
 
-/** Каноническая строка подписи: `ts.nonce.<json body>` (см. NOTES.md — сервер должен верифицировать так же). */
+/** Canonical signing string: `ts.nonce.<json body>` (see NOTES.md — the server must verify the same way). */
 function signEnvelope(body: ClientToServer, secret: string): SignedEnvelope {
   const ts = Date.now();
   const nonce = randomBytes(16).toString("hex");
@@ -314,8 +314,8 @@ function signEnvelope(body: ClientToServer, secret: string): SignedEnvelope {
   return { mac, ts, nonce, body };
 }
 
-// ── DEV-стаб облака (за DEV=1): мок, чтобы UI поднялся и apple-exec можно было гонять ──
-// Реализация вынесена в cloud-link.stub.ts, чтобы этот файл держал только транспорт.
+// ── DEV cloud stub (behind DEV=1): a mock so the UI comes up and apple-exec can be exercised ──
+// The implementation lives in cloud-link.stub.ts so this file holds only transport.
 
 class StubCloudLink implements CloudLink {
   private emitter = new Emitter();
@@ -325,8 +325,8 @@ class StubCloudLink implements CloudLink {
 
   status(): CloudStatus { return { mode: "stub", connected: true, balance: this.backend.balanceCredits() }; }
   subscribe(cb: (ev: RelayEvent) => void) { return this.emitter.subscribe(cb); }
-  async start() { /* stub всегда «на связи» */ }
-  stop() { /* нечего закрывать */ }
+  async start() { /* the stub is always "connected" */ }
+  stop() { /* nothing to close */ }
 
   listRuns() { return this.backend.listRuns(); }
   createRun(brief: string, config: unknown) { return this.backend.createRun(brief, config); }
@@ -341,7 +341,7 @@ class StubCloudLink implements CloudLink {
   getPackages() { return this.backend.getPackages(); }
   topup(packageId: string) { return this.backend.topup(packageId); }
 
-  /** Dev-хук: прогнать одну Apple-джобу через apple-exec (для оффлайн-проверки исполнителей). */
+  /** Dev hook: run one Apple job through apple-exec (for offline testing of executors). */
   execJob(job: Job): Promise<JobResult> { return executeJob(this.deps.http, job); }
 }
 

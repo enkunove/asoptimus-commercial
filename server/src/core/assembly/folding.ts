@@ -1,13 +1,13 @@
-// @aso/core — фолдинг форм слов (spec 05.3). ПРОПРИЕТАРНО. Порт 1:1 из aso-util.
-// Только для semanticLanguage = en*; для остальных языков выключен (каждая форма — слово).
+// @aso/core — word form folding (spec 05.3). PROPRIETARY. 1:1 port from aso-util.
+// Only for semanticLanguage = en*; disabled for other languages (every form is its own word).
 
 const EXCEPTIONS = new Set(["news", "lens", "ios", "css", "gps", "sms", "canvas", "atlas"]);
 
 /**
- * Ключ фолдинга. Правила строго по порядку (первое сработавшее — финал):
- * 1. len < 4 ИЛИ слово в EXCEPTIONS → как есть.
- * 2. кончается на `ss` → как есть. 3. `us`/`is` → как есть.
- * 4. `ies` и len ≥ 5 → ies→y. 5. ches/shes/xes/zes/ses/oes → убрать es. 6. `s` → убрать s.
+ * Folding key. Rules strictly in order (first hit is final):
+ * 1. len < 4 OR the word is in EXCEPTIONS → as-is.
+ * 2. ends with `ss` → as-is. 3. `us`/`is` → as-is.
+ * 4. `ies` and len ≥ 5 → ies→y. 5. ches/shes/xes/zes/ses/oes → drop es. 6. `s` → drop s.
  */
 export function foldKey(word: string, language: string): string {
   const w = word.toLowerCase();

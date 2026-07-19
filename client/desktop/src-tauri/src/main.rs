@@ -71,14 +71,14 @@ fn tray_labels_from_status(json: &str) -> Option<(String, String)> {
     let connected = v.get("connected").and_then(|x| x.as_bool()).unwrap_or(false);
     let balance = v.get("balance").and_then(|x| x.as_f64());
     let (state, title) = if !activated {
-        ("не активировано".to_string(), "○".to_string())
+        ("not activated".to_string(), "○".to_string())
     } else if connected {
         match balance {
-            Some(b) => (format!("на связи · {} кр.", trim_num(b)), format!("● {}", trim_num(b))),
-            None => ("на связи".to_string(), "●".to_string()),
+            Some(b) => (format!("connected · {} cr.", trim_num(b)), format!("● {}", trim_num(b))),
+            None => ("connected".to_string(), "●".to_string()),
         }
     } else {
-        ("нет связи".to_string(), "○".to_string())
+        ("disconnected".to_string(), "○".to_string())
     };
     Some((format!("ASOptimus — {}", state), title))
 }
@@ -127,13 +127,13 @@ fn main() {
             app.state::<SidecarState>().0.lock().unwrap().replace(child);
 
             // Tray icon + menu (Open / Top up / Quit).
-            let open_i = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
-            let topup_i = MenuItem::with_id(app, "topup", "Пополнить", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+            let open_i = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
+            let topup_i = MenuItem::with_id(app, "topup", "Top up", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_i, &topup_i, &quit_i])?;
 
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-                .tooltip("ASOptimus — запуск…")
+                .tooltip("ASOptimus — starting…")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
