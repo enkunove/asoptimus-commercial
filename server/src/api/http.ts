@@ -227,7 +227,7 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   // ── account (session-token auth) ─────────────────────────────────────────
   if (path === "/account" && method === "GET") {
     const token = bearer(req);
-    const sess = token ? app.auth.verifySession(token) : null;
+    const sess = token ? await app.auth.verifySessionAsync(token) : null;
     if (!sess) return err("valid token required", 401);
     const credits = await app.billing.balance(sess.userId);
     const ledger = await app.store.listLedger(sess.userId, 50);
@@ -236,7 +236,7 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
 
   // ── run endpoints (session-token auth) ──────────────────────────────────────
   const token = bearer(req);
-  const sess = token ? app.auth.verifySession(token) : null;
+  const sess = token ? await app.auth.verifySessionAsync(token) : null;
 
   if (path === "/api/balance" && method === "GET") {
     if (!sess) return err("unauthorized", 401);

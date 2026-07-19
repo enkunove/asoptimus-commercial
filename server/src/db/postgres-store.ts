@@ -6,7 +6,7 @@
 
 import postgres from "postgres";
 import type {
-  Store, UserRow, LicenseRow, LedgerRowDb, LlmStepRow, RunRow, RunEventRow, JobRow, AppleCacheRow,
+  Store, UserRow, LicenseRow, SessionRow, LedgerRowDb, LlmStepRow, RunRow, RunEventRow, JobRow, AppleCacheRow,
 } from "./types.ts";
 
 export class PostgresStore implements Store {
@@ -34,6 +34,23 @@ export class PostgresStore implements Store {
   }
   async setPaddleCustomer(userId: string, customerId: string) {
     await this.sql`UPDATE users SET paddle_customer_id = ${customerId} WHERE id = ${userId}`;
+  }
+
+  async putSession(s: SessionRow) {
+    await this.sql`INSERT INTO sessions (token_hash, user_id, device_fp, hmac_secret, expires_at)
+      VALUES (${s.token_hash}, ${s.user_id}, ${s.device_fp}, ${s.hmac_secret}, ${s.expires_at as string})
+      ON CONFLICT (token_hash) DO NOTHING`;
+  }
+  async getSession(tokenHash: string) {
+    const [r] = await this.sql<SessionRow[]>`SELECT token_hash, user_id, device_fp, hmac_secret, expires_at
+      FROM sessions WHERE token_hash = ${tokenHash}`;
+    return r ?? null;
+  }
+  async deleteSession(tokenHash: string) {
+    await this.sql`DELETE FROM sessions WHERE token_hash = ${tokenHash}`;
+  }
+  async deleteSessionsForUser(userId: string) {
+    await this.sql`DELETE FROM sessions WHERE user_id = ${userId}`;
   }
 
   async createLicense(l: LicenseRow) {

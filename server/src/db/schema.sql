@@ -26,6 +26,19 @@ CREATE TABLE IF NOT EXISTS users (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Sessions are PERSISTED (not in-memory): a server restart/deploy must never log every
+-- client out. Raw tokens are never stored — only sha256(token).
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash   TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  device_fp    TEXT NOT NULL,
+  hmac_secret  TEXT NOT NULL,
+  expires_at   TIMESTAMPTZ NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires_at);
+
 CREATE TABLE IF NOT EXISTS licenses (
   key_hash    TEXT PRIMARY KEY,           -- sha256(key); the key itself is not stored
   user_id     TEXT NOT NULL REFERENCES users(id),

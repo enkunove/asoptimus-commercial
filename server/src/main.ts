@@ -49,7 +49,14 @@ const server = Bun.serve<WsData>({
     }
   },
   websocket: {
-    message(ws: any, message: string | Buffer) { wssMessage(app, ws, message); },
+    message(ws: any, message: string | Buffer) {
+      // Serialize per connection: wssMessage is async (session hydration from the store) and
+      // hello MUST be fully processed before the next message is examined.
+      const d = ws.data as WsData & { _q?: Promise<void> };
+      d._q = (d._q ?? Promise.resolve())
+        .then(() => wssMessage(app, ws, message))
+        .catch((e) => log.error("[wss] message handler error", { err: String(e?.message ?? e) }));
+    },
     close(ws: any) { wssClose(app, ws); },
   },
 });

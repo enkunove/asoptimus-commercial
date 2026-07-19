@@ -14,6 +14,10 @@ export function hashKey(key: string): string {
 export function generateKey(): string {
   return `asop_live_${randomBytes(24).toString("base64url")}`;
 }
+/** Session tokens are persisted HASHED (a DB leak must not yield usable bearer tokens). */
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 interface Session {
   userId: string;
@@ -25,11 +29,32 @@ interface Session {
 interface Bucket { tokens: number; last: number; }
 
 export class AuthService {
+  /** In-memory READ CACHE over the persisted sessions table — never the source of truth.
+   *  (It was the source of truth once: every deploy logged all clients out.) */
   private sessions = new Map<string, Session>();
-  private nonces = new Map<string, number>(); // nonce → ts (±5m window; shared store — Phase 3, BUILD-PLAN §8)
+  private nonces = new Map<string, number>(); // nonce → ts (±5m window; in-memory is fine: the window is shorter than any deploy)
   private buckets = new Map<string, Bucket>();
 
   constructor(private store: Store, private rpm = 120) {}
+
+  /** Hydrate the cache from the store on miss (cold token after a restart). Cheap no-op on hit. */
+  async ensureLoaded(token: string | undefined | null): Promise<void> {
+    if (!token || this.sessions.has(token)) return;
+    const row = await this.store.getSession(hashToken(token));
+    if (!row) return;
+    const exp = new Date(row.expires_at).getTime();
+    if (!Number.isFinite(exp) || exp < Date.now()) {
+      void this.store.deleteSession(row.token_hash);
+      return;
+    }
+    this.sessions.set(token, { userId: row.user_id, deviceFp: row.device_fp, hmacSecret: row.hmac_secret, exp });
+  }
+
+  /** Async session check for HTTP paths (hydrates cold tokens, then the sync check). */
+  async verifySessionAsync(token: string, deviceFp?: string): Promise<{ userId: string; hmacSecret: string } | null> {
+    await this.ensureLoaded(token);
+    return this.verifySession(token, deviceFp);
+  }
 
   /** signup: create User+wallet+license, return the key. Idempotent by email (no duplicates). */
   async signup(email: string): Promise<{ key: string; userId: string; existed: boolean }> {
@@ -67,11 +92,15 @@ export class AuthService {
     return this.issue(lic.user_id, deviceFp);
   }
 
-  /** Issue a session token with a fresh HMAC secret and expiry. */
-  private issue(userId: string, deviceFp: string): { token: string; hmacSecret: string; userId: string; expiresAt: string } {
+  /** Issue a session token: persist FIRST (source of truth), then cache. */
+  private async issue(userId: string, deviceFp: string): Promise<{ token: string; hmacSecret: string; userId: string; expiresAt: string }> {
     const token = randomBytes(24).toString("base64url");
     const hmacSecret = randomBytes(32).toString("base64url");
     const exp = Date.now() + SESSION_TTL_MS;
+    await this.store.putSession({
+      token_hash: hashToken(token), user_id: userId, device_fp: deviceFp,
+      hmac_secret: hmacSecret, expires_at: new Date(exp).toISOString(),
+    });
     this.sessions.set(token, { userId, deviceFp, hmacSecret, exp });
     return { token, hmacSecret, userId, expiresAt: new Date(exp).toISOString() };
   }
@@ -83,12 +112,18 @@ export class AuthService {
    * refresh relies on a non-expired session; revocation blocks NEW activation + invalidates via TTL.
    */
   async refresh(token: string, deviceFp: string): Promise<{ token: string; hmacSecret: string; userId: string; expiresAt: string } | { error: string }> {
+    await this.ensureLoaded(token);
     const s = this.sessions.get(token);
     if (!s) return { error: "session not found or expired" };
-    if (s.exp < Date.now()) { this.sessions.delete(token); return { error: "session expired — activate your key again" }; }
+    if (s.exp < Date.now()) { await this.drop(token); return { error: "session expired — activate your key again" }; }
     if (s.deviceFp !== deviceFp) return { error: "device_fp mismatch" };
-    this.sessions.delete(token); // one-time rotation
+    await this.drop(token); // one-time rotation
     return this.issue(s.userId, deviceFp);
+  }
+
+  private async drop(token: string): Promise<void> {
+    this.sessions.delete(token);
+    await this.store.deleteSession(hashToken(token));
   }
 
   /** Session-token check (+ device-binding). null → invalid/expired. */
@@ -100,11 +135,14 @@ export class AuthService {
     return { userId: s.userId, hmacSecret: s.hmacSecret };
   }
 
-  /** Key revocation + invalidation of this user's active sessions. */
+  /** Key revocation + invalidation of this user's active sessions (cache AND store). */
   async revoke(key: string): Promise<void> {
     const lic = await this.store.getLicenseByKeyHash(hashKey(key));
     await this.store.revokeLicense(hashKey(key));
-    if (lic) for (const [tok, s] of this.sessions) if (s.userId === lic.user_id) this.sessions.delete(tok);
+    if (lic) {
+      for (const [tok, s] of this.sessions) if (s.userId === lic.user_id) this.sessions.delete(tok);
+      await this.store.deleteSessionsForUser(lic.user_id);
+    }
   }
 
   /** HMAC + timestamp(±5m) + nonce anti-replay per WSS message (ARCHITECTURE §5). */

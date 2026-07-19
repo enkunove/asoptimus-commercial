@@ -10,6 +10,16 @@ export interface UserRow {
   paddle_customer_id: string | null;
 }
 
+/** Persisted session (survives restarts/deploys). token_hash = sha256(raw token). */
+export interface SessionRow {
+  token_hash: string;
+  user_id: string;
+  device_fp: string;
+  hmac_secret: string;
+  /** ISO string (memory) or Date (postgres driver) — consumers must new Date(...) it. */
+  expires_at: string | Date;
+}
+
 export interface LicenseRow {
   key_hash: string;
   user_id: string;
@@ -101,6 +111,12 @@ export interface Store {
   getUserById(id: string): Promise<UserRow | null>;
   getUserByPaddleCustomer(customerId: string): Promise<UserRow | null>;
   setPaddleCustomer(userId: string, customerId: string): Promise<void>;
+
+  // sessions (persisted — a deploy must never log clients out)
+  putSession(s: SessionRow): Promise<void>;
+  getSession(tokenHash: string): Promise<SessionRow | null>;
+  deleteSession(tokenHash: string): Promise<void>;
+  deleteSessionsForUser(userId: string): Promise<void>;
 
   // licenses
   createLicense(l: LicenseRow): Promise<void>;

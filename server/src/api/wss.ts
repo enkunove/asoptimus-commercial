@@ -34,7 +34,7 @@ function send(ws: WsLike, msg: ServerToClient) {
   ws.send(JSON.stringify(msg));
 }
 
-export function wssMessage(app: App, ws: WsLike, raw: string | Buffer) {
+export async function wssMessage(app: App, ws: WsLike, raw: string | Buffer): Promise<void> {
   let parsed: any;
   try {
     parsed = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
@@ -50,6 +50,9 @@ export function wssMessage(app: App, ws: WsLike, raw: string | Buffer) {
     const env = parsed as SignedEnvelope;
     const token = env.body?.t === "hello" ? env.body.session_token : ws.data.token;
     if (!token) { ws.close(4401, "no session"); return; }
+    // Cold token after a restart: hydrate the session cache from the store BEFORE the HMAC
+    // check (verifyMessage needs the per-session secret). Callers serialize per connection.
+    await app.auth.ensureLoaded(token);
     // mac = HMAC_sha256(hmac_secret, `${ts}.${nonce}.${JSON.stringify(body)}`) — see NOTES.md.
     if (!app.auth.verifyMessage(token, JSON.stringify(env.body), env.ts, env.nonce, env.mac)) {
       ws.close(4401, "invalid signature/nonce/ts");
@@ -65,7 +68,7 @@ export function wssMessage(app: App, ws: WsLike, raw: string | Buffer) {
 
   // ── Authentication: before hello, only hello is accepted ──
   if (msg.t === "hello") {
-    const sess = app.auth.verifySession(msg.session_token, msg.device_fp);
+    const sess = await app.auth.verifySessionAsync(msg.session_token, msg.device_fp);
     if (!sess) { ws.close(4401, "unauthorized"); return; }
     if (!app.auth.allow(sess.userId)) { ws.close(4429, "rate limited"); return; }
     const conn: ClientConnection = { userId: sess.userId, deviceFp: msg.device_fp, send: (m) => send(ws, m) };
