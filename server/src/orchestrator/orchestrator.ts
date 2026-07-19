@@ -29,7 +29,7 @@ import { placementWeight, type Placement } from "../core/assembly/place.ts";
 import { validate, bucketFoldKeys, wordsOf } from "../core/assembly/validate.ts";
 import { foldKey } from "../core/assembly/folding.ts";
 import { planWave, harvestWaveResults, type ExpansionTask } from "../core/expander.ts";
-import { extraLocaleFor } from "../core/locales.ts";
+import { extraLocaleFor, serpLangFor } from "../core/locales.ts";
 import { renderPrompt } from "../core/prompts.ts";
 import { schemas } from "../core/llm-schemas.ts";
 import type { AppleGateway } from "../apple-dispatch/gateway.ts";
@@ -341,8 +341,9 @@ export class Orchestrator {
           k.metrics.P = null; k.metrics.L = null; k.metrics.rank = null;
           k.metrics.unsuggested = false; k.degraded = true;
         }
-        // D — via SerpJob.
-        const serp = await this.deps.gateway.serp(k.keyword, this.storefront, this.config.language);
+        // D — via SerpJob. lang = the STOREFRONT's primary locale (config.language carries the
+        // semantic language, which Apple 400s in unknown combos like ru_us).
+        const serp = await this.deps.gateway.serp(k.keyword, this.storefront, serpLangFor(this.config.country));
         const diff = computeDifficulty(k.keyword, serp.results, serp.resultCount, this.config.serpTop, this.config.weights.difficulty);
         k.metrics.D = diff.D;
         k.metrics.serpSize = diff.serpSize;
