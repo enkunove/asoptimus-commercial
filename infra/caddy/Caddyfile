@@ -1,0 +1,7 @@
+# TLS termination for the API (prod profile). Caddy auto-issues/renews Let's Encrypt
+# certificates and proxies everything — including WebSocket upgrades (/ws) and SSE — to
+# the server container over the compose network.
+{$API_DOMAIN:api.asoptimus.com} {
+	encode gzip
+	reverse_proxy server:8787
+}

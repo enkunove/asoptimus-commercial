@@ -61,7 +61,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-asoptimus}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-asoptimus}}
     ports:
-      - "${PORT:-8787}:${PORT:-8787}"
+      # Loopback-only: locally the desktop app connects to 127.0.0.1 anyway, and on a prod
+      # host the public entry is Caddy (:443) — the plain-HTTP port must not face the world.
+      - "127.0.0.1:${PORT:-8787}:${PORT:-8787}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,5 +77,27 @@ services:
       retries: 5
       start_period: 15s
 
+  # ── Caddy: public TLS entry (prod only: `docker compose --profile prod up`). ─
+  #   Auto-issues Let's Encrypt for ${API_DOMAIN}; proxies WSS/SSE transparently.
+  #   Local runs skip it (no profile) — the app talks to 127.0.0.1:8787 directly.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["prod"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      API_DOMAIN: ${API_DOMAIN:-api.asoptimus.com}
+    depends_on:
+      server:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
