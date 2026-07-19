@@ -5,6 +5,7 @@
 
 import type { App } from "../app.ts";
 import { handleAdmin } from "./admin.ts";
+import { rateLimited } from "./ratelimit.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
 import { topupCatalog } from "../billing/packages.ts";
 import { modelInfos, quoteFor, pricePerKeyphrase, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
@@ -49,10 +50,25 @@ function balanceView(credits: number, ledger: Awaited<ReturnType<App["store"]["l
   };
 }
 
+const CORS_HEADERS = {
+  "access-control-allow-origin": "https://asoptimus.com",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+} as const;
+/** Landing-page fetches (download popup → /signup) come cross-origin from asoptimus.com. */
+function withCors(resp: Response): Response {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) resp.headers.set(k, v);
+  return resp;
+}
+
 export async function handleHttp(app: App, req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;
+
+  if (method === "OPTIONS" && (path === "/signup" || path === "/checkout")) {
+    return withCors(new Response(null, { status: 204 }));
+  }
 
   // ── health ───────────────────────────────────────────────────────────────
   if (path === "/health") return json({ ok: true, ts: new Date().toISOString() });
@@ -136,8 +152,10 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
 
   // ── public (landing) ────────────────────────────────────────────────────
   if (path === "/signup" && method === "POST") {
+    const limited = rateLimited(req, "signup", 5, 10 * 60_000);
+    if (limited) return withCors(limited);
     const b = await body(req);
-    if (!b.email || typeof b.email !== "string") return err("email is required");
+    if (!b.email || typeof b.email !== "string") return withCors(err("email is required"));
     const email = b.email.trim().toLowerCase();
 
     // Beta gate (BETA_GATED=1): only invited waitlist emails may sign up; each such signup
@@ -146,12 +164,12 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     if (gated) {
       const wl = await app.store.getWaitlistEntry(email);
       if (!wl || !wl.invited_at) {
-        return err("the beta is invite-only right now — join the waitlist at asoptimus.com and we'll email your invite", 403);
+        return withCors(err("the beta is invite-only right now — join the waitlist at asoptimus.com and we'll email your invite", 403));
       }
     }
 
     const r = await app.auth.signup(email);
-    if (r.existed) return json({ message: "account already exists — key was sent earlier (use /account/resend-key)" });
+    if (r.existed) return withCors(json({ message: "account already exists — key was sent earlier (use /account/resend-key)" }));
 
     let freeCredits: number | undefined;
     if (gated) {
@@ -167,12 +185,14 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
       await app.email.sendActivationKey(email, r.key, freeCredits);
     } catch (e: any) {
       log.warn("[signup] key email not sent", { email, err: String(e?.message ?? e) });
-      return json({ error: "failed to send key email — try /account/resend-key" }, 502);
+      return withCors(json({ error: "failed to send key email — try /account/resend-key" }, 502));
     }
-    return json({ message: "check your email — activation key sent", userId: r.userId, ...(IS_DEV ? { devKey: r.key } : {}) });
+    return withCors(json({ message: "check your email — activation key sent", userId: r.userId, ...(IS_DEV ? { devKey: r.key } : {}) }));
   }
 
   if (path === "/account/resend-key" && method === "POST") {
+    const limited = rateLimited(req, "resend", 3, 10 * 60_000);
+    if (limited) return limited;
     const b = await body(req);
     const user = b.email ? await app.store.getUserByEmail(String(b.email).toLowerCase()) : null;
     if (!user) return err("account not found", 404);
@@ -187,6 +207,8 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   }
 
   if (path === "/checkout" && method === "POST") {
+    const limited = rateLimited(req, "checkout", 15, 10 * 60_000);
+    if (limited) return withCors(limited);
     const b = await body(req);
     let userId: string | undefined = b.userId;
     let email = b.email;
@@ -234,6 +256,8 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
 
   // ── activation (key → session-token) ──────────────────────────────────────
   if (path === "/activate" && method === "POST") {
+    const limited = rateLimited(req, "activate", 10, 10 * 60_000);
+    if (limited) return limited;
     const b = await body(req);
     if (!b.key || !b.device_fp) return err("key and device_fp are required");
     const r = await app.auth.activate(String(b.key), String(b.device_fp));
@@ -243,6 +267,8 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   }
 
   if (path === "/session/refresh" && method === "POST") {
+    const limited = rateLimited(req, "refresh", 30, 10 * 60_000);
+    if (limited) return limited;
     const b = await body(req);
     if (!b.session_token || !b.device_fp) return err("session_token and device_fp are required");
     const r = await app.auth.refresh(String(b.session_token), String(b.device_fp));

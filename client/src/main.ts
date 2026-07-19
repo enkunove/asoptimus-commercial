@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { HTTP_DEFAULTS } from "@aso/shared";
 import { setDataDir, ensureDirs } from "./paths";
 import { AppleHttp } from "./apple/http";
-import { activate as activateKey, loadSession, clearSession, type Session } from "./activation";
+import { activate as activateKey, loadSession, clearSession, refreshSession, type Session } from "./activation";
 import { makeCloudLink, type CloudLink } from "./cloud-link";
 import { startLocalServer } from "./localserver";
 import { isDev, wssUrl } from "./config";
@@ -78,6 +78,25 @@ async function bringUpCloud() {
   await cloud.start();
 }
 if (session) await bringUpCloud();
+
+// Session auto-refresh: cloud tokens live 12h — without rotation every user was logged out
+// twice a day. Rotate when under 4h remain, then reconnect the WSS with the fresh token
+// (rotation kills the old one). A failed rotation (expired/revoked) just lets the session
+// die — the UI falls back to key activation.
+const REFRESH_CHECK_MS = 15 * 60 * 1000;
+async function maybeRefreshSession() {
+  if (!session || !session.expiresAt) return;
+  const left = Date.parse(session.expiresAt) - Date.now();
+  if (Number.isFinite(left) && left > 4 * 3600 * 1000) return;
+  const next = await refreshSession(session);
+  if (next && next !== session) {
+    session = next;
+    try { cloud?.stop(); } catch { /* ignore */ }
+    await bringUpCloud();
+  }
+}
+setInterval(() => { void maybeRefreshSession(); }, REFRESH_CHECK_MS);
+void maybeRefreshSession(); // an almost-expired stored session gets rotated right at startup
 
 // Bring up the localhost server (free port).
 const requested = args.port ?? 4317;

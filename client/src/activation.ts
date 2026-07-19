@@ -98,6 +98,35 @@ export async function activate(key: string): Promise<Session> {
   return session;
 }
 
+/**
+ * Rotate the session via POST /session/refresh (one-time rotation server-side).
+ * Returns the fresh session, or null when the old one is expired/revoked — the caller
+ * should let the UI fall back to key activation. DEV synthetic sessions are returned as-is.
+ */
+export async function refreshSession(current: Session): Promise<Session | null> {
+  if (current.sessionToken.startsWith("dev-session-")) return current;
+  try {
+    const res = await fetch(new URL("/session/refresh", httpsBase()), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_token: current.sessionToken, device_fp: current.deviceFp }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<ActivateResponse> & { error?: string };
+    if (!res.ok || !data?.session_token || !data?.hmac_secret) return null;
+    const next: Session = {
+      sessionToken: String(data.session_token),
+      deviceFp: current.deviceFp,
+      hmacSecret: String(data.hmac_secret),
+      expiresAt: data.expires_at ? String(data.expires_at) : null,
+      activatedAt: current.activatedAt,
+    };
+    await storeSession(next);
+    return next;
+  } catch {
+    return null; // network hiccup — try again on the next tick, the old token still works
+  }
+}
+
 /** Read the stored session (keychain → dev file). null if not activated. */
 export async function loadSession(): Promise<Session | null> {
   const fromStore = await keychainGet();
