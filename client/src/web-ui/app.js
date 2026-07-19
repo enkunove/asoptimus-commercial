@@ -984,12 +984,13 @@ async function renderOverview(body, slug, data) {
     degraded: items.filter((i) => i.degraded).length,
   };
 
-  const feedHtml = `
-    <div class="panel"><h2>Live feed</h2>
-      <div class="feed feed-compact" id="feed">${data.events.map((e) => `<div><span class="ts">${new Date(e.ts).toLocaleTimeString()}</span>${esc(e.kind)} ${esc(e.text)}</div>`).join("") || '<div class="muted">no events yet</div>'}</div>
-    </div>`;
-
   const hasCharts = items.some((i) => i.P != null || i.D != null || (i.score ?? 0) > 0);
+  const feedOpen = feedOpenPref ?? (data.state.phase !== "done");
+  const feedHtml = `
+    <details class="panel feed-panel" id="feed-panel" ${feedOpen ? "open" : ""}>
+      <summary>Activity log <span class="muted small">${data.events.length} events</span></summary>
+      <div class="feed feed-compact" id="feed">${data.events.map((e) => `<div><span class="ts">${new Date(e.ts).toLocaleTimeString()}</span>${esc(e.kind)} ${esc(e.text)}</div>`).join("") || '<div class="muted">no events yet</div>'}</div>
+    </details>`;
 
   body.innerHTML = `
     <div class="panel stat-strip">
@@ -1002,41 +1003,27 @@ async function renderOverview(body, slug, data) {
       <div class="stat"><div class="value">${credits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div><div class="label">credits spent</div></div>
       ${errors ? `<div class="stat-div"></div><div class="stat"><div class="value err">${errors}</div><div class="label">errors</div></div>` : ""}
     </div>
-    <div class="sec-h">What the engine caught</div>
-    ${findingsStrip(findings)}
     ${hasCharts ? `
-      <div class="sec-h">Where to compete</div>
-      <div class="ov-grid">
-        <div class="panel">
+      <div class="ov-hero">
+        <div class="panel hero-map">
           <h2>Opportunity map</h2>
           ${svgScatter(items)}
-          <p class="chart-caption">Each dot is a probed phrase.${findings.degraded ? ` ${findings.degraded} measured without P — suggestions endpoint was down.` : ""}</p>
-          ${explain("ov-map", `Up-left corner = high demand (P) with weak competition (D) — the <b>gold quadrant</b>. That is where you win: click a dot to open the phrase, check its R reason and top-10, and make sure it ends up covered by your title/subtitle/keywords. Orange dots are already selected for metadata; red ones had their Score zeroed (brand traps, irrelevant).`)}
+          <p class="chart-caption">Each dot is a probed phrase — up-left is where you win.${findings.degraded ? ` ${findings.degraded} measured without P (suggestions endpoint was down).` : ""}</p>
+          ${explain("ov-map", `Up-left corner = high demand (P) with weak competition (D) — the <b>gold quadrant</b>. Click a dot to open the phrase, check its R reason and top-10, and make sure it ends up covered by your title/subtitle/keywords. Orange dots are already selected for metadata; red ones had their Score zeroed (brand traps, irrelevant).`)}
         </div>
-        <div class="ov-side">
-          <div class="panel">
-            <h2>Pipeline funnel</h2>
-            ${funnelChart(items)}
-            ${explain("ov-funnel", `How many phrases survived each stage: <b>candidates</b> harvested from the store's suggest graph → <b>verified</b> (real demand confirmed by probing) → <b>rated</b> (relevance judged) → <b>selected</b> (made it into your metadata). Big drops are normal — that is the filter doing its job. You pay only for verified keyphrases.`)}
-          </div>
-          <div class="panel">
-            <h2>R distribution</h2>
-            ${rDistChart(items)}
-            ${explain("ov-rdist", `The relevance judge's verdicts: <b>3</b> = the core job your app is hired for, <b>2</b> = adjacent (same user, secondary job), <b>1</b> = tangent (shared words, different intent), <b>0</b> = matches your anti-semantics and is excluded. Lots of 1s? Tighten the brief's anti-semantics and re-run — you are paying to verify phrases that can't win.`)}
-          </div>
-        </div>
+        ${healthPanel(items, findings)}
       </div>
-      <div class="sec-h">Score profile</div>
-      <div class="ov-grid2">
+      <div class="mini-row">
         ${histogramChart(items)}
         ${sourcesChart(items)}
+        ${timelineChart(items, data.state.createdAt, data.events)}
       </div>
-      ${timelineChart(items, data.state.createdAt, data.events)}
     ` : `
       <div class="panel"><p class="muted">Charts appear as keyphrases verify — the engine is still warming up.</p></div>
     `}
     ${feedHtml}`;
   bindExplains(body);
+  body.querySelector("#feed-panel")?.addEventListener("toggle", (e) => { feedOpenPref = e.target.open; });
 
   // Findings cards → pre-filtered Keywords tab (spec 09 §4).
   body.querySelectorAll("[data-insight]").forEach((el) =>
@@ -1058,19 +1045,53 @@ async function renderOverview(body, slug, data) {
   if (feed) feed.scrollTop = feed.scrollHeight;
 }
 
-// --- Findings strip (spec 09 §4): what the engine caught, first row of Overview ---
+// --- Run health: one column — pipeline funnel + relevance split + engine findings ---
 
-function findingsStrip(f) {
-  const card = (insight, n, title, text) => `
-    <div class="tile finding" data-insight="${insight}" role="button" tabindex="0" title="Show these keywords">
-      <div class="value">${n}</div><div class="flabel">${title}</div>
-      <div class="label">${text}</div>
+let feedOpenPref = null; // user's explicit open/close choice for the activity log
+
+function healthPanel(items, findings) {
+  const inSet = (sts) => items.filter((i) => sts.includes(i.status)).length;
+  const candidates = items.length;
+  const funnel = [
+    ["candidates", candidates, ""],
+    ["verified", inSet(["verified", "rated", "selected", "bench"]), ""],
+    ["rated", inSet(["rated", "selected", "bench"]), ""],
+    ["selected", inSet(["selected"]), ""],
+  ];
+  const excluded = inSet(["excluded"]);
+
+  const withR = items.filter((i) => i.R != null);
+  const rTotal = Math.max(1, withR.length);
+  const rCounts = [3, 2, 1, 0].map((r) => withR.filter((i) => i.R === r).length);
+  const rSegs = [["r3", rCounts[0], "R=3 core"], ["r2", rCounts[1], "R=2 adjacent"], ["r1", rCounts[2], "R=1 tangent"], ["r0", rCounts[3], "R=0 excluded"]]
+    .filter(([, n]) => n > 0)
+    .map(([cls, n, t]) => `<div class="seg ${cls}" style="width:${(Number(n) / rTotal) * 100}%" title="${t}: ${n}"></div>`).join("");
+
+  const findRow = (insight, n, label, hint) => `
+    <div class="find-row ${n ? "hot" : ""}" data-insight="${n ? insight : ""}" ${n ? 'role="button" tabindex="0"' : ""} title="${n ? "Show these keywords" : esc(hint)}">
+      <span class="find-n">${n}</span><span class="find-l">${label}</span>${n ? '<span class="find-go">view →</span>' : ""}
     </div>`;
-  return `<div class="tiles findings">
-    ${card("brandQuery", f.brand, "dead-brand traps caught", "phrases that autocomplete as demand but are just names of weak apps — Score zeroed, evidence in the row")}
-    ${card("unsuggested", f.phantom, "phantom phrases filtered", "never appeared in autocomplete at any prefix — no demand, no budget spent on them")}
-    ${f.degraded ? card("degraded", f.degraded, "degraded probes disclosed", "measured while the suggestions endpoint was down — marked, never silently guessed") : ""}
-  </div>`;
+
+  return `
+    <div class="panel health">
+      <h2>Run health</h2>
+      <div class="h-label">Pipeline</div>
+      ${funnel.map(([l, n]) => barLine(String(l), Number(n), candidates)).join("")}
+      ${excluded ? barLine("excluded", excluded, candidates, "red") : ""}
+      <div class="h-label">Relevance split <span class="muted">(${withR.length} judged)</span></div>
+      <div class="rbar">${rSegs || '<div class="seg r1" style="width:100%"></div>'}</div>
+      <div class="rlegend">
+        <span><i class="dot r3"></i>3 core ${rCounts[0]}</span>
+        <span><i class="dot r2"></i>2 adjacent ${rCounts[1]}</span>
+        <span><i class="dot r1"></i>1 tangent ${rCounts[2]}</span>
+        <span><i class="dot r0"></i>0 excluded ${rCounts[3]}</span>
+      </div>
+      <div class="h-label">Caught by the engine</div>
+      ${findRow("brandQuery", findings.brand, "dead-brand traps", "none caught — no fake-demand app names in this sample")}
+      ${findRow("unsuggested", findings.phantom, "phantom phrases", "none — every candidate showed real autocomplete demand")}
+      ${findings.degraded ? findRow("degraded", findings.degraded, "degraded probes", "") : ""}
+      ${explain("ov-health", `<b>Pipeline</b>: candidates are harvested from the store's suggest graph, then filtered — verified (real demand confirmed by probing) → rated (relevance judged) → selected (made it into metadata). Big drops are the filter working; you pay only for verified. <b>Relevance</b>: 3 = core job, 2 = adjacent, 1 = tangent, 0 = anti-semantics. Lots of tangents? Tighten the brief and re-run. <b>Caught</b>: traps and phantoms the engine refused to let into your metadata — click a hot row for the evidence.`)}
+    </div>`;
 }
 
 // --- P×D opportunity map (spec 09 §3 centerpiece) ---
@@ -1122,14 +1143,6 @@ function funnelChart(items) {
     ${errored ? barLine("error", errored, candidates, "mutedfill") : ""}`;
 }
 
-function rDistChart(items) {
-  const withR = items.filter((i) => i.R != null);
-  const count = (r) => withR.filter((i) => i.R === r).length;
-  const counts = [3, 2, 1, 0].map(count);
-  const max = Math.max(1, ...counts);
-  const cls = { 3: "", 2: "", 1: "mutedfill", 0: "red" };
-  return [3, 2, 1, 0].map((r, idx) => barLine(`R = ${r}`, counts[idx], max, cls[r])).join("");
-}
 
 // --- Score histogram with median marker ---
 
@@ -1146,7 +1159,8 @@ function histogramChart(items) {
   const med = scores[Math.floor(scores.length / 2)];
   const maxB = Math.max(1, ...buckets);
   return `
-    <div class="panel"><h2>Score distribution (${scores.length} keywords with Score &gt; 0)</h2>
+    <div class="panel mini"><h2>Score distribution</h2>
+      <p class="chart-caption" style="margin:0 0 6px">${scores.length} keywords with Score &gt; 0</p>
       <div class="hist-wrap">
         <div class="hist">${buckets.map((b) => `<div class="bar" style="height:${(b / maxB) * 100}%"><span>${b || ""}</span></div>`).join("")}</div>
         <div class="hist-median" style="left:${Math.min(99, med)}%"><span>median ${med}</span></div>
@@ -1169,13 +1183,14 @@ function sourcesChart(items) {
   if (!rows.length) return "";
   const maxTotal = Math.max(...rows.map((r) => r.total));
   return `
-    <div class="panel"><h2>Where keywords come from — and what they're worth</h2>
+    <div class="panel mini"><h2>Sources</h2>
+      <p class="chart-caption" style="margin:0 0 6px">which discovery strategy earns its keep</p>
       ${rows.map((r) => `
         <div class="src-row">
           <span class="lbl">${r.s}</span>
           <div class="src-bars">
             ${barLine("found", r.total, maxTotal)}
-            ${barLine("avg score", r.avg, 100, "orangefill")}
+            ${barLine("avg", r.avg, 100, "orangefill")}
           </div>
         </div>`).join("")}
       <p class="chart-caption">"found" = phrases contributed by the source; "avg score" = their mean Score (0–100) once verified.</p>
@@ -1191,7 +1206,7 @@ function timelineChart(items, createdAt, events) {
   const t0 = Math.min(Date.parse(createdAt) || times[0], times[0]);
   const t1 = times[times.length - 1];
   if (t1 <= t0) return "";
-  const W = 680, H = 150, pad = { l: 40, r: 12, t: 10, b: 24 };
+  const W = 460, H = 210, pad = { l: 40, r: 12, t: 10, b: 26 };
   const w = W - pad.l - pad.r, h = H - pad.t - pad.b;
   const X = (t) => pad.l + ((t - t0) / (t1 - t0)) * w;
   const Y = (n) => pad.t + (1 - n / times.length) * h;
@@ -1217,7 +1232,7 @@ function timelineChart(items, createdAt, events) {
     .join("");
 
   return `
-    <div class="panel"><h2>Verification pace</h2>
+    <div class="panel mini"><h2>Verification pace</h2>
       <svg class="svg-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative verified keyphrases over time">
         ${bandRects}
         <rect x="${pad.l}" y="${pad.t}" width="${w}" height="${h}" fill="none" stroke="var(--border)" stroke-width="2"/>
