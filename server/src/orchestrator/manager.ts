@@ -135,20 +135,27 @@ export class RunManager {
     return runId;
   }
 
-  /** Start: gate "balance covers at least 1 keyphrase" (NOT a reserve, D4 v4); insufficient → paused. */
-  async startRun(runId: string): Promise<void> {
-    const orch = await this.getOrchestrator(runId);
+  /** Gate shared by every transition into active work (start/resume/confirmContext):
+   *  the balance must cover at least 1 keyphrase (NOT a reserve, D4 v4). Insufficient →
+   *  the run is (kept) paused with a credits_out notice, and the caller must not proceed. */
+  private async creditsCoverWork(runId: string, orch: Orchestrator): Promise<boolean> {
     const userId = this.runUsers.get(runId)!;
     const price = pricePerKeyphrase(orch.state.config.model);
     const balance = await this.billing.balance(userId);
-    if (balance < price) {
-      orch.state.paused = true;
-      orch.state.notice = `Not enough credits to start (a keyphrase costs ${price}, balance is ${balance.toFixed(2)}). Top up your balance.`;
-      await this.persist(orch.state);
-      await this.emitEvent(runId, "💳", orch.state.notice);
-      this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason: orch.state.notice, code: "credits_out" });
-      return;
-    }
+    if (balance >= price) return true;
+    const verb = orch.state.phase === "created" ? "start" : "continue";
+    orch.state.paused = true;
+    orch.state.notice = `Not enough credits to ${verb} (a keyphrase costs ${price}, balance is ${balance.toFixed(2)}). Top up your balance.`;
+    await this.persist(orch.state);
+    await this.emitEvent(runId, "💳", orch.state.notice);
+    this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason: orch.state.notice, code: "credits_out" });
+    return false;
+  }
+
+  /** Start: gated on credits; insufficient → paused. */
+  async startRun(runId: string): Promise<void> {
+    const orch = await this.getOrchestrator(runId);
+    if (!(await this.creditsCoverWork(runId, orch))) return;
     await orch.start();
   }
 
@@ -176,10 +183,12 @@ export class RunManager {
     const orch = await this.getOrchestrator(runId);
     switch (action.type) {
       case "pause": orch.requestPause(); break;
-      case "resume": void orch.resume(); break;
+      // resume/confirmContext transition into active (LLM/Apple) work — same credit gate as start,
+      // otherwise a zero-balance user resumes straight past the paywall and burns provider tokens.
+      case "resume": if (await this.creditsCoverWork(runId, orch)) void orch.resume(); break;
       case "stopAndAssemble": orch.requestStopAndAssemble(); break;
       case "reassemble": void orch.reassemble(); break;
-      case "confirmContext": void orch.confirmContext(); break;
+      case "confirmContext": if (await this.creditsCoverWork(runId, orch)) void orch.confirmContext(); break;
       case "editContext": orch.editContext(action.patch as any); break;
       case "exclude": orch.excludeKeyword(action.keyword); break;
       case "delete": await this.deleteRun(runId); break;
