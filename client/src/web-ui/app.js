@@ -56,6 +56,49 @@ function uiConfirm(text) {
   });
 }
 
+// Robust clipboard copy: navigator.clipboard can be unavailable/denied in the desktop
+// webview — fall back to a hidden textarea + execCommand.
+async function uiCopy(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+}
+
+// Prompt the user hands to an AI assistant working in THEIR app's repo: it studies the
+// project, asks questions when the code alone can't answer, and saves a brief .md shaped
+// exactly for our run form (which accepts .md drops). Mirrors the BusinessContext fields.
+const BRIEF_PROMPT = `You are working in the root of my app's codebase. Study the project (README, source code, store listing metadata, marketing copy — whatever is here) and write a product brief for App Store keyword research (ASO).
+
+The brief must describe, in plain prose (300–1500 characters):
+- what the app does and the core problem it solves (the "job" users hire it for)
+- who the users are (audience and their context)
+- 3–8 key features in the USERS' vocabulary — words real people would type into store search
+- direct competitors (real app names, if identifiable)
+- target market: country/storefront and language
+- monetization (free / subscription / one-time) if it matters for positioning
+- what the app is NOT — things it could be confused with (anti-semantics)
+
+Rules:
+- Base every claim on what you actually find in the project; do not invent features.
+- If anything essential is unclear from the code alone (audience, competitors, market,
+  language, positioning) — ASK me concrete questions first and wait for my answers
+  before writing.
+- When done, save the brief as \`asoptimus-brief.md\` in the current directory and print it.
+
+The file will be used as the run brief in ASOptimus (app keyword research).`;
+
 // ---------- toast (small non-blocking confirmation, e.g. "export saved") ----------
 
 function toast(html, isError) {
@@ -595,6 +638,10 @@ function renderNewRunForm(sf, models) {
       <textarea id="brief-text" placeholder="Describe the product…"></textarea>
       <div class="dropzone" id="dropzone">…or drop a .md/.txt brief file here<br><span id="brief-name" class="small"></span></div>
       <input type="file" id="brief-input" accept=".md,.txt,text/*" style="display:none">
+      <div class="row brief-ai" style="margin-top:8px">
+        <button type="button" id="copy-brief-prompt" title="Copies a prompt for Claude Code / Cursor / any AI assistant">⧉ Copy prompt for your AI assistant</button>
+        <span class="hint" style="margin:0">paste it to an AI assistant opened in your app's repo — it studies the code, asks what's unclear, and saves a ready <span class="mono">asoptimus-brief.md</span> to drop here</span>
+      </div>
       <div class="grid2">
         <div><label>Brand *</label><input id="f-brand" placeholder="Somna"><div class="field-error" id="e-brand"></div></div>
         <div><label>Country (storefront)</label><select id="f-country">${Object.keys(sf.storefronts).map((c) => `<option value="${c}" ${c === d.country ? "selected" : ""}>${c.toUpperCase()}</option>`).join("")}</select></div>
@@ -635,6 +682,12 @@ function renderNewRunForm(sf, models) {
   el.querySelector("#f-model").addEventListener("change", updateQuoteUI);
   el.querySelector("#close-form").addEventListener("click", () => { newRunOpen = false; render(); });
   updateQuoteUI(); // initial render of the live estimate
+
+  el.querySelector("#copy-brief-prompt").addEventListener("click", async () => {
+    const ok = await uiCopy(BRIEF_PROMPT);
+    if (ok) toast(`✓ prompt copied — open your AI assistant <b>in your app's repo</b>, paste, answer its questions, then drop the generated <span class="mono">asoptimus-brief.md</span> into the form`);
+    else toast("✗ could not access the clipboard", true);
+  });
 
   const dz = el.querySelector("#dropzone"), fi = el.querySelector("#brief-input");
   const loadFile = async (file) => {
@@ -1524,7 +1577,11 @@ function renderAssembly(body, slug, data) {
       ${asm.topUncovered.map((u) => `<div class="small">${esc(u.keyword)} <span class="muted">(Score ${u.score}; missing: ${u.missingWords.map(esc).join(", ")})</span></div>`).join("")}
     </div>` : ""}`;
   body.querySelectorAll(".copy-btn").forEach((b) =>
-    b.addEventListener("click", () => { navigator.clipboard.writeText(b.dataset.copy); b.textContent = "✓"; setTimeout(() => (b.textContent = "⧉"), 1200); }));
+    b.addEventListener("click", async () => {
+      const ok = await uiCopy(b.dataset.copy);
+      b.textContent = ok ? "✓" : "✗";
+      setTimeout(() => (b.textContent = "⧉"), 1200);
+    }));
 }
 
 function renderChecklist(violations) {
