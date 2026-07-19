@@ -99,6 +99,23 @@ Rules:
 
 The file will be used as the run brief in ASOptimus (app keyword research).`;
 
+// ---------- expandable explainers ("what is this and what do I do with it") ----------
+// Open state survives the ~2s live re-render: ids are remembered and re-applied.
+
+const openExplains = new Set();
+function explain(id, body) {
+  return `<details class="explain" data-exp="${esc(id)}" ${openExplains.has(id) ? "open" : ""}>
+    <summary>what is this — and what do I do with it</summary>
+    <div class="explain-body">${body}</div>
+  </details>`;
+}
+function bindExplains(root) {
+  root.querySelectorAll("details.explain").forEach((d) =>
+    d.addEventListener("toggle", () => {
+      if (d.open) openExplains.add(d.dataset.exp); else openExplains.delete(d.dataset.exp);
+    }));
+}
+
 // ---------- toast (small non-blocking confirmation, e.g. "export saved") ----------
 
 function toast(html, isError) {
@@ -975,40 +992,51 @@ async function renderOverview(body, slug, data) {
   const hasCharts = items.some((i) => i.P != null || i.D != null || (i.score ?? 0) > 0);
 
   body.innerHTML = `
-    <div class="tiles">
-      <div class="tile"><div class="value">${data.sampleCount}</div><div class="label">sample size</div></div>
-      <div class="tile"><div class="value">${medianTop20}</div><div class="label">median Score, top 20</div></div>
-      <div class="tile"><div class="value">${cov ? Math.round(cov.coveredShare * 100) + "%" : "—"}</div><div class="label">Score covered</div></div>
-      <div class="tile"><div class="value">${credits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div><div class="label">credits spent on this run</div></div>
-      <div class="tile"><div class="value">${errors}</div><div class="label">errors</div></div>
+    <div class="panel stat-strip">
+      <div class="stat"><div class="value">${data.sampleCount}${Number(data.config?.sampleSize) > 0 ? `<span class="of">/${data.config.sampleSize}</span>` : ""}</div><div class="label">verified keyphrases</div></div>
+      <div class="stat-div"></div>
+      <div class="stat"><div class="value">${medianTop20}</div><div class="label">median Score, top 20</div></div>
+      <div class="stat-div"></div>
+      <div class="stat"><div class="value">${cov ? Math.round(cov.coveredShare * 100) + "%" : "—"}</div><div class="label">Score covered by metadata</div></div>
+      <div class="stat-div"></div>
+      <div class="stat"><div class="value">${credits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div><div class="label">credits spent</div></div>
+      ${errors ? `<div class="stat-div"></div><div class="stat"><div class="value err">${errors}</div><div class="label">errors</div></div>` : ""}
     </div>
+    <div class="sec-h">What the engine caught</div>
     ${findingsStrip(findings)}
     ${hasCharts ? `
+      <div class="sec-h">Where to compete</div>
       <div class="ov-grid">
         <div class="panel">
           <h2>Opportunity map</h2>
           ${svgScatter(items)}
-          <p class="chart-caption">Each dot is a probed phrase: up-left = high demand, low difficulty. Orange = selected for metadata, red = Score zeroed. Click a dot to open it in the table.${findings.degraded ? ` ${findings.degraded} phrase${findings.degraded > 1 ? "s" : ""} measured without P — suggestions endpoint was down.` : ""}</p>
+          <p class="chart-caption">Each dot is a probed phrase.${findings.degraded ? ` ${findings.degraded} measured without P — suggestions endpoint was down.` : ""}</p>
+          ${explain("ov-map", `Up-left corner = high demand (P) with weak competition (D) — the <b>gold quadrant</b>. That is where you win: click a dot to open the phrase, check its R reason and top-10, and make sure it ends up covered by your title/subtitle/keywords. Orange dots are already selected for metadata; red ones had their Score zeroed (brand traps, irrelevant).`)}
         </div>
         <div class="ov-side">
           <div class="panel">
             <h2>Pipeline funnel</h2>
             ${funnelChart(items)}
+            ${explain("ov-funnel", `How many phrases survived each stage: <b>candidates</b> harvested from the store's suggest graph → <b>verified</b> (real demand confirmed by probing) → <b>rated</b> (relevance judged) → <b>selected</b> (made it into your metadata). Big drops are normal — that is the filter doing its job. You pay only for verified keyphrases.`)}
           </div>
           <div class="panel">
             <h2>R distribution</h2>
             ${rDistChart(items)}
-            <p class="chart-caption">Relevance verdicts by the judge: 3 core · 2 adjacent · 1 tangent · 0 excluded.</p>
+            ${explain("ov-rdist", `The relevance judge's verdicts: <b>3</b> = the core job your app is hired for, <b>2</b> = adjacent (same user, secondary job), <b>1</b> = tangent (shared words, different intent), <b>0</b> = matches your anti-semantics and is excluded. Lots of 1s? Tighten the brief's anti-semantics and re-run — you are paying to verify phrases that can't win.`)}
           </div>
         </div>
       </div>
-      ${histogramChart(items)}
-      ${sourcesChart(items)}
+      <div class="sec-h">Score profile</div>
+      <div class="ov-grid2">
+        ${histogramChart(items)}
+        ${sourcesChart(items)}
+      </div>
       ${timelineChart(items, data.state.createdAt, data.events)}
     ` : `
       <div class="panel"><p class="muted">Charts appear as keyphrases verify — the engine is still warming up.</p></div>
     `}
     ${feedHtml}`;
+  bindExplains(body);
 
   // Findings cards → pre-filtered Keywords tab (spec 09 §4).
   body.querySelectorAll("[data-insight]").forEach((el) =>
@@ -1124,6 +1152,7 @@ function histogramChart(items) {
         <div class="hist-median" style="left:${Math.min(99, med)}%"><span>median ${med}</span></div>
       </div>
       <div class="hist-labels">${buckets.map((_, i) => `<div>${i * 10}–${i * 10 + 9}</div>`).join("")}</div>
+      ${explain("ov-hist", `Score = demand × ease × relevance on a 0–100 scale. A tall left side means most phrases are weak — normal for a broad harvest. What matters is the right tail: those are the phrases worth metadata slots. The orange line is the median of scored phrases.`)}
     </div>`;
 }
 
@@ -1150,6 +1179,7 @@ function sourcesChart(items) {
           </div>
         </div>`).join("")}
       <p class="chart-caption">"found" = phrases contributed by the source; "avg score" = their mean Score (0–100) once verified.</p>
+      ${explain("ov-src", `Where candidate phrases came from: <b>seed</b> = generated from your brief, <b>suggest</b> = harvested from the store's autocomplete graph, <b>competitor</b> = mined from competitors' names/positions, <b>expansion</b> = long-tail children of strong phrases. A source with many finds but a low avg score is casting a wide, cheap net; a source with few finds but a high avg is your quality vein.`)}
     </div>`;
 }
 
@@ -1198,6 +1228,7 @@ function timelineChart(items, createdAt, events) {
         <text x="${pad.l - 6}" y="${pad.t + h}" font-size="11" fill="var(--muted)" text-anchor="end">0</text>
       </svg>
       <p class="chart-caption">Cumulative probed phrases over the run's wall-clock.${bands.length ? " Yellow bands = paused stretches." : ""}</p>
+      ${explain("ov-pace", `The verification pace. Steady slope = the engine is cruising within Apple's rate limits. Flat stretches are pauses (credits ran out, you paused, or the client was offline) — yellow bands mark them. The pace is capped by politeness to Apple, not by your machine.`)}
     </div>`;
 }
 
@@ -1382,22 +1413,45 @@ async function renderCompetitors(body, slug, runData) {
   }
 
   const compKey = (c) => `${c.trackId ?? ""}:${c.trackName}`;
+  const minStrength = (c) => c.appearances.length ? Math.min(...c.appearances.map((a) => a.strength)) : null;
+  const hardness = s.medianStrength == null ? "" :
+    s.medianStrength >= 70 ? "a brutal niche — incumbents are entrenched" :
+    s.medianStrength >= 40 ? "a contested niche — winnable with the right phrases" :
+    "a soft niche — most top-10s are takeable";
+
   body.innerHTML = `
+    <div class="panel intro-note">
+      <b>This is the competition your keywords actually face.</b> For every measured phrase the engine
+      pulled the live top-10; here those top-10s are folded into one landscape. Use it to answer one
+      question: <b>where can a new app realistically rank?</b> Not a market-share study — it covers
+      the top-10s of this run's ${s.keywordsWithSerp} measured keywords only.
+    </div>
     <div class="tiles">
-      <div class="tile"><div class="value">${s.distinctApps}</div><div class="label">distinct apps seen in top-10s</div></div>
-      <div class="tile"><div class="value">${s.medianStrength ?? "—"}</div><div class="label">median top-10 strength — how hard this niche is</div></div>
-      <div class="tile"><div class="value">${s.openDoors}</div><div class="label">open doors — top-10 slots held by weak apps (&lt;40)</div></div>
+      <div class="tile">
+        <div class="value">${s.distinctApps}</div><div class="label">distinct apps in your top-10s</div>
+        ${explain("cmp-apps", `How crowded your keyword space is. Few apps repeating across many phrases = a concentrated niche dominated by the same incumbents; many one-off apps = fragmented space where ranking is easier.`)}
+      </div>
+      <div class="tile">
+        <div class="value">${s.medianStrength ?? "—"}</div><div class="label">median slot strength — ${esc(hardness)}</div>
+        ${explain("cmp-median", `Strength scores one occupant of one top-10 slot (0–100) from its review volume, rating, update recency and how exactly it matches the phrase. The MEDIAN across all measured slots says how hard your niche is overall: <b>70+</b> — entrenched incumbents, pick narrower phrases; <b>40–70</b> — contested, winnable; <b>&lt;40</b> — soft.`)}
+      </div>
+      <div class="tile">
+        <div class="value">${s.openDoors}</div><div class="label">open doors — winnable top-10 slots</div>
+        ${explain("cmp-doors", `Slots in your keywords' top-10s currently held by WEAK apps (strength &lt; 40) — positions a well-made new app can realistically take. They hide in the long tail, not under the big names below: to find them, open the <b>Opportunity map</b> (gold quadrant = high demand, low difficulty) or sort the Keywords table by D ascending. ${s.openDoors === 0 ? "<b>Zero here is a real finding:</b> every measured top-10 is fully held by strong apps — go narrower with your phrases." : ""}`)}
+      </div>
     </div>
     <div class="panel">
-      <div class="row spread"><h2>Who you're up against</h2><span class="muted small">across ${s.keywordsWithSerp} measured keywords</span></div>
-      <p class="chart-caption" style="margin:0 0 10px">Apps competing in the top-10s of this run's keyword sample — your niche as measured, not a market-share study.</p>
+      <div class="row spread"><h2>Who you're up against</h2><span class="muted small">ranked by overlap with your keywords</span></div>
+      <p class="chart-caption" style="margin:0 0 10px">The apps you meet most often. High overlap + high strength = the wall you route around; a low <b>weakest slot</b> is the crack in that wall — expand the row to see on WHICH phrase they're weakest.</p>
       <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="num">#</th><th>App</th><th>Overlap</th><th class="num">Avg pos</th><th>Avg strength</th><th>Where it's strong</th><th class="num">Weak spots</th>
+          <th class="num">#</th><th>App</th><th>Overlap</th><th class="num">Avg pos</th><th>Avg strength</th><th>Where it's strong</th><th>Weakest slot</th>
         </tr></thead>
         <tbody>
-          ${items.map((c, i) => `
+          ${items.map((c, i) => {
+            const ms = minStrength(c);
+            return `
             <tr class="expandable" data-comp="${esc(compKey(c))}">
               <td class="num">${i + 1}</td>
               <td><b>${esc(c.trackName)}</b></td>
@@ -1415,25 +1469,33 @@ async function renderCompetitors(body, slug, runData) {
                 </div>
               </td>
               <td>${c.bestKeywords.length ? c.bestKeywords.map((k) => `<span class="badge gray">${esc(k)}</span>`).join(" ") : '<span class="muted small">—</span>'}</td>
-              <td class="num">${c.weakSpots ? `<span class="badge orange">${c.weakSpots}</span>` : '<span class="muted">0</span>'}</td>
+              <td>${ms == null ? '<span class="muted">—</span>' : `
+                <div class="row" style="gap:8px;flex-wrap:nowrap">
+                  <div class="progress weakbar" style="width:70px;flex:none"><div style="width:${ms}%"></div></div>
+                  <span class="num ${ms < 40 ? "score-mid" : ""}">${ms}</span>
+                </div>`}
+              </td>
             </tr>
             ${expandedCompetitor === compKey(c) ? `
             <tr class="detail"><td colspan="7">
-              <h3>${esc(c.trackName)} — shared keywords</h3>
+              <h3>${esc(c.trackName)} — every shared keyword</h3>
+              <p class="muted small" style="margin-top:0">Their strength varies per phrase because exact-match matters: a low row here is a phrase where this app ranks on borrowed relevance — your best shot against them.</p>
               <div class="table-wrap"><table>
                 <thead><tr><th>Keyword</th><th class="num">Their position</th><th class="num">Their strength</th><th class="num">Keyword score</th></tr></thead>
-                <tbody>${c.appearances.map((a) => `
-                  <tr><td class="mono">${esc(a.keyword)}</td><td class="num">#${a.position}</td><td class="num">${a.strength}</td><td class="num">${a.score ?? ""}</td></tr>`).join("")}
+                <tbody>${[...c.appearances].sort((a, b) => a.strength - b.strength).map((a) => `
+                  <tr><td class="mono">${esc(a.keyword)}</td><td class="num">#${a.position}</td><td class="num ${a.strength < 40 ? "score-mid" : ""}">${a.strength}</td><td class="num">${a.score ?? ""}</td></tr>`).join("")}
                 </tbody></table></div>
             </td></tr>` : ""}
-          `).join("")}
+          `;}).join("")}
         </tbody>
       </table>
       </div>
     </div>`;
 
+  bindExplains(body);
   body.querySelectorAll("tr.expandable[data-comp]").forEach((tr) =>
-    tr.addEventListener("click", () => {
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("details.explain")) return;
       expandedCompetitor = expandedCompetitor === tr.dataset.comp ? null : tr.dataset.comp;
       renderCompetitors(body, slug, runData);
     }));

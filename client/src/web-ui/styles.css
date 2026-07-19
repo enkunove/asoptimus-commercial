@@ -403,6 +403,43 @@ td.pin-cell { width: 26px; padding-right: 0; }
 .toast.toast-error { background: var(--red-soft); color: var(--red); }
 @keyframes toastIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ── Overview restructure + explainers ── */
+.stat-strip { display: flex; align-items: stretch; gap: 18px; flex-wrap: wrap; padding: 14px 20px; }
+.stat-strip .stat { min-width: 120px; }
+.stat-strip .value { font-family: var(--disp); font-size: 26px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.15; }
+.stat-strip .value .of { font-size: 15px; color: var(--muted); font-weight: 500; }
+.stat-strip .value.err { color: var(--red); }
+.stat-strip .label { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.stat-strip .stat-div { width: 2px; background: var(--line-soft); border-radius: 2px; }
+
+.sec-h {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted); margin: 22px 0 10px;
+  display: flex; align-items: center; gap: 10px;
+}
+.sec-h::after { content: ""; flex: 1; border-top: 2px solid var(--line-soft); }
+
+.ov-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 1000px) { .ov-grid2 { grid-template-columns: 1fr; } }
+.ov-grid2 > .panel { margin-bottom: 0; }
+
+details.explain { margin-top: 10px; }
+details.explain summary {
+  cursor: pointer; list-style: none; display: inline-block;
+  font-size: 12px; color: var(--accent); font-weight: 600;
+  border-bottom: 1.5px dotted var(--accent);
+}
+details.explain summary::-webkit-details-marker { display: none; }
+details.explain summary::before { content: "? "; font-family: var(--mono); }
+details.explain[open] summary { color: var(--orange-deep); border-color: var(--orange-deep); }
+details.explain .explain-body {
+  margin-top: 8px; padding: 10px 12px; font-size: 12.5px; line-height: 1.55;
+  background: var(--bg); border: 2px solid var(--border); border-radius: 10px; color: var(--text);
+}
+
+.intro-note { font-size: 13px; line-height: 1.6; background: var(--accent-soft); }
+.progress.weakbar > div { background: var(--orange); }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
