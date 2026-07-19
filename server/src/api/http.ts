@@ -82,6 +82,53 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     return checkoutPage("Payment canceled", "No charge was made.");
   }
 
+  // ── /buy: the page the Paddle "default payment link" points at. Paddle.js reads the
+  //    ?_ptxn=<txn id> param and opens the overlay checkout. Needs PADDLE_CLIENT_TOKEN
+  //    (public client-side token; test_… auto-selects the sandbox environment). Lives on
+  //    the API host so the marketing landing stays free of third-party scripts. ──
+  if (path === "/buy" && method === "GET") {
+    const token = optionalEnv("PADDLE_CLIENT_TOKEN");
+    if (!token) {
+      return checkoutPage("Payments not configured", "PADDLE_CLIENT_TOKEN is not set on this server yet.");
+    }
+    const sandbox = token.startsWith("test_");
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>Checkout — ASOptimus</title></head>
+<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#FDF3DA;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#191D3A">
+<div style="max-width:440px;background:#fff;border:2.5px solid #191D3A;border-radius:16px;box-shadow:6px 6px 0 #191D3A;padding:32px 36px;margin:20px;text-align:center">
+<div style="width:52px;height:52px;margin:0 auto;background:#F86C1A;border:2.5px solid #191D3A;border-radius:14px;box-shadow:3px 3px 0 #191D3A;color:#fff;font-weight:800;font-size:28px;line-height:48px">A</div>
+<h1 style="font-size:24px;margin:14px 0 8px;letter-spacing:-0.01em">Opening secure checkout…</h1>
+<p id="msg" style="color:#565B76;margin:0">Payment is handled by Paddle${sandbox ? " (sandbox — test mode, no real charges)" : ""}.</p>
+</div>
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
+<script>
+  (function () {
+    var msg = document.getElementById("msg");
+    if (!new URLSearchParams(location.search).get("_ptxn")) {
+      msg.textContent = "No transaction in the link — start the top-up from the ASOptimus app.";
+      return;
+    }
+    try {
+      ${sandbox ? 'Paddle.Environment.set("sandbox");' : ""}
+      // Paddle.js auto-detects ?_ptxn= and opens the overlay checkout after Initialize.
+      Paddle.Initialize({
+        token: ${JSON.stringify(token)},
+        eventCallback: function (ev) {
+          if (ev.name === "checkout.completed") {
+            msg.textContent = "Payment received — credits land in the app within a few seconds. You can close this tab.";
+          }
+        },
+      });
+    } catch (e) {
+      msg.textContent = "Could not start the checkout: " + e.message;
+    }
+  })();
+</script>
+</body></html>`;
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
   // ── public (landing) ────────────────────────────────────────────────────
   if (path === "/signup" && method === "POST") {
     const b = await body(req);
