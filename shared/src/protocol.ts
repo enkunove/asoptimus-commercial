@@ -2,7 +2,7 @@
 // This is the CONTRACT (BUILD-PLAN §4). Zero-I/O, zero-secret. Imported by both server and client.
 // There are NO formulas, NO prompts, NO strategies here — only message shapes.
 
-import type { RunState, RunConfig, KeywordEntry } from "./types.ts";
+import type { RunState, RunConfig, KeywordEntry, HttpStats } from "./types.ts";
 
 // ── Raw Apple data (the client returns THIS; the server computes the metrics) ──────────────
 
@@ -120,7 +120,9 @@ export type ClientToServer =
   // [reconcile v2] client_ref — correlates the request with the run.created reply (run_id learned from the reply)
   | { t: "run.create"; client_ref: string; brief: string; config: unknown /* RunConfig from types.ts */ }
   | { t: "run.control"; run_id: string; action: RunAction }
-  | { t: "job.result"; result: JobResult }
+  // http — cumulative snapshot of the client's Apple HTTP stats (requests/cache hits), so the
+  // server can surface live Apple traffic in run state; optional for older clients.
+  | { t: "job.result"; result: JobResult; http?: HttpStats }
   | { t: "job.error"; job_id: string; reason: string; throttle?: boolean }
   // [reconcile v2] request-response for browser reads (relayed through localhost, D1)
   | { t: "query"; query_id: string; kind: QueryKind; params?: Record<string, unknown> };

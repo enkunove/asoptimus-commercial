@@ -102,6 +102,7 @@ export function wssMessage(app: App, ws: WsLike, raw: string | Buffer) {
         send(ws, { t: "run.paused", run_id: msg.run_id, reason: e?.message ?? String(e) }));
       break;
     case "job.result":
+      if (msg.http) app.manager.noteClientHttp(userId, msg.http);
       app.manager.resolveJob(msg.result);
       break;
     case "job.error":

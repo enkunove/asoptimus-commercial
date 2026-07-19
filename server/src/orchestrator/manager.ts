@@ -74,7 +74,7 @@ export class RunManager {
     // run.phase → to the client (sample counters).
     this.hub.broadcast(s.userId, {
       t: "run.phase", run_id: s.runId, phase: s.phase,
-      counters: { sampleCount: sampleCount(s.keywords), sampleSize: s.config.sampleSize, requestsMade: 0, cacheHits: 0, calls: s.usage.calls },
+      counters: { sampleCount: sampleCount(s.keywords), sampleSize: s.config.sampleSize, requestsMade: s.http?.requestsMade ?? 0, cacheHits: s.http?.cacheHits ?? 0, calls: s.usage.calls },
     });
   }
 
@@ -177,6 +177,20 @@ export class RunManager {
     }
     this.orchestrators.set(runId, orch);
     return orch;
+  }
+
+  /** Client-session Apple HTTP stats (job.result.http): fold the cumulative snapshot into every
+   *  live orchestrator of the user. Monotonic max per field — snapshots are cumulative and jobs
+   *  may arrive out of order; a client restart (snapshot reset) then never regresses the numbers.
+   *  Note: with several concurrent runs the session totals show on each — acceptable for v1. */
+  noteClientHttp(userId: string, http: { requestsMade: number; cacheHits: number; throttleWaitMs: number }): void {
+    for (const orch of this.orchestrators.values()) {
+      if (orch.state.userId !== userId) continue;
+      const h = orch.state.http;
+      h.requestsMade = Math.max(h.requestsMade, http.requestsMade);
+      h.cacheHits = Math.max(h.cacheHits, http.cacheHits);
+      h.throttleWaitMs = Math.max(h.throttleWaitMs, http.throttleWaitMs);
+    }
   }
 
   async control(runId: string, action: RunAction): Promise<void> {

@@ -3,7 +3,7 @@
 // improvementState) match aso-util RunState but live in the private server repo.
 
 import type {
-  RunConfig, BusinessContext, KeywordEntry, RunPhase, UsageTotals, AssemblyResult, RunState,
+  RunConfig, BusinessContext, KeywordEntry, RunPhase, UsageTotals, AssemblyResult, RunState, HttpStats,
 } from "@aso/shared";
 import { sampleCount } from "@aso/shared";
 
@@ -24,6 +24,8 @@ export interface ServerRunState {
   rejected: string[];
   expansion: { done: Record<string, string[]>; roots: string[]; pending: string[]; improvingWaves?: number };
   usage: UsageTotals;
+  /** Apple HTTP traffic as reported by the client (job.result.http snapshots, monotonic max). */
+  http: HttpStats;
   assembly: AssemblyResult | null;
   improvementState: { roundsSpent: number; topSnapshot: string[] };
   /** Monotonic logical-step counters (for llm_steps replay ids). */
@@ -44,7 +46,7 @@ export function initialState(runId: string, userId: string, brief: string, confi
     hintsEndpointDown: false, createdAt: now, updatedAt: now, brief, config,
     context: null, keywords: [], rejected: [],
     expansion: { done: {}, roots: [], pending: [] },
-    usage: newUsage(), assembly: null,
+    usage: newUsage(), http: { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 }, assembly: null,
     improvementState: { roundsSpent: 0, topSnapshot: [] },
     stepCounters: {},
     estimateCredits,
@@ -65,9 +67,8 @@ export function projectRunState(s: ServerRunState): RunState {
     context: s.context,
     keywords: s.keywords,
     usage: s.usage,
-    // Apple HTTP stats live on the client (it does the fetching); the server does not track them.
-    // Sample/cache progress goes via a separate run.phase message (RunCounters), not these fields.
-    http: { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 },
+    // Apple HTTP stats as reported by the client with each job.result (cumulative snapshot).
+    http: s.http ?? { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 },
     assembly: s.assembly,
   };
 }

@@ -222,7 +222,7 @@ class WssCloudLink implements CloudLink {
     try {
       const result: JobResult = await executeJob(this.deps.http, job);
       this.completedJobIds.add(job.job_id);
-      this.send({ t: "job.result", result });
+      this.send({ t: "job.result", result, http: { ...this.deps.http.stats } });
     } catch (e: any) {
       this.send({
         t: "job.error",
