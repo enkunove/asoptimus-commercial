@@ -37,6 +37,25 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// ---------- webview-safe dialogs ----------
+// The desktop webview has NO working window.confirm/alert (same as window.open) — native
+// dialogs silently return undefined and buttons look dead. Modal-based replacement.
+
+function uiConfirm(text) {
+  return new Promise((resolve) => {
+    const m = openModal(`
+      <h2>Confirm</h2>
+      <p>${esc(text)}</p>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="cf-yes">Yes</button>
+        <button id="cf-no">Cancel</button>
+      </div>`);
+    const done = (v) => { document.getElementById("modal-overlay")?.remove(); resolve(v); };
+    m.querySelector("#cf-yes").addEventListener("click", () => done(true));
+    m.querySelector("#cf-no").addEventListener("click", () => done(false));
+  });
+}
+
 // ---------- toast (small non-blocking confirmation, e.g. "export saved") ----------
 
 function toast(html, isError) {
@@ -164,7 +183,7 @@ function bindHeader() {
   document.getElementById("bal-topup")?.addEventListener("click", openTopup);
   document.getElementById("bal-credits")?.addEventListener("click", () => { location.hash = "#/balance"; });
   document.getElementById("bal-logout")?.addEventListener("click", async () => {
-    if (!confirm("Log out? The session token will be removed from this computer.")) return;
+    if (!(await uiConfirm("Log out? The session token will be removed from this computer."))) return;
     await api("/api/logout", { method: "POST" });
     session = null;
     location.hash = "";
@@ -520,8 +539,8 @@ async function viewRuns() {
   document.querySelectorAll(".del").forEach((b) =>
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm(`Delete run ${b.dataset.slug}?`)) return;
-      try { await api(`/api/runs/${encodeURIComponent(b.dataset.slug)}`, { method: "DELETE" }); } catch (err) { alert(err.message); }
+      if (!(await uiConfirm(`Delete run ${b.dataset.slug}?`))) return;
+      try { await api(`/api/runs/${encodeURIComponent(b.dataset.slug)}`, { method: "DELETE" }); } catch (err) { toast(`✗ ${esc(err.message)}`, true); }
       render();
     }));
   document.querySelectorAll(".cmp").forEach((b) =>
@@ -797,7 +816,7 @@ async function control(slug, action, payload) {
       body: JSON.stringify({ action, ...(payload || {}) }),
     });
     setTimeout(render, 300);
-  } catch (e) { alert(e.message); }
+  } catch (e) { toast(`✗ ${esc(e.message)}`, true); }
 }
 
 // ---------- Context step ----------
@@ -1239,7 +1258,7 @@ async function renderKeywords(body, slug, runData) {
       const keyword = expandedKeyword;
       const bindDetail = () => {
         cell.querySelector(".btn-exclude")?.addEventListener("click", async () => {
-          if (confirm(`Exclude "${keyword}" from the run?`)) await control(slug, "exclude", { keyword });
+          if (await uiConfirm(`Exclude "${keyword}" from the run?`)) await control(slug, "exclude", { keyword });
         });
         // Note autosave on blur (spec 09 §7) — local file only, no cloud traffic.
         const noteEl = cell.querySelector("#kw-note");
