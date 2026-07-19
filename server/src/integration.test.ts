@@ -14,6 +14,9 @@ delete process.env.ANTHROPIC_API_KEY;
 delete process.env.REQUIRE_CLIENT;
 delete process.env.DATABASE_URL;
 delete process.env.TOPUP_PACKAGES_JSON;
+delete process.env.PADDLE_API_KEY;
+delete process.env.PADDLE_WEBHOOK_SECRET;
+delete process.env.PADDLE_CREDIT_PRICE_ID;
 
 const { createApp } = await import("./app.ts");
 const { handleHttp } = await import("./api/http.ts");
