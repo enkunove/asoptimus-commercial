@@ -94,6 +94,11 @@ export class PostgresStore implements Store {
     return await this.sql<LedgerRowDb[]>`SELECT id, user_id, delta, type, run_id, keyword, step_seq, stripe_event_id, ts
       FROM ledger WHERE user_id = ${userId} ORDER BY id DESC LIMIT ${limit}`;
   }
+  async sumDebitsForRun(runId: string) {
+    const [row] = await this.sql<{ total: string | number | null }[]>`
+      SELECT COALESCE(SUM(ABS(delta)), 0) AS total FROM ledger WHERE run_id = ${runId} AND type = 'debit'`;
+    return Number(row?.total ?? 0);
+  }
 
   async insertLlmStep(row: LlmStepRow) {
     await this.sql`INSERT INTO llm_steps (run_id, logical_step, step_seq, request_hash, result_json, valid, usage, cost_usd, model, duration_ms)

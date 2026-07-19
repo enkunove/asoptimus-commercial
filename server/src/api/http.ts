@@ -232,7 +232,9 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     if (!sess) return err("unauthorized", 401);
     const runId = runMatch[1];
     const sub = runMatch[2];
-    if (app.manager.userOf(runId) && app.manager.userOf(runId) !== sess.userId) return err("not your run", 403);
+    // AUTHORITATIVE ownership via manager.ownerOf (store-backed for cold runs) — fail-closed.
+    // The old `userOf() && userOf() !== user` check failed OPEN after a restart (cross-tenant read).
+    if ((await app.manager.ownerOf(runId)) !== sess.userId) return err("not your run", 403);
 
     if (!sub && method === "GET") {
       const state = await app.manager.getState(runId);
@@ -245,6 +247,29 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     if (sub === "/llm-log" && method === "GET") {
       // D9: outputs+numbers only (LlmLogPublic).
       return json({ log: await app.manager.llmLog(runId) });
+    }
+    // ── spec 09: insights & exports (direct REST mirror of the WSS query kinds; tests/dev-UI) ──
+    if (sub === "/keywords-lite" && method === "GET") {
+      return json(await app.manager.keywordsLite(runId));
+    }
+    if (sub === "/competitors" && method === "GET") {
+      return json(await app.manager.competitors(runId));
+    }
+    if (sub === "/export" && method === "GET") {
+      const format = url.searchParams.get("format") ?? "";
+      if (!["csv", "md", "json", "html"].includes(format)) return err(`unknown export format: ${format}`);
+      const artifact = await app.manager.exportArtifact(runId, format as "csv" | "md" | "json" | "html");
+      if (!artifact) return err("run not found", 404);
+      return new Response(artifact.content, {
+        headers: {
+          "content-type": artifact.mime,
+          "content-disposition": `attachment; filename="${artifact.filename}"`,
+        },
+      });
+    }
+    if (sub === "/snapshot" && method === "GET") {
+      const snap = await app.manager.runSnapshot(runId);
+      return snap ? json(snap) : err("run not found", 404);
     }
     if (sub === "/control" && method === "POST") {
       const b = await body(req);

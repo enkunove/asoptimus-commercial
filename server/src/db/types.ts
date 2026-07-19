@@ -120,6 +120,9 @@ export interface Store {
 
   // ledger (immutable log; read for BalanceView/account)
   listLedger(userId: string, limit?: number): Promise<LedgerRowDb[]>;
+  /** Sum of |delta| over ALL debit rows of one run (spec 09 §3 creditsSpent) — run-scoped
+   *  aggregate, NOT bounded by a row limit (listLedger's window under-reports old runs). */
+  sumDebitsForRun(runId: string): Promise<number>;
 
   // llm_steps
   insertLlmStep(row: LlmStepRow): Promise<void>;

@@ -2,7 +2,7 @@
 // This is the CONTRACT (BUILD-PLAN §4). Zero-I/O, zero-secret. Imported by both server and client.
 // There are NO formulas, NO prompts, NO strategies here — only message shapes.
 
-import type { RunState, RunConfig, KeywordEntry, HttpStats } from "./types.ts";
+import type { RunState, RunConfig, KeywordEntry, HttpStats, KeywordStatus, KeywordSource } from "./types.ts";
 
 // ── Raw Apple data (the client returns THIS; the server computes the metrics) ──────────────
 
@@ -113,7 +113,10 @@ export type RunAction =
 
 /** [reconcile v2] Kinds of on-demand reads the browser requests from localhost, and the program
  *  relays into the cloud as request-response (push events are not enough for large tables/logs). */
-export type QueryKind = "runs" | "run" | "keywords" | "keyword" | "llm-log" | "balance" | "models" | "packages";
+export type QueryKind =
+  | "runs" | "run" | "keywords" | "keyword" | "llm-log" | "balance" | "models" | "packages"
+  // [spec 09] insights & exports — re-projections of existing run data (no new Apple/LLM calls):
+  | "keywords-lite" | "competitors" | "export";
 
 export type ClientToServer =
   | { t: "hello"; session_token: string; device_fp: string; resume_job_ids: string[] }
@@ -255,15 +258,90 @@ export interface RunSnapshot {
   assembly: RunState["assembly"];
   keywordCount: number;
   sampleCount: number;
+  /** [spec 09 §3] Credits actually debited for this run so far (sum of ledger debits).
+   *  User-facing money — shown honestly, unlike internal token COGS. */
+  creditsSpent: number;
 }
 
 /** kind="keywords": SERVER-SIDE pagination/sort/filter (spec 07 — don't load 500+ rows wholesale).
- *  params: {runId, page, pageSize, sort, dir, status, q}. */
+ *  params: {runId, page, pageSize, sort, dir, status, source, q,
+ *           insight?: "brandQuery"|"unsuggested"|"degraded" (spec 09 §4 findings filter),
+ *           only?: string[] (keyword allowlist — the relay uses it for the local "pinned" filter,
+ *           spec 09 §7; the server stores nothing about pins)}. */
 export interface KeywordPage {
   total: number;
   page: number;
   pageSize: number;
   items: KeywordEntry[];
+}
+
+// ── [spec 09] Insights & exports projections ────────────────────────────────
+
+/** kind="keywords-lite" (spec 09 §3): the WHOLE keyword list, unpaginated, as a light projection
+ *  (~60 bytes/keyword) for client-side charts and run diffing. params: {runId}. */
+export interface KeywordLite {
+  keyword: string;
+  score: number | null;
+  P: number | null;
+  D: number | null;
+  R: number | null;
+  status: KeywordStatus;
+  source: KeywordSource;
+  childCount: number;
+  brandQuery: boolean;
+  unsuggested: boolean;
+  degraded: boolean;
+  probedAt?: string;
+}
+export interface KeywordsLiteView {
+  items: KeywordLite[];
+}
+
+/** kind="competitors" (spec 09 §2): aggregation of per-keyword SERP top-10s across the run.
+ *  This is the run's OWN keyword sample landscape, not a market-share study. params: {runId}. */
+export interface CompetitorAppearance {
+  keyword: string;
+  /** 1-based position of the app in that keyword's top-10. */
+  position: number;
+  strength: number;
+  score: number | null;
+}
+export interface CompetitorRow {
+  trackId: number | null;
+  trackName: string;
+  /** In how many of the run's keyword top-10s the app appears. */
+  keywords: number;
+  /** keywords / number of keywords with SERP data (0..1). */
+  share: number;
+  avgPosition: number;
+  avgStrength: number;
+  /** Top 3 keyword strings by score where the app ranks ≤ 3. */
+  bestKeywords: string[];
+  /** Appearances with strength < 40 (opportunities). */
+  weakSpots: number;
+  appearances: CompetitorAppearance[];
+}
+export interface CompetitorsView {
+  items: CompetitorRow[];
+  summary: {
+    distinctApps: number;
+    /** Median AppStrength across every top-10 slot of the run ("how hard is this niche"). */
+    medianStrength: number | null;
+    /** Top-10 slots occupied by weak apps (strength < 40) — "open doors". */
+    openDoors: number;
+    keywordsWithSerp: number;
+  };
+}
+
+/** kind="export" (spec 09 §1/§6): the server builds the artifact STRING; the localhost relay
+ *  turns it into a file download. params: {runId, format, pinned?: string[],
+ *  notes?: Record<string,string>} — pinned/notes are the user's LOCAL annotations (spec 09 §7),
+ *  passed transiently for rendering only; the server never stores them. */
+export type ExportFormat = "csv" | "md" | "json" | "html";
+export interface ExportArtifact {
+  filename: string;
+  mime: string;
+  content: string;
 }
 
 /** kind="llm-log": log pagination (D9 — LlmLogPublic only, no prompts). */
@@ -286,3 +364,4 @@ export interface TopupPackage {
 // Mapping of query kind → data type in query.result:
 //   runs→RunSummary[] · run→RunSnapshot · keywords→KeywordPage · keyword→{item:KeywordEntry|null}
 //   llm-log→LlmLogPage · balance→BalanceView · models→ModelInfo[] · packages→TopupPackage[]
+//   keywords-lite→KeywordsLiteView · competitors→CompetitorsView · export→ExportArtifact

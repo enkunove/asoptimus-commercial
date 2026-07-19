@@ -85,7 +85,8 @@ Shown on first launch and always reachable from the menu ("Provider"). If no pro
 ## 7.6 UI quality criteria (checked at acceptance)
 
 1. Open the run screen — within 3 seconds it's clear: which phase, how much is left, what's happening right now.
-2. No orphan numbers: every P/D/Score has a path to the raw data in ≤2 clicks; every R score — a path to the full LLM call.
+2. No orphan numbers: every P/D/Score has a path to the raw data in ≤2 clicks; every R score — its written reason is visible in the row (LLM internals themselves never surface, see spec 09 §0).
 3. The path "download the binary → launch → authorize with an API key → upload a brief → the run is going" can be walked without documentation; all hints live inside the UI.
 4. Pause/resume/binary restart lose not a single piece of data and never confuse the UI.
 5. Both themes look tidy; no horizontal page scroll at any width from 1024px up.
+6. No LLM internals in the UI (spec 09 §0): `grep -riE "tokens|costUsd|llm-log|llm call" client/src/web-ui/` returns only the header comment of app.js. Users pay in credits per keyphrase; token counts/costs are internal COGS.

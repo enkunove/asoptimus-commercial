@@ -42,22 +42,30 @@ with three items: `keywords.csv`, `report.md`, `run.json`. Enabled in any phase 
 whatever is verified so far); disabled only when `sampleCount === 0`.
 
 **Transport.** New relay/WSS read `query kind="export"` params `{runId, format}` → server
-builds the artifact string → localserver returns it with `content-disposition: attachment;
-filename="<brand>-<country>-<date>.<ext>"`. The browser/webview downloads via a plain
-`<a href="/api/runs/:id/export?format=csv">` (add the route to localserver; token-guarded
-like every /api). No new deps — CSV/MD are string builders on the server.
+builds the artifact string → two localserver routes (both token-guarded like every /api):
+- `POST /api/runs/:id/export {format}` — the PRIMARY path: the local program writes the file
+  straight to `~/Downloads` (collision-safe; fallback `<dataDir>/exports`) and returns the
+  path for a toast. Chosen because webview (WKWebView) downloads are unreliable — a plain
+  `<a download>` silently no-ops there. The filename arrives from the cloud → the relay
+  sanitizes it (strip path separators / leading dots) before writing.
+- `GET /api/runs/:id/export?format=csv` — `content-disposition: attachment` for plain
+  browsers and scripts.
+No new deps — CSV/MD are string builders on the server.
 
 **Formats.**
 - `keywords.csv` — one row per keyword, columns exactly:
-  `keyword,score,P,D,R,status,source,child_count,brand_query,unsuggested,degraded,reason`.
-  RFC 4180 quoting (reasons contain commas/quotes). UTF-8, no BOM. Sorted by score desc.
+  `keyword,score,P,D,R,status,source,child_count,brand_query,unsuggested,degraded,reason,pinned`
+  (`pinned` is §7's column; always present — `false` when nothing is pinned — so the schema is
+  stable). RFC 4180 quoting (reasons contain commas/quotes). UTF-8, no BOM. Sorted by score desc.
 - `report.md` — human-readable run summary: header (brand, storefront, date, sample size),
   ship-ready metadata block (both buckets: title / subtitle / keyword field + char counts),
   top-30 keywords table (keyword, Score, P, D, R), findings summary (see §4 counts),
   coverage line. Formulas footer (same four formulas as the landing math section) so the
   numbers stay auditable outside the app.
 - `run.json` — the full RunSnapshot plus the full keyword list (not paginated): everything
-  the UI can see, machine-readable. Pretty-printed, stable key order not required.
+  the UI SHOWS, machine-readable. Pretty-printed, stable key order not required.
+  `state.usage` (LLM token counts / costUsd) is STRIPPED: it is internal COGS the UI no
+  longer displays (§0), and a downloadable artifact must not resurrect it.
 
 **Acceptance.**
 - CSV opens clean in Google Sheets/Numbers (quoting torture-tested with reasons containing
@@ -242,8 +250,10 @@ required for reading; target < 300 KB):
 - NO raw LLM anything, NO token/cost numbers, NO credit numbers (client-facing artifact:
   agencies don't show their tool costs to clients).
 
-**Mechanics.** Server-side string template fed by the same projections as §§2–4 (one new
-`query kind="report-html"`), downloaded through the same localserver attachment route as §1.
+**Mechanics.** Server-side string template fed by the same projections as §§2–4. Implemented
+as `format="html"` of the §1 `query kind="export"` (one kind, four formats — a separate
+`report-html` kind would duplicate the contract), downloaded/saved through the same
+localserver routes as §1.
 
 **Acceptance:** file opens correctly from `file://` offline; passes the §1 no-new-calls
 gate; renders identically in Safari/Chrome; a non-user can understand the run from the
@@ -262,9 +272,15 @@ ASO is iterative; give the user a place to keep their shortlist and thoughts.
   the cloud — it's the user's private working state on their machine (consistent with the
   local-first story); survives run re-reads, dies with run deletion (delete the file on
   run delete).
-- `pinned` becomes a sort option (pinned first) and an `insight` filter value (§4).
+- `pinned` becomes an `insight` filter value (§4): the localhost relay translates it into a
+  keyword allowlist (`only=[…]`) before the query reaches the cloud, so the server never
+  learns what a pin is. (A global "pinned first" sort is deliberately NOT in v1: the keyword
+  table is server-paginated and the server must stay pin-blind; the filter covers the
+  shortlist workflow.)
 - Pinned keywords get a `pinned` column in the CSV export and a "Shortlist" section at the
-  top of the .md export (with notes).
+  top of the .md export (with notes). Annotations transit to the cloud ONLY inside an export
+  render request (as `pinned`/`notes` params of `kind="export"`), are used for that render,
+  and are stored nowhere server-side.
 
 **Acceptance:** pins/notes survive app restart; deleting a run removes its annotations
 file; exports reflect pins; zero cloud traffic for annotation operations (assert no WSS

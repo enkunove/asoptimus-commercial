@@ -6,6 +6,7 @@
 import type {
   RunSummary, RunAction, BalanceView, TopupResponse, RunState, ModelInfo, TopupPackage,
   BusinessContext, KeywordEntry, LlmLogPublic, AssemblyResult,
+  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
 } from "@aso/shared";
 import type { RelayEvent } from "./cloud-link";
 import type { KeywordPage, LlmLogPage, RunSnapshot, KeywordHit, FeedEvent } from "./wire-local";
@@ -34,7 +35,7 @@ export interface StubBackend {
   listRuns(): Promise<RunSummary[]>;
   createRun(brief: string, config: unknown): Promise<{ run_id: string }>;
   getRun(runId: string): Promise<RunSnapshot>;
-  listKeywords(runId: string, query: Record<string, string>): Promise<KeywordPage>;
+  listKeywords(runId: string, query: Record<string, unknown>): Promise<KeywordPage>;
   getKeyword(runId: string, keyword: string): Promise<KeywordHit>;
   getLlmLog(runId: string, page: number): Promise<LlmLogPage>;
   controlRun(runId: string, action: RunAction): Promise<void>;
@@ -43,6 +44,10 @@ export interface StubBackend {
   getModels(): Promise<ModelInfo[]>;
   getPackages(): Promise<TopupPackage[]>;
   topup(packageId: string): Promise<TopupResponse>;
+  // spec 09 (mock projections — real aggregation lives on the server)
+  keywordsLite(runId: string): Promise<KeywordsLiteView>;
+  competitors(runId: string): Promise<CompetitorsView>;
+  exportArtifact(runId: string, format: ExportFormat, ann?: { pinned?: string[]; notes?: Record<string, string> }): Promise<ExportArtifact>;
 }
 
 // Synthetic top-up catalog for the offline UI (source of truth — server query kind="packages").
@@ -209,9 +214,13 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
         hintsEndpointDown: false, createdAt: r.createdAt, updatedAt: r.updatedAt,
         context: r.context, usage: r.usage, http: r.http, assembly: r.assembly,
       };
+      const creditsSpent = Math.round(ledger
+        .filter((l) => l.type === "debit" && l.runId === r.id)
+        .reduce((s, l) => s + Math.abs(l.delta), 0) * 100) / 100;
       return {
         state, keywordCount: r.keywords.length,
         sampleCount: r.keywords.filter((k) => k.status !== "candidate").length,
+        creditsSpent,
         config: r.config, context: r.context, events: r.events.slice(-100), assembly: r.assembly,
       };
     },
@@ -219,10 +228,17 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     async listKeywords(runId, query) {
       const r = must(runId);
       let items = [...r.keywords];
-      if (query.q) items = items.filter((k) => k.keyword.includes(query.q.toLowerCase()));
+      if (query.q) items = items.filter((k) => k.keyword.includes(String(query.q).toLowerCase()));
       if (query.status) items = items.filter((k) => k.status === query.status);
       if (query.source) items = items.filter((k) => k.source === query.source);
-      const sort = query.sort ?? "score", dir = query.dir === "asc" ? 1 : -1;
+      if (query.insight === "brandQuery") items = items.filter((k) => k.metrics.brandQuery === true);
+      else if (query.insight === "unsuggested") items = items.filter((k) => k.metrics.unsuggested === true);
+      else if (query.insight === "degraded") items = items.filter((k) => k.degraded === true);
+      if (Array.isArray(query.only)) {
+        const only = new Set((query.only as unknown[]).map((s) => String(s)));
+        items = items.filter((k) => only.has(k.keyword));
+      }
+      const sort = String(query.sort ?? "score"), dir = query.dir === "asc" ? 1 : -1;
       items.sort((a, b) => {
         const va = pick(a, sort), vb = pick(b, sort);
         if (typeof va === "string" || typeof vb === "string") return String(va).localeCompare(String(vb)) * dir;
@@ -230,6 +246,38 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
       });
       const page = Number(query.page ?? 0), pageSize = 100;
       return { total: items.length, page, pageSize, items: items.slice(page * pageSize, (page + 1) * pageSize) };
+    },
+
+    // ── spec 09 mock projections (real logic lives on the server) ──────────
+
+    async keywordsLite(runId) {
+      const r = must(runId);
+      return {
+        items: r.keywords.map((k) => ({
+          keyword: k.keyword, score: k.metrics.score ?? null, P: k.metrics.P ?? null,
+          D: k.metrics.D ?? null, R: k.metrics.R ?? null, status: k.status, source: k.source,
+          childCount: k.metrics.childCount ?? 0, brandQuery: k.metrics.brandQuery === true,
+          unsuggested: k.metrics.unsuggested === true, degraded: k.degraded === true,
+          ...(k.probedAt ? { probedAt: k.probedAt } : {}),
+        })),
+      };
+    },
+
+    async competitors(runId) {
+      must(runId); // stub topApps are empty → an honest empty landscape
+      return { items: [], summary: { distinctApps: 0, medianStrength: null, openDoors: 0, keywordsWithSerp: 0 } };
+    },
+
+    async exportArtifact(runId, format) {
+      const r = must(runId);
+      const date = new Date().toISOString().slice(0, 10);
+      const slug = (r.brand || "run").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "run";
+      const filename = `${slug}-${r.country}-${date}.${format}`;
+      const mime = { csv: "text/csv; charset=utf-8", md: "text/markdown; charset=utf-8", json: "application/json; charset=utf-8", html: "text/html; charset=utf-8" }[format];
+      const content = format === "json"
+        ? JSON.stringify({ devStub: true, runId, keywords: r.keywords }, null, 2)
+        : `dev-stub export (${format}) for ${runId} — real artifacts come from the cloud\n`;
+      return { filename, mime, content };
     },
 
     async getKeyword(runId, keyword) {

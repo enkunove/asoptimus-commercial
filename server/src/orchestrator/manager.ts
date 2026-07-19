@@ -10,7 +10,9 @@ import { randomUUID } from "node:crypto";
 import type {
   RunConfig, RunState, ProgressEvent, RunAction, RunSummary, LlmLogPublic,
   RunSnapshot, KeywordPage, LlmLogPage, KeywordEntry,
+  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
 } from "@aso/shared";
+import { toLite, aggregateCompetitors, buildExport } from "./insights.ts";
 import { sampleCount, normalizeKeyword } from "@aso/shared";
 import type { Store } from "../db/index.ts";
 import { BillingService } from "../billing/service.ts";
@@ -44,6 +46,17 @@ export class RunManager {
 
   onProgress(l: ProgressListener) { this.listeners.add(l); return () => this.listeners.delete(l); }
   userOf(runId: string): string | undefined { return this.runUsers.get(runId); }
+
+  /** AUTHORITATIVE ownership: in-memory map first, else the store row (cold runs after a
+   *  restart). Every run-scoped read/write MUST gate on this, never on the fail-open
+   *  `userOf() === undefined` pattern — that hole let any authenticated user read cold runs. */
+  async ownerOf(runId: string): Promise<string | undefined> {
+    const cached = this.runUsers.get(runId);
+    if (cached) return cached;
+    const row = await this.store.getRun(runId);
+    if (row) this.runUsers.set(runId, row.user_id);
+    return row?.user_id;
+  }
 
   /** Live client-connection gate (D7): a real client exists → ok; otherwise DEV loopback only. */
   private assertLiveClient(runId: string) {
@@ -113,9 +126,7 @@ export class RunManager {
   /** Run completion (D4 v4: no settle — usage-based, everything debited in real time). */
   private async finishRun(s: ServerRunState) {
     await this.broadcastBalance(s.userId);
-    const charged = (await this.store.listLedger(s.userId, 1000))
-      .filter((r) => r.run_id === s.runId && r.type === "debit")
-      .reduce((sum, r) => sum + Math.abs(Number(r.delta)), 0);
+    const charged = await this.store.sumDebitsForRun(s.runId);
     await this.emitEvent(s.runId, "💰", `run finished: ${charged.toFixed(2)} cr debited for ${sampleCount(s.keywords)} keyphrases`);
   }
 
@@ -245,6 +256,13 @@ export class RunManager {
     return this.store.listRunEvents(runId, afterSeq);
   }
 
+  /** Credits actually debited for a run so far (spec 09 §3): run-scoped ledger aggregate
+   *  (NOT a listLedger window — that under-reports old runs once the ledger grows).
+   *  User-facing money — honest by design (unlike internal token COGS, which never leaves). */
+  async creditsSpentFor(runId: string): Promise<number> {
+    return Math.round((await this.store.sumDebitsForRun(runId)) * 100) / 100;
+  }
+
   /** query kind="run": RunSnapshot (RunState + config + event feed + counters) for the initial load. */
   async runSnapshot(runId: string): Promise<RunSnapshot | null> {
     const state = await this.getState(runId);
@@ -261,7 +279,44 @@ export class RunManager {
       assembly: state.assembly,
       keywordCount: keywords.length,
       sampleCount: sampleCount(keywords),
+      creditsSpent: await this.creditsSpentFor(runId),
     };
+  }
+
+  // ── spec 09: insights & exports (re-projections only — no Apple/LLM calls, no debits) ──
+
+  /** query kind="keywords-lite": the whole keyword list as a light projection (charts/diff). */
+  async keywordsLite(runId: string): Promise<KeywordsLiteView> {
+    const state = await this.getState(runId);
+    return toLite(state?.keywords ?? []);
+  }
+
+  /** query kind="competitors": SERP top-10 aggregation across the run (spec 09 §2). */
+  async competitors(runId: string): Promise<CompetitorsView> {
+    const state = await this.getState(runId);
+    return aggregateCompetitors(state?.keywords ?? []);
+  }
+
+  /** query kind="export": build a downloadable artifact string (spec 09 §1/§6).
+   *  pinned/notes are the user's LOCAL annotations, passed transiently for rendering only. */
+  async exportArtifact(
+    runId: string,
+    format: ExportFormat,
+    ann: { pinned?: string[]; notes?: Record<string, string> } = {},
+  ): Promise<ExportArtifact | null> {
+    const snapshot = await this.runSnapshot(runId);
+    const state = await this.getState(runId);
+    if (!snapshot || !state) return null;
+    return buildExport(format, {
+      config: snapshot.config,
+      phase: state.phase,
+      createdAt: state.createdAt,
+      keywords: state.keywords,
+      assembly: state.assembly,
+      sampleCount: snapshot.sampleCount,
+      pinned: ann.pinned,
+      notes: ann.notes,
+    }, snapshot);
   }
 
   /** query kind="keywords": SERVER-SIDE pagination/sort/filter (spec 07: don't load 500+ rows wholesale). */
@@ -270,6 +325,19 @@ export class RunManager {
     let items: KeywordEntry[] = state?.keywords ? [...state.keywords] : [];
     const status = params.status ? String(params.status) : "";
     if (status) items = items.filter((k) => k.status === status);
+    const source = params.source ? String(params.source) : "";
+    if (source) items = items.filter((k) => k.source === source);
+    // spec 09 §4: insight filter — the findings-strip cards land on a pre-filtered table.
+    const insight = params.insight ? String(params.insight) : "";
+    if (insight === "brandQuery") items = items.filter((k) => k.metrics.brandQuery === true);
+    else if (insight === "unsuggested") items = items.filter((k) => k.metrics.unsuggested === true);
+    else if (insight === "degraded") items = items.filter((k) => k.degraded === true);
+    // spec 09 §7: keyword allowlist — the relay translates the local "pinned" filter into this;
+    // the server knows nothing about pins themselves.
+    if (Array.isArray(params.only)) {
+      const only = new Set((params.only as unknown[]).map((s) => normalizeKeyword(String(s))));
+      items = items.filter((k) => only.has(k.keyword));
+    }
     const q = params.q ? normalizeKeyword(String(params.q)) : "";
     if (q) items = items.filter((k) => k.keyword.includes(q));
 

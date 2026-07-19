@@ -5,8 +5,14 @@
 //   (3) per-launch token in the HTML, required on all /api (naive CSRF).
 // No domain logic — only transport and statics.
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type { CloudLink, RelayEvent } from "./cloud-link";
+import type { ExportFormat } from "@aso/shared";
 import { STOREFRONTS, HTTP_DEFAULTS, FIELD_LIMITS, DEFAULT_STOPWORDS } from "@aso/shared";
+import { readAnnotations, writeAnnotation, deleteAnnotations, pinnedKeywords, notesMap } from "./annotations.ts";
+import { dataDir } from "./paths.ts";
 
 // UI statics embedded into the binary (Bun `with { type: "text" }`).
 import indexHtmlRaw from "./web-ui/index.html" with { type: "text" };
@@ -208,13 +214,70 @@ async function handleApi(
     const sub = runMatch[2] ?? "";
 
     if (sub === "" && req.method === "GET") return json(await cloud.getRun(runId));
-    if (sub === "" && req.method === "DELETE") { await cloud.deleteRun(runId); return json({ ok: true }); }
+    if (sub === "" && req.method === "DELETE") {
+      await cloud.deleteRun(runId);
+      deleteAnnotations(runId); // spec 09 §7: annotations die with run deletion
+      return json({ ok: true });
+    }
 
     if (sub === "/keywords" && req.method === "GET") {
-      const q: Record<string, string> = {};
+      const q: Record<string, unknown> = {};
       for (const [k, v] of url.searchParams) q[k] = v;
       delete q.token;
+      // spec 09 §7: "pinned" is a LOCAL filter — translate it into a keyword allowlist here;
+      // the cloud never learns which filter produced it beyond the list itself.
+      if (q.insight === "pinned") {
+        delete q.insight;
+        q.only = pinnedKeywords(runId);
+      }
       return json(await cloud.listKeywords(runId, q));
+    }
+
+    // ── spec 09: insights & exports relay ─────────────────────────────────
+    if (sub === "/keywords-lite" && req.method === "GET") {
+      return json(await cloud.keywordsLite(runId));
+    }
+    if (sub === "/competitors" && req.method === "GET") {
+      return json(await cloud.competitors(runId));
+    }
+    if (sub === "/export") {
+      const ann = { pinned: pinnedKeywords(runId), notes: notesMap(runId) };
+      if (req.method === "GET") {
+        // Browser path: plain <a href> download with content-disposition (spec 09 §1).
+        const format = parseExportFormat(url.searchParams.get("format"));
+        if (!format) return json({ error: "unknown export format" }, 400);
+        const artifact = await cloud.exportArtifact(runId, format, ann);
+        return new Response(artifact.content, {
+          headers: {
+            "Content-Type": artifact.mime,
+            "Content-Disposition": `attachment; filename="${artifact.filename}"`,
+          },
+        });
+      }
+      if (req.method === "POST") {
+        // Desktop path: the local program saves straight to ~/Downloads (webview downloads
+        // are unreliable) and returns the path for the UI to show.
+        const body = await req.json().catch(() => ({}));
+        const format = parseExportFormat(String((body as any).format ?? ""));
+        if (!format) return json({ error: "unknown export format" }, 400);
+        const artifact = await cloud.exportArtifact(runId, format, ann);
+        const path = saveExport(artifact.filename, artifact.content);
+        return json({ ok: true, path, filename: artifact.filename });
+      }
+    }
+
+    // ── spec 09 §7: pins & notes — LOCAL file only, zero cloud traffic ─────
+    if (sub === "/annotations" && req.method === "GET") {
+      return json({ annotations: readAnnotations(runId) });
+    }
+    if (sub === "/annotations" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { keyword?: string; pinned?: boolean; note?: string };
+      const keyword = String(body.keyword ?? "").trim();
+      if (!keyword) return json({ error: "keyword is required" }, 400);
+      const patch: { pinned?: boolean; note?: string } = {};
+      if (typeof body.pinned === "boolean") patch.pinned = body.pinned;
+      if (typeof body.note === "string") patch.note = body.note;
+      return json({ annotations: writeAnnotation(runId, keyword, patch) });
     }
     const kwMatch = sub.match(/^\/keywords\/(.+)$/);
     if (kwMatch && req.method === "GET") {
@@ -231,6 +294,28 @@ async function handleApi(
   }
 
   return json({ error: "not found" }, 404);
+}
+
+function parseExportFormat(v: string | null): ExportFormat | null {
+  return v === "csv" || v === "md" || v === "json" || v === "html" ? v : null;
+}
+
+/** Save an export artifact to ~/Downloads (fallback: <dataDir>/exports), collision-safe.
+ *  The filename comes from the cloud — never trust it as a path: strip separators and dots. */
+function saveExport(rawFilename: string, content: string): string {
+  const filename = rawFilename.replace(/[/\\]/g, "_").replace(/^\.+/, "_") || "export.txt";
+  let dir = join(homedir(), "Downloads");
+  if (!existsSync(dir)) {
+    dir = join(dataDir(), "exports");
+    mkdirSync(dir, { recursive: true });
+  }
+  const dot = filename.lastIndexOf(".");
+  const stem = dot > 0 ? filename.slice(0, dot) : filename;
+  const ext = dot > 0 ? filename.slice(dot) : "";
+  let path = join(dir, filename);
+  for (let i = 2; existsSync(path); i++) path = join(dir, `${stem}-${i}${ext}`);
+  writeFileSync(path, content, "utf8");
+  return path;
 }
 
 // Build a RunAction from the /control body (UI-compatible: { action, ...payload }).

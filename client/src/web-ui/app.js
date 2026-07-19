@@ -13,8 +13,13 @@ let packagesCache = null;
 let session = null;
 let currentSlug = null;
 let currentBalance = null;
-let kwQuery = { sort: "score", dir: "desc", status: "", source: "", q: "", page: 0 };
+let kwQuery = { sort: "score", dir: "desc", status: "", source: "", insight: "", q: "", page: 0 };
 let expandedKeyword = null;
+let kwDetailCache = { kw: null, html: "" }; // last rendered detail — live refresh must not flash "Loading…"
+let expandedCompetitor = null;
+let runAnnotations = {};      // keyword → {pinned, note} for the currently open run (local-only, spec 09 §7)
+let annotationsSlug = null;
+let runsForCompare = [];      // runs list cached per run screen (for "Compare with previous")
 
 const OVERSHOOT_PCT = 0.1; // up to +10% keyphrases — included in the price (D4 v3)
 
@@ -31,6 +36,57 @@ async function api(path, opts = {}) {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// ---------- toast (small non-blocking confirmation, e.g. "export saved") ----------
+
+function toast(html, isError) {
+  document.querySelector(".toast")?.remove();
+  const el = document.createElement("div");
+  el.className = `toast ${isError ? "toast-error" : ""}`;
+  el.innerHTML = html;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ---------- exports (spec 09 §1/§6): the local program saves straight to ~/Downloads ----------
+
+async function exportRun(slug, format) {
+  try {
+    const res = await api(`/api/runs/${encodeURIComponent(slug)}/export`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format }),
+    });
+    toast(`✓ <b>${esc(res.filename)}</b> saved to <span class="mono small" title="${esc(res.path)}">${esc(shortPath(res.path))}</span>`);
+  } catch (e) {
+    toast(`✗ export failed: ${esc(e.message)}`, true);
+  }
+}
+function shortPath(p) {
+  const parts = String(p || "").split("/");
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : p;
+}
+
+// ---------- pins & notes (spec 09 §7): local file via the relay, zero cloud traffic ----------
+
+async function loadAnnotations(slug, force) {
+  if (!force && annotationsSlug === slug) return runAnnotations;
+  try {
+    const res = await api(`/api/runs/${encodeURIComponent(slug)}/annotations`);
+    runAnnotations = res.annotations || {};
+  } catch { runAnnotations = {}; }
+  annotationsSlug = slug;
+  return runAnnotations;
+}
+async function saveAnnotation(slug, keyword, patch) {
+  const res = await api(`/api/runs/${encodeURIComponent(slug)}/annotations`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keyword, ...patch }),
+  });
+  runAnnotations = res.annotations || {};
+  annotationsSlug = slug;
+  return runAnnotations;
+}
+function isPinned(keyword) { return !!(runAnnotations[keyword] && runAnnotations[keyword].pinned); }
 // ---------- SSE / polling ----------
 
 let sseOk = false;
@@ -255,6 +311,8 @@ async function render() {
   const hash = location.hash || "#/runs";
   try {
     if (hash.startsWith("#/balance")) return await viewBalance();
+    const cmpMatch = hash.match(/^#\/compare\/([^/]+)\/([^/]+)/);
+    if (cmpMatch) return await viewCompare(decodeURIComponent(cmpMatch[1]), decodeURIComponent(cmpMatch[2]));
     const runMatch = hash.match(/^#\/run\/([^/]+)/);
     if (runMatch) return await viewRun(decodeURIComponent(runMatch[1]));
     return await viewRuns();
@@ -264,7 +322,7 @@ async function render() {
 }
 window.addEventListener("hashchange", () => {
   if (!session?.activated) return;
-  expandedKeyword = null; kwQuery.page = 0; render();
+  expandedKeyword = null; expandedCompetitor = null; kwQuery.page = 0; render();
 });
 
 async function getStorefronts() {
@@ -398,6 +456,7 @@ async function viewRuns() {
         ${runs.map((r) => `
           <div class="card" data-slug="${esc(r.runId)}">
             <div class="menu row">
+              ${r.phase === "done" ? `<button class="small cmp" data-slug="${esc(r.runId)}" title="Compare with another run">⇄</button>` : ""}
               <button class="small danger del" data-slug="${esc(r.runId)}" title="Delete">✕</button>
             </div>
             <h3>${esc(r.brand)} · ${esc((r.country || "").toUpperCase())}</h3>
@@ -422,7 +481,37 @@ async function viewRuns() {
       try { await api(`/api/runs/${encodeURIComponent(b.dataset.slug)}`, { method: "DELETE" }); } catch (err) { alert(err.message); }
       render();
     }));
+  document.querySelectorAll(".cmp").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openCompareModal(runs, b.dataset.slug);
+    }));
   if (newRunOpen) renderNewRunForm(sf, models);
+}
+
+// Pick the second run for a diff (spec 09 §5): same brand+storefront, both finished.
+function openCompareModal(runs, slug) {
+  const base = runs.find((r) => r.runId === slug);
+  if (!base) return;
+  const candidates = runs.filter((r) =>
+    r.runId !== slug && r.phase === "done" && r.brand === base.brand && r.country === base.country);
+  const modal = openModal(`
+    <h2>Compare "${esc(base.brand)}" runs</h2>
+    ${candidates.length ? `
+      <p class="muted small">Pick the run to diff against — older one becomes the baseline.</p>
+      <div class="cmp-pick">${candidates.map((r) => `
+        <button class="cmp-cand" data-slug="${esc(r.runId)}">
+          <span class="mono small">${esc(r.runId.slice(0, 16))}…</span>
+          <span class="muted small">${new Date(r.updatedAt).toLocaleString()} · ${r.sampleCount} keyphrases</span>
+        </button>`).join("")}</div>`
+      : `<p class="muted">No other finished run of ${esc(base.brand)} · ${esc((base.country || "").toUpperCase())} yet. Re-run the same app later and diff them — that's the pay-per-run answer to tracking subscriptions.</p>`}`);
+  modal.querySelectorAll(".cmp-cand").forEach((b) =>
+    b.addEventListener("click", () => {
+      const other = runs.find((r) => r.runId === b.dataset.slug);
+      const [a, bRun] = new Date(other.updatedAt) <= new Date(base.updatedAt) ? [other, base] : [base, other];
+      document.getElementById("modal-overlay")?.remove();
+      location.hash = `#/compare/${encodeURIComponent(a.runId)}/${encodeURIComponent(bRun.runId)}`;
+    }));
 }
 
 function toggleNewRun(sf, models) {
@@ -548,8 +637,22 @@ async function viewRun(slug) {
   if (!shell || shell.dataset.slug !== slug) {
     lastTopSig = ""; lastRunData = null;
     app.innerHTML = `<div id="run-shell" data-slug="${esc(slug)}"><div id="run-top"></div><div id="tab-body"><div class="loading">Loading…</div></div></div>`;
+    await loadAnnotations(slug, true);
+    try { runsForCompare = (await api("/api/runs")).runs || []; } catch { runsForCompare = []; }
   }
   await updateRun(slug);
+}
+
+/** STRICTLY OLDER `done` run of the same brand+country (spec 09 §5 "Compare with previous").
+ *  Without the cutoff the oldest run would offer to "compare with previous" against a NEWER
+ *  run and every diff sign would come out inverted. */
+function previousRunFor(slug, config, beforeIso) {
+  const cutoff = beforeIso ? new Date(beforeIso).getTime() : Infinity;
+  return runsForCompare
+    .filter((r) => r.runId !== slug && r.phase === "done" && !r.paused &&
+      r.brand === config.brand && r.country === config.country &&
+      new Date(r.updatedAt).getTime() < cutoff)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0] || null;
 }
 
 async function updateRun(slug) {
@@ -597,6 +700,8 @@ function renderRunTop(slug, data) {
           ${canResume ? `<button class="primary" id="btn-resume">▶ Resume</button>` : ""}
           ${canStop ? `<button id="btn-stop">⏹ Stop &amp; assemble</button>` : ""}
           ${state.phase === "done" ? `<button id="btn-reassemble">↻ Reassemble</button>` : ""}
+          ${state.phase === "done" ? `<button id="btn-report" title="Self-contained HTML report — send it to anyone">⬇ Export report</button>` : ""}
+          ${state.phase === "done" && previousRunFor(slug, config, state.updatedAt) ? `<button id="btn-compare" title="Diff against the previous run of this app">⇄ Compare with previous</button>` : ""}
         </div>
       </div>
       <div class="stepper" style="margin:10px 0">
@@ -619,9 +724,15 @@ function renderRunTop(slug, data) {
     <div class="tabs">
       <a href="javascript:void 0" data-tab="overview" class="${runTab === "overview" ? "active" : ""}">Overview</a>
       <a href="javascript:void 0" data-tab="keywords" class="${runTab === "keywords" ? "active" : ""}">Keywords</a>
+      <a href="javascript:void 0" data-tab="competitors" class="${runTab === "competitors" ? "active" : ""}">Competitors</a>
       <a href="javascript:void 0" data-tab="assembly" class="${runTab === "assembly" ? "active" : ""}">Assembly</a>
     </div>`;
 
+  top.querySelector("#btn-report")?.addEventListener("click", () => exportRun(slug, "html"));
+  top.querySelector("#btn-compare")?.addEventListener("click", () => {
+    const prev = previousRunFor(slug, config, state.updatedAt);
+    if (prev) location.hash = `#/compare/${encodeURIComponent(prev.runId)}/${encodeURIComponent(slug)}`;
+  });
   top.querySelector("#btn-pause")?.addEventListener("click", () => control(slug, "pause"));
   top.querySelector("#btn-resume")?.addEventListener("click", () => control(slug, "resume"));
   top.querySelector("#btn-credit-topup")?.addEventListener("click", openTopup);
@@ -703,6 +814,8 @@ async function renderTab(slug, runData) {
   if (!body || !runData) return;
   const active = document.activeElement;
   if (active && body.contains(active) && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return;
+  // An open export menu would be snapped shut by the ~2s live refresh — wait it out.
+  if (body.querySelector(".export-menu[open]")) return;
   const wrap0 = body.querySelector(".table-wrap");
   const scroll = wrap0 ? { left: wrap0.scrollLeft, top: wrap0.scrollTop } : null;
   const h = body.offsetHeight;
@@ -710,6 +823,7 @@ async function renderTab(slug, runData) {
   try {
     if (runTab === "overview") await renderOverview(body, slug, runData);
     else if (runTab === "keywords") await renderKeywords(body, slug, runData);
+    else if (runTab === "competitors") await renderCompetitors(body, slug, runData);
     else if (runTab === "assembly") renderAssembly(body, slug, runData);
   } finally {
     body.style.minHeight = "";
@@ -717,70 +831,310 @@ async function renderTab(slug, runData) {
   }
 }
 
+// Overview = run analytics (spec 09 §3). Everything below is drawn client-side from ONE
+// keywords-lite query + the run snapshot: no chart libraries, hand-rolled inline SVG,
+// brand palette only (blue = data, orange = highlight, red = zeroed/error).
+
 async function renderOverview(body, slug, data) {
-  const kw = await api(`/api/runs/${encodeURIComponent(slug)}/keywords?sort=score&dir=desc`);
-  const top20 = kw.items.filter((k) => (k.metrics.score ?? 0) > 0).slice(0, 20);
-  const median = top20.length ? top20[Math.floor(top20.length / 2)].metrics.score : 0;
-  const errors = kw.items.filter((k) => k.status === "error").length;
+  const lite = await api(`/api/runs/${encodeURIComponent(slug)}/keywords-lite`);
+  const items = lite.items || [];
+
+  const scored = items.filter((i) => (i.score ?? 0) > 0).map((i) => i.score).sort((a, b) => b - a);
+  const top20 = scored.slice(0, 20);
+  const medianTop20 = top20.length ? top20[Math.floor(top20.length / 2)] : 0;
+  const errors = items.filter((i) => i.status === "error").length;
   const cov = data.assembly?.coverage;
-  const buckets = new Array(10).fill(0);
-  let histTotal = 0;
-  for (const k of kw.items) {
-    const s = k.metrics.score;
-    if (s == null || s <= 0) continue;
-    buckets[Math.min(9, Math.floor(s / 10))]++; histTotal++;
-  }
-  const maxB = Math.max(1, ...buckets);
+  const credits = data.creditsSpent ?? 0;
+
+  const findings = {
+    brand: items.filter((i) => i.brandQuery).length,
+    phantom: items.filter((i) => i.unsuggested).length,
+    degraded: items.filter((i) => i.degraded).length,
+  };
+
+  const feedHtml = `
+    <div class="panel"><h2>Live feed</h2>
+      <div class="feed feed-compact" id="feed">${data.events.map((e) => `<div><span class="ts">${new Date(e.ts).toLocaleTimeString()}</span>${esc(e.kind)} ${esc(e.text)}</div>`).join("") || '<div class="muted">no events yet</div>'}</div>
+    </div>`;
+
+  const hasCharts = items.some((i) => i.P != null || i.D != null || (i.score ?? 0) > 0);
+
   body.innerHTML = `
     <div class="tiles">
       <div class="tile"><div class="value">${data.sampleCount}</div><div class="label">sample size</div></div>
-      <div class="tile"><div class="value">${median ?? 0}</div><div class="label">median Score, top 20</div></div>
+      <div class="tile"><div class="value">${medianTop20}</div><div class="label">median Score, top 20</div></div>
       <div class="tile"><div class="value">${cov ? Math.round(cov.coveredShare * 100) + "%" : "—"}</div><div class="label">Score covered</div></div>
+      <div class="tile"><div class="value">${credits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div><div class="label">credits spent on this run</div></div>
       <div class="tile"><div class="value">${errors}</div><div class="label">errors</div></div>
     </div>
-    <div class="panel"><h2>Live feed</h2>
-      <div class="feed" id="feed">${data.events.map((e) => `<div><span class="ts">${new Date(e.ts).toLocaleTimeString()}</span>${esc(e.kind)} ${esc(e.text)}</div>`).join("") || '<div class="muted">no events yet</div>'}</div>
-    </div>
-    ${histTotal > 0 ? `
-    <div class="panel"><h2>Score distribution (${histTotal} keywords with Score > 0)</h2>
-      <div class="hist">${buckets.map((b) => `<div class="bar" style="height:${(b / maxB) * 100}%"><span>${b || ""}</span></div>`).join("")}</div>
-      <div class="hist-labels">${buckets.map((_, i) => `<div>${i * 10}–${i * 10 + 9}</div>`).join("")}</div>
-    </div>` : ""}`;
+    ${findingsStrip(findings)}
+    ${hasCharts ? `
+      <div class="ov-grid">
+        <div class="panel">
+          <h2>Opportunity map</h2>
+          ${svgScatter(items)}
+          <p class="chart-caption">Each dot is a probed phrase: up-left = high demand, low difficulty. Orange = selected for metadata, red = Score zeroed. Click a dot to open it in the table.${findings.degraded ? ` ${findings.degraded} phrase${findings.degraded > 1 ? "s" : ""} measured without P — suggestions endpoint was down.` : ""}</p>
+        </div>
+        <div class="ov-side">
+          <div class="panel">
+            <h2>Pipeline funnel</h2>
+            ${funnelChart(items)}
+          </div>
+          <div class="panel">
+            <h2>R distribution</h2>
+            ${rDistChart(items)}
+            <p class="chart-caption">Relevance verdicts by the judge: 3 core · 2 adjacent · 1 tangent · 0 excluded.</p>
+          </div>
+        </div>
+      </div>
+      ${histogramChart(items)}
+      ${sourcesChart(items)}
+      ${timelineChart(items, data.state.createdAt, data.events)}
+    ` : `
+      <div class="panel"><p class="muted">Charts appear as keyphrases verify — the engine is still warming up.</p></div>
+    `}
+    ${feedHtml}`;
+
+  // Findings cards → pre-filtered Keywords tab (spec 09 §4).
+  body.querySelectorAll("[data-insight]").forEach((el) =>
+    el.addEventListener("click", () => {
+      kwQuery = { ...kwQuery, status: "", source: "", q: "", page: 0, insight: el.dataset.insight };
+      runTab = "keywords"; lastTopSig = "";
+      renderRunTop(slug, lastRunData); renderTab(slug, lastRunData);
+    }));
+  // Scatter dots → Keywords tab with the phrase prefilled.
+  body.querySelector(".svg-scatter")?.addEventListener("click", (e) => {
+    const dot = e.target.closest("[data-kw]");
+    if (!dot) return;
+    kwQuery = { ...kwQuery, status: "", source: "", insight: "", q: dot.dataset.kw, page: 0 };
+    runTab = "keywords"; lastTopSig = "";
+    renderRunTop(slug, lastRunData); renderTab(slug, lastRunData);
+  });
+
   const feed = document.getElementById("feed");
   if (feed) feed.scrollTop = feed.scrollHeight;
+}
+
+// --- Findings strip (spec 09 §4): what the engine caught, first row of Overview ---
+
+function findingsStrip(f) {
+  const card = (insight, n, title, text) => `
+    <div class="tile finding" data-insight="${insight}" role="button" tabindex="0" title="Show these keywords">
+      <div class="value">${n}</div><div class="flabel">${title}</div>
+      <div class="label">${text}</div>
+    </div>`;
+  return `<div class="tiles findings">
+    ${card("brandQuery", f.brand, "dead-brand traps caught", "phrases that autocomplete as demand but are just names of weak apps — Score zeroed, evidence in the row")}
+    ${card("unsuggested", f.phantom, "phantom phrases filtered", "never appeared in autocomplete at any prefix — no demand, no budget spent on them")}
+    ${f.degraded ? card("degraded", f.degraded, "degraded probes disclosed", "measured while the suggestions endpoint was down — marked, never silently guessed") : ""}
+  </div>`;
+}
+
+// --- P×D opportunity map (spec 09 §3 centerpiece) ---
+
+function svgScatter(items) {
+  const pts = items.filter((i) => i.P != null && i.D != null && !i.degraded);
+  const W = 680, H = 380, pad = { l: 44, r: 14, t: 14, b: 40 };
+  const w = W - pad.l - pad.r, h = H - pad.t - pad.b;
+  const X = (d) => pad.l + (d / 100) * w;
+  const Y = (p) => pad.t + (1 - p / 100) * h;
+  const dots = pts.map((i) => {
+    const zero = (i.score ?? 0) <= 0;
+    const fill = zero ? "var(--red)" : i.status === "selected" ? "var(--orange)" : "var(--accent)";
+    return `<circle data-kw="${esc(i.keyword)}" cx="${X(i.D).toFixed(1)}" cy="${Y(i.P).toFixed(1)}" r="3.2" fill="${fill}" fill-opacity="${zero ? 0.35 : 0.85}"><title>${esc(i.keyword)} — P ${i.P} · D ${i.D}${i.score != null ? ` · score ${i.score}` : ""}</title></circle>`;
+  }).join("");
+  return `<svg class="svg-chart svg-scatter" viewBox="0 0 ${W} ${H}" role="img" aria-label="Opportunity map: P versus D scatter of ${pts.length} phrases">
+    <rect x="${pad.l}" y="${pad.t}" width="${w / 2}" height="${h / 2}" fill="var(--orange)" fill-opacity="0.07"/>
+    <text x="${pad.l + 8}" y="${pad.t + 18}" font-size="12" font-weight="700" fill="var(--orange-deep)">gold</text>
+    <rect x="${pad.l}" y="${pad.t}" width="${w}" height="${h}" fill="none" stroke="var(--border)" stroke-width="2"/>
+    <line x1="${X(50)}" y1="${pad.t}" x2="${X(50)}" y2="${pad.t + h}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 4" opacity="0.45"/>
+    <line x1="${pad.l}" y1="${Y(50)}" x2="${pad.l + w}" y2="${Y(50)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 4" opacity="0.45"/>
+    ${dots}
+    <text x="${pad.l + w / 2}" y="${H - 8}" font-size="11" fill="var(--muted)" text-anchor="middle">D — harder →</text>
+    <text x="12" y="${pad.t + h / 2}" font-size="11" fill="var(--muted)" text-anchor="middle" transform="rotate(-90 12 ${pad.t + h / 2})">P — more demand ↑</text>
+  </svg>`;
+}
+
+// --- horizontal bar row (shared by funnel / R dist / sources) ---
+
+function barLine(label, n, max, cls) {
+  const pct = max > 0 ? Math.max(n > 0 ? 2 : 0, (n / max) * 100) : 0;
+  return `<div class="bar-line"><span class="lbl">${label}</span><div class="track"><div class="fill ${cls || ""}" style="width:${pct}%"></div></div><span class="n">${n}</span></div>`;
+}
+
+function funnelChart(items) {
+  const inSet = (sts) => items.filter((i) => sts.includes(i.status)).length;
+  const candidates = items.length;
+  const verified = inSet(["verified", "rated", "selected", "bench"]);
+  const rated = inSet(["rated", "selected", "bench"]);
+  const selected = inSet(["selected"]);
+  const excluded = inSet(["excluded"]);
+  const errored = inSet(["error"]);
+  return `
+    ${barLine("candidates", candidates, candidates)}
+    ${barLine("verified", verified, candidates)}
+    ${barLine("rated", rated, candidates)}
+    ${barLine("selected", selected, candidates)}
+    ${excluded ? barLine("excluded", excluded, candidates, "red") : ""}
+    ${errored ? barLine("error", errored, candidates, "mutedfill") : ""}`;
+}
+
+function rDistChart(items) {
+  const withR = items.filter((i) => i.R != null);
+  const count = (r) => withR.filter((i) => i.R === r).length;
+  const counts = [3, 2, 1, 0].map(count);
+  const max = Math.max(1, ...counts);
+  const cls = { 3: "", 2: "", 1: "mutedfill", 0: "red" };
+  return [3, 2, 1, 0].map((r, idx) => barLine(`R = ${r}`, counts[idx], max, cls[r])).join("");
+}
+
+// --- Score histogram with median marker ---
+
+function histogramChart(items) {
+  const buckets = new Array(10).fill(0);
+  const scores = [];
+  for (const i of items) {
+    if (i.score == null || i.score <= 0) continue;
+    buckets[Math.min(9, Math.floor(i.score / 10))]++;
+    scores.push(i.score);
+  }
+  if (!scores.length) return "";
+  scores.sort((a, b) => a - b);
+  const med = scores[Math.floor(scores.length / 2)];
+  const maxB = Math.max(1, ...buckets);
+  return `
+    <div class="panel"><h2>Score distribution (${scores.length} keywords with Score &gt; 0)</h2>
+      <div class="hist-wrap">
+        <div class="hist">${buckets.map((b) => `<div class="bar" style="height:${(b / maxB) * 100}%"><span>${b || ""}</span></div>`).join("")}</div>
+        <div class="hist-median" style="left:${Math.min(99, med)}%"><span>median ${med}</span></div>
+      </div>
+      <div class="hist-labels">${buckets.map((_, i) => `<div>${i * 10}–${i * 10 + 9}</div>`).join("")}</div>
+    </div>`;
+}
+
+// --- Sources × outcome: which discovery strategy earns its keep ---
+
+function sourcesChart(items) {
+  const sources = ["seed", "suggest", "competitor", "expansion"];
+  const rows = sources.map((s) => {
+    const of = items.filter((i) => i.source === s);
+    const scored = of.filter((i) => (i.score ?? 0) > 0);
+    const avg = scored.length ? Math.round(scored.reduce((sum, i) => sum + i.score, 0) / scored.length) : 0;
+    return { s, total: of.length, avg };
+  }).filter((r) => r.total > 0);
+  if (!rows.length) return "";
+  const maxTotal = Math.max(...rows.map((r) => r.total));
+  return `
+    <div class="panel"><h2>Where keywords come from — and what they're worth</h2>
+      ${rows.map((r) => `
+        <div class="src-row">
+          <span class="lbl">${r.s}</span>
+          <div class="src-bars">
+            ${barLine("found", r.total, maxTotal)}
+            ${barLine("avg score", r.avg, 100, "orangefill")}
+          </div>
+        </div>`).join("")}
+      <p class="chart-caption">"found" = phrases contributed by the source; "avg score" = their mean Score (0–100) once verified.</p>
+    </div>`;
+}
+
+// --- Verification timeline: cumulative verified keyphrases over wall-clock ---
+
+function timelineChart(items, createdAt, events) {
+  const times = items.filter((i) => i.probedAt).map((i) => Date.parse(i.probedAt)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (times.length < 2) return "";
+  const t0 = Math.min(Date.parse(createdAt) || times[0], times[0]);
+  const t1 = times[times.length - 1];
+  if (t1 <= t0) return "";
+  const W = 680, H = 150, pad = { l: 40, r: 12, t: 10, b: 24 };
+  const w = W - pad.l - pad.r, h = H - pad.t - pad.b;
+  const X = (t) => pad.l + ((t - t0) / (t1 - t0)) * w;
+  const Y = (n) => pad.t + (1 - n / times.length) * h;
+  const pts = [`${X(t0).toFixed(1)},${Y(0).toFixed(1)}`];
+  times.forEach((t, i) => pts.push(`${X(t).toFixed(1)},${Y(i + 1).toFixed(1)}`));
+  const fmt = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  // Paused stretches from the event feed (spec 09 §3): yellow-soft bands, pause → resume.
+  const PAUSE = new Set(["⏸", "💳", "⛔"]), RESUME = new Set(["▶"]);
+  const bands = [];
+  let open = null;
+  for (const e of events || []) {
+    const t = Date.parse(e.ts);
+    if (!Number.isFinite(t)) continue;
+    if (PAUSE.has(e.kind) && open == null) open = t;
+    else if (RESUME.has(e.kind) && open != null) { bands.push([open, t]); open = null; }
+  }
+  if (open != null) bands.push([open, t1]);
+  const bandRects = bands
+    .map(([a, b]) => [Math.max(a, t0), Math.min(b, t1)])
+    .filter(([a, b]) => b > a)
+    .map(([a, b]) => `<rect x="${X(a).toFixed(1)}" y="${pad.t}" width="${Math.max(2, X(b) - X(a)).toFixed(1)}" height="${h}" fill="#FFE9A8" fill-opacity="0.75"><title>paused ${fmt(a)}–${fmt(b)}</title></rect>`)
+    .join("");
+
+  return `
+    <div class="panel"><h2>Verification pace</h2>
+      <svg class="svg-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative verified keyphrases over time">
+        ${bandRects}
+        <rect x="${pad.l}" y="${pad.t}" width="${w}" height="${h}" fill="none" stroke="var(--border)" stroke-width="2"/>
+        <polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
+        <text x="${pad.l}" y="${H - 6}" font-size="11" fill="var(--muted)">${fmt(t0)}</text>
+        <text x="${pad.l + w}" y="${H - 6}" font-size="11" fill="var(--muted)" text-anchor="end">${fmt(t1)}</text>
+        <text x="${pad.l - 6}" y="${pad.t + 10}" font-size="11" fill="var(--muted)" text-anchor="end">${times.length}</text>
+        <text x="${pad.l - 6}" y="${pad.t + h}" font-size="11" fill="var(--muted)" text-anchor="end">0</text>
+      </svg>
+      <p class="chart-caption">Cumulative probed phrases over the run's wall-clock.${bands.length ? " Yellow bands = paused stretches." : ""}</p>
+    </div>`;
 }
 
 // --- Keywords ---
 
 async function renderKeywords(body, slug, runData) {
+  await loadAnnotations(slug);
   const params = new URLSearchParams({ sort: kwQuery.sort, dir: kwQuery.dir, page: String(kwQuery.page) });
   if (kwQuery.q) params.set("q", kwQuery.q);
   if (kwQuery.status) params.set("status", kwQuery.status);
   if (kwQuery.source) params.set("source", kwQuery.source);
+  if (kwQuery.insight) params.set("insight", kwQuery.insight);
   const kw = await api(`/api/runs/${encodeURIComponent(slug)}/keywords?${params}`);
 
   const scoreClass = (s) => s == null ? "" : s >= 50 ? "score-hi" : s >= 25 ? "score-mid" : s >= 1 ? "score-low" : "score-zero";
   const sortArrow = (col) => kwQuery.sort === col ? (kwQuery.dir === "desc" ? " ↓" : " ↑") : "";
   const th = (col, label, num) => `<th data-sort="${col}" class="${num ? "num" : ""}">${label}${sortArrow(col)}</th>`;
+  const canExport = (runData?.sampleCount ?? 0) > 0;
+  const insights = [["", "all insights"], ["pinned", "★ pinned"], ["brandQuery", "brand traps"], ["unsuggested", "phantom"], ["degraded", "degraded"]];
 
   body.innerHTML = `
     <div class="panel">
       <div class="row">
         <input id="kw-q" placeholder="filter by text" style="max-width:220px" value="${esc(kwQuery.q)}">
-        <select id="kw-status" style="max-width:170px"><option value="">all statuses</option>${["candidate", "verified", "rated", "selected", "bench", "excluded", "error"].map((s) => `<option ${kwQuery.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
-        <select id="kw-source" style="max-width:170px"><option value="">all sources</option>${["seed", "suggest", "competitor", "expansion"].map((s) => `<option ${kwQuery.source === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <select id="kw-status" style="max-width:160px"><option value="">all statuses</option>${["candidate", "verified", "rated", "selected", "bench", "excluded", "error"].map((s) => `<option ${kwQuery.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <select id="kw-source" style="max-width:150px"><option value="">all sources</option>${["seed", "suggest", "competitor", "expansion"].map((s) => `<option ${kwQuery.source === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+        <select id="kw-insight" style="max-width:150px">${insights.map(([v, l]) => `<option value="${v}" ${kwQuery.insight === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <span class="muted small">${kw.total} keywords</span>
+        <span style="flex:1"></span>
+        ${canExport ? `
+        <details class="export-menu" id="export-menu">
+          <summary>⬇ Export</summary>
+          <div class="export-items">
+            <button data-fmt="csv">keywords.csv <span class="muted small">spreadsheet</span></button>
+            <button data-fmt="md">report.md <span class="muted small">summary</span></button>
+            <button data-fmt="json">run.json <span class="muted small">full data</span></button>
+            <button data-fmt="html">report.html <span class="muted small">shareable</span></button>
+          </div>
+        </details>` : `<button disabled title="Exports appear once keyphrases verify">⬇ Export</button>`}
       </div>
       <div class="table-wrap">
       <table>
         <thead><tr>
+          <th title="Pin to your shortlist (stays on this Mac)">★</th>
           ${th("keyword", "Keyword")}${th("score", "Score", true)}${th("P", "P", true)}${th("D", "D", true)}${th("R", "R", true)}
           ${th("status", "Status")}<th>Source</th>${th("childCount", "Children", true)}<th>R reason</th>
         </tr></thead>
         <tbody>
           ${kw.items.map((k) => `
             <tr class="expandable" data-kw="${esc(k.keyword)}">
-              <td class="mono">${esc(k.keyword)}${k.speculative ? ' <span class="badge violet">spec</span>' : ""}${k.degraded ? ' <span class="badge yellow">degraded</span>' : ""}${k.metrics.brandQuery ? ' <span class="badge red">brand</span>' : ""}</td>
+              <td class="pin-cell"><button class="pin-btn ${isPinned(k.keyword) ? "on" : ""}" data-pin="${esc(k.keyword)}" title="${isPinned(k.keyword) ? "Unpin" : "Pin to shortlist"}">${isPinned(k.keyword) ? "★" : "☆"}</button></td>
+              <td class="mono">${esc(k.keyword)}${k.speculative ? ' <span class="badge violet">spec</span>' : ""}${k.degraded ? ' <span class="badge yellow">degraded</span>' : ""}${k.metrics.brandQuery ? ' <span class="badge red">brand</span>' : ""}${runAnnotations[k.keyword]?.note ? ' <span class="badge orange" title="has a note">✎</span>' : ""}</td>
               <td class="num ${scoreClass(k.metrics.score)}">${k.metrics.score ?? ""}</td>
               <td class="num">${k.degraded ? "—" : (k.metrics.P ?? "")}</td>
               <td class="num">${k.metrics.D ?? ""}</td>
@@ -790,7 +1144,7 @@ async function renderKeywords(body, slug, runData) {
               <td class="num">${k.metrics.childCount || ""}</td>
               <td title="${esc(k.metrics.reason ?? "")}" class="small muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(k.metrics.reason ?? "")}</td>
             </tr>
-            ${expandedKeyword === k.keyword ? `<tr class="detail"><td colspan="9" id="kw-detail">Loading…</td></tr>` : ""}
+            ${expandedKeyword === k.keyword ? `<tr class="detail"><td colspan="10" id="kw-detail">${kwDetailCache.kw === k.keyword ? kwDetailCache.html : "Loading…"}</td></tr>` : ""}
           `).join("")}
         </tbody>
       </table>
@@ -812,10 +1166,26 @@ async function renderKeywords(body, slug, runData) {
   body.querySelector("#kw-q").addEventListener("change", (e) => { kwQuery.q = e.target.value; kwQuery.page = 0; renderKeywords(body, slug, runData); });
   body.querySelector("#kw-status").addEventListener("change", (e) => { kwQuery.status = e.target.value; kwQuery.page = 0; renderKeywords(body, slug, runData); });
   body.querySelector("#kw-source").addEventListener("change", (e) => { kwQuery.source = e.target.value; kwQuery.page = 0; renderKeywords(body, slug, runData); });
+  body.querySelector("#kw-insight").addEventListener("change", (e) => { kwQuery.insight = e.target.value; kwQuery.page = 0; renderKeywords(body, slug, runData); });
   body.querySelector("#kw-prev")?.addEventListener("click", () => { kwQuery.page--; renderKeywords(body, slug, runData); });
   body.querySelector("#kw-next")?.addEventListener("click", () => { kwQuery.page++; renderKeywords(body, slug, runData); });
+  body.querySelectorAll(".export-items button").forEach((b) =>
+    b.addEventListener("click", () => {
+      body.querySelector("#export-menu")?.removeAttribute("open");
+      exportRun(slug, b.dataset.fmt);
+    }));
+  body.querySelectorAll(".pin-btn").forEach((b) =>
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const keyword = b.dataset.pin;
+      try {
+        await saveAnnotation(slug, keyword, { pinned: !isPinned(keyword) });
+        renderKeywords(body, slug, runData);
+      } catch (err) { toast(`✗ ${esc(err.message)}`, true); }
+    }));
   body.querySelectorAll("tr.expandable").forEach((tr) =>
-    tr.addEventListener("click", () => {
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".pin-btn")) return;
       expandedKeyword = expandedKeyword === tr.dataset.kw ? null : tr.dataset.kw;
       renderKeywords(body, slug, runData);
     }));
@@ -823,14 +1193,30 @@ async function renderKeywords(body, slug, runData) {
   if (expandedKeyword) {
     const cell = document.getElementById("kw-detail");
     if (cell) {
-      try {
-        const { item } = await api(`/api/runs/${encodeURIComponent(slug)}/keywords/${encodeURIComponent(expandedKeyword)}`);
-        if (!item) { cell.textContent = "keyword not found"; return; }
-        cell.innerHTML = renderKeywordDetail(item, slug);
+      const keyword = expandedKeyword;
+      const bindDetail = () => {
         cell.querySelector(".btn-exclude")?.addEventListener("click", async () => {
-          if (confirm(`Exclude "${item.keyword}" from the run?`)) await control(slug, "exclude", { keyword: item.keyword });
+          if (confirm(`Exclude "${keyword}" from the run?`)) await control(slug, "exclude", { keyword });
         });
-      } catch (e) { cell.textContent = e.message; }
+        // Note autosave on blur (spec 09 §7) — local file only, no cloud traffic.
+        const noteEl = cell.querySelector("#kw-note");
+        noteEl?.addEventListener("blur", async () => {
+          const state = cell.querySelector("#kw-note-state");
+          try {
+            await saveAnnotation(slug, keyword, { note: noteEl.value });
+            if (state) state.textContent = "saved ✓";
+          } catch (err) { if (state) state.textContent = `not saved: ${err.message}`; }
+        });
+        noteEl?.addEventListener("click", (e) => e.stopPropagation());
+      };
+      if (kwDetailCache.kw === keyword) bindDetail(); // cached render is already in the cell
+      try {
+        const { item } = await api(`/api/runs/${encodeURIComponent(slug)}/keywords/${encodeURIComponent(keyword)}`);
+        if (!item) { cell.textContent = "keyword not found"; return; }
+        kwDetailCache = { kw: item.keyword, html: renderKeywordDetail(item, slug) };
+        cell.innerHTML = kwDetailCache.html;
+        bindDetail();
+      } catch (e) { if (kwDetailCache.kw !== keyword) cell.textContent = e.message; }
     }
   }
 }
@@ -859,7 +1245,170 @@ function renderKeywordDetail(k, slug) {
           <td><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="progress" style="width:120px;flex:none"><div style="width:${a.strength}%"></div></div><span class="num">${a.strength}</span></div></td></tr>`).join("")}
         </tbody></table></div>` : ""}
     ${k.error ? `<p class="check-fail">Error: ${esc(k.error)}</p>` : ""}
+    <div class="note-box">
+      <label for="kw-note">Your note <span class="muted small">(private — stays on this computer)</span></label>
+      <textarea id="kw-note" maxlength="500" placeholder="e.g. try in the next title iteration…">${esc(runAnnotations[k.keyword]?.note ?? "")}</textarea>
+      <span class="muted small" id="kw-note-state">autosaves when you click away</span>
+    </div>
     <p class="muted small">status: ${k.status} · source: ${k.source}${k.type ? ` · type: ${k.type}` : ""} · added: ${new Date(k.addedAt).toLocaleString()}${k.probedAt ? ` · probed: ${new Date(k.probedAt).toLocaleString()}` : ""}</p>`;
+}
+
+// --- Competitors (spec 09 §2): the run's SERP top-10 landscape, aggregated server-side ---
+
+async function renderCompetitors(body, slug, runData) {
+  const comp = await api(`/api/runs/${encodeURIComponent(slug)}/competitors`);
+  const items = comp.items || [];
+  const s = comp.summary || { distinctApps: 0, medianStrength: null, openDoors: 0, keywordsWithSerp: 0 };
+
+  if (!items.length) {
+    body.innerHTML = `<div class="panel"><h2>Competitors</h2>
+      <p class="muted">The landscape appears once keywords get their search-results check (D). Nothing measured yet.</p></div>`;
+    return;
+  }
+
+  const compKey = (c) => `${c.trackId ?? ""}:${c.trackName}`;
+  body.innerHTML = `
+    <div class="tiles">
+      <div class="tile"><div class="value">${s.distinctApps}</div><div class="label">distinct apps seen in top-10s</div></div>
+      <div class="tile"><div class="value">${s.medianStrength ?? "—"}</div><div class="label">median top-10 strength — how hard this niche is</div></div>
+      <div class="tile"><div class="value">${s.openDoors}</div><div class="label">open doors — top-10 slots held by weak apps (&lt;40)</div></div>
+    </div>
+    <div class="panel">
+      <div class="row spread"><h2>Who you're up against</h2><span class="muted small">across ${s.keywordsWithSerp} measured keywords</span></div>
+      <p class="chart-caption" style="margin:0 0 10px">Apps competing in the top-10s of this run's keyword sample — your niche as measured, not a market-share study.</p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th class="num">#</th><th>App</th><th>Overlap</th><th class="num">Avg pos</th><th>Avg strength</th><th>Where it's strong</th><th class="num">Weak spots</th>
+        </tr></thead>
+        <tbody>
+          ${items.map((c, i) => `
+            <tr class="expandable" data-comp="${esc(compKey(c))}">
+              <td class="num">${i + 1}</td>
+              <td><b>${esc(c.trackName)}</b></td>
+              <td>
+                <div class="row" style="gap:8px;flex-wrap:nowrap">
+                  <div class="progress" style="width:90px;flex:none"><div style="width:${Math.round(c.share * 100)}%"></div></div>
+                  <span class="small muted">${c.keywords} kw · ${Math.round(c.share * 100)}%</span>
+                </div>
+              </td>
+              <td class="num">${c.avgPosition}</td>
+              <td>
+                <div class="row" style="gap:8px;flex-wrap:nowrap">
+                  <div class="progress" style="width:90px;flex:none"><div style="width:${c.avgStrength}%"></div></div>
+                  <span class="num">${c.avgStrength}</span>
+                </div>
+              </td>
+              <td>${c.bestKeywords.length ? c.bestKeywords.map((k) => `<span class="badge gray">${esc(k)}</span>`).join(" ") : '<span class="muted small">—</span>'}</td>
+              <td class="num">${c.weakSpots ? `<span class="badge orange">${c.weakSpots}</span>` : '<span class="muted">0</span>'}</td>
+            </tr>
+            ${expandedCompetitor === compKey(c) ? `
+            <tr class="detail"><td colspan="7">
+              <h3>${esc(c.trackName)} — shared keywords</h3>
+              <div class="table-wrap"><table>
+                <thead><tr><th>Keyword</th><th class="num">Their position</th><th class="num">Their strength</th><th class="num">Keyword score</th></tr></thead>
+                <tbody>${c.appearances.map((a) => `
+                  <tr><td class="mono">${esc(a.keyword)}</td><td class="num">#${a.position}</td><td class="num">${a.strength}</td><td class="num">${a.score ?? ""}</td></tr>`).join("")}
+                </tbody></table></div>
+            </td></tr>` : ""}
+          `).join("")}
+        </tbody>
+      </table>
+      </div>
+    </div>`;
+
+  body.querySelectorAll("tr.expandable[data-comp]").forEach((tr) =>
+    tr.addEventListener("click", () => {
+      expandedCompetitor = expandedCompetitor === tr.dataset.comp ? null : tr.dataset.comp;
+      renderCompetitors(body, slug, runData);
+    }));
+}
+
+// ============================================================
+// Screen: run diff (spec 09 §5) — pure client-side join of two keywords-lite lists
+// ============================================================
+
+async function viewCompare(aId, bId) {
+  currentSlug = null;
+  app.innerHTML = `<div class="loading">Comparing…</div>`;
+  const [snapA, snapB, liteA, liteB] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(aId)}`),
+    api(`/api/runs/${encodeURIComponent(bId)}`),
+    api(`/api/runs/${encodeURIComponent(aId)}/keywords-lite`),
+    api(`/api/runs/${encodeURIComponent(bId)}/keywords-lite`),
+  ]);
+  if (!snapA || !snapB) {
+    app.innerHTML = `<div class="banner error">One of the runs was not found. <a href="#/runs">Back to runs</a></div>`;
+    return;
+  }
+  const cfgA = snapA.config, cfgB = snapB.config;
+  if (cfgA.country !== cfgB.country || cfgA.semanticLanguage !== cfgB.semanticLanguage) {
+    app.innerHTML = `
+      <div class="row spread"><h1>Compare runs</h1><a href="#/runs">← Runs</a></div>
+      <div class="banner error">These runs use different storefronts or semantic languages (${esc(cfgA.country)}/${esc(cfgA.semanticLanguage)} vs ${esc(cfgB.country)}/${esc(cfgB.semanticLanguage)}) — apples to apples only.</div>`;
+    return;
+  }
+
+  const mapA = new Map(liteA.items.map((i) => [i.keyword, i]));
+  const mapB = new Map(liteB.items.map((i) => [i.keyword, i]));
+  const movers = [];
+  const lost = [];
+  for (const [kw, a] of mapA) {
+    const b = mapB.get(kw);
+    if (b) movers.push({ kw, a, b, delta: (b.score ?? 0) - (a.score ?? 0) });
+    else lost.push(a);
+  }
+  const gained = liteB.items.filter((i) => !mapA.has(i.keyword));
+  movers.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+
+  const medTop20 = (lite) => {
+    const s = lite.items.map((i) => i.score ?? 0).filter((v) => v > 0).sort((a, b) => b - a).slice(0, 20);
+    return s.length ? s[Math.floor(s.length / 2)] : 0;
+  };
+  const dMed = medTop20(liteB) - medTop20(liteA);
+  const dCredits = (snapB.creditsSpent ?? 0) - (snapA.creditsSpent ?? 0);
+  const when = (snap) => new Date(snap.state.updatedAt).toLocaleDateString();
+  const deltaChip = (d, digits) => {
+    const v = digits ? d.toFixed(digits) : d;
+    return d > 0 ? `<span class="delta up">+${v}</span>` : d < 0 ? `<span class="delta down">${v}</span>` : `<span class="delta zero">0</span>`;
+  };
+  const pdr = (i) => `<span class="muted small">P ${i.P ?? "—"} · D ${i.D ?? "—"} · R ${i.R ?? "—"}${(i.score ?? 0) > 0 ? ` · score ${i.score}` : ""}</span>`;
+  const kwList = (arr) => arr.length
+    ? `<div class="cmp-list">${arr.sort((x, y) => (y.score ?? 0) - (x.score ?? 0)).slice(0, 100).map((i) => `<div><span class="mono">${esc(i.keyword)}</span> ${pdr(i)}</div>`).join("")}${arr.length > 100 ? `<div class="muted small">…and ${arr.length - 100} more</div>` : ""}</div>`
+    : `<p class="muted small">none</p>`;
+
+  app.innerHTML = `
+    <div class="row spread">
+      <h1 style="margin-bottom:0">${esc(cfgB.brand)} · ${esc((cfgB.country || "").toUpperCase())} — run diff</h1>
+      <a href="#/runs">← Runs</a>
+    </div>
+    <p class="muted small" style="margin:4px 0 16px">
+      <a href="#/run/${encodeURIComponent(aId)}" class="mono">${esc(aId.slice(0, 12))}…</a> (${when(snapA)})
+      →
+      <a href="#/run/${encodeURIComponent(bId)}" class="mono">${esc(bId.slice(0, 12))}…</a> (${when(snapB)})
+      — the store's suggest graph moved between these runs; that movement IS the market signal.
+    </p>
+    <div class="tiles">
+      <div class="tile"><div class="value">${dMed > 0 ? "+" : ""}${dMed}</div><div class="label">Δ median Score, top 20</div></div>
+      <div class="tile"><div class="value">${gained.length}</div><div class="label">keywords gained (new in the later run)</div></div>
+      <div class="tile"><div class="value">${lost.length}</div><div class="label">keywords lost (gone from the suggest graph)</div></div>
+      <div class="tile"><div class="value">${dCredits > 0 ? "+" : ""}${dCredits.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div><div class="label">Δ credits spent</div></div>
+    </div>
+    <div class="panel">
+      <h2>Movers — same keyword, new Score</h2>
+      ${movers.length ? `
+      <div class="table-wrap"><table>
+        <thead><tr><th>Keyword</th><th class="num">Score, old</th><th class="num">Score, new</th><th class="num">Δ</th></tr></thead>
+        <tbody>${movers.slice(0, 50).map((m) => `
+          <tr><td class="mono">${esc(m.kw)}</td>
+          <td class="num">${m.a.score ?? 0}</td><td class="num">${m.b.score ?? 0}</td>
+          <td class="num">${deltaChip(m.delta)}</td></tr>`).join("")}
+        </tbody></table></div>` : `<p class="muted">No keywords are present in both runs.</p>`}
+    </div>
+    <div class="ov-grid">
+      <div class="panel"><h2>Appeared (${gained.length})</h2>${kwList(gained)}</div>
+      <div class="panel"><h2>Disappeared (${lost.length})</h2>${kwList(lost)}</div>
+    </div>`;
 }
 
 // --- Assembly ---

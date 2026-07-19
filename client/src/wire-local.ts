@@ -25,6 +25,9 @@ import type {
   ModelInfo,
   TopupPackage,
   QueryKind,
+  KeywordsLiteView,
+  CompetitorsView,
+  ExportArtifact,
 } from "@aso/shared";
 
 /** Paginated keyword list (projection for the UI table). */
@@ -55,6 +58,8 @@ export interface RunSnapshot {
   state: Omit<RunState, "keywords">;
   keywordCount: number;
   sampleCount: number;
+  /** [spec 09 §3] Credits actually debited for this run so far (user-facing money). */
+  creditsSpent: number;
   config: unknown;
   context: RunState["context"];
   events: FeedEvent[];
@@ -77,6 +82,10 @@ export interface QueryData {
   balance: BalanceView;
   models: ModelInfo[];
   packages: TopupPackage[];
+  // spec 09: insights & exports
+  "keywords-lite": KeywordsLiteView;
+  competitors: CompetitorsView;
+  export: ExportArtifact;
 }
 
 // Type-level guarantee: QueryData keys exactly match the contract's QueryKind.

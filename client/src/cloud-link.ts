@@ -15,6 +15,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import type {
   RunSummary, RunAction, BalanceView, TopupResponse, Job, JobResult, ModelInfo, TopupPackage,
   ServerToClient, ClientToServer, SignedEnvelope, QueryKind,
+  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
 } from "@aso/shared";
 import type { AppleHttp } from "./apple/http";
 import type { Session } from "./activation";
@@ -49,7 +50,8 @@ export interface CloudLink {
   listRuns(): Promise<RunSummary[]>;
   createRun(brief: string, config: unknown): Promise<{ run_id: string }>;
   getRun(runId: string): Promise<RunSnapshot>;
-  listKeywords(runId: string, query: Record<string, string>): Promise<KeywordPage>;
+  /** query values may include an `only: string[]` keyword allowlist (spec 09 §7 pinned filter). */
+  listKeywords(runId: string, query: Record<string, unknown>): Promise<KeywordPage>;
   getKeyword(runId: string, keyword: string): Promise<KeywordHit>;
   getLlmLog(runId: string, page: number): Promise<LlmLogPage>;
   controlRun(runId: string, action: RunAction): Promise<void>;
@@ -58,6 +60,11 @@ export interface CloudLink {
   getModels(): Promise<ModelInfo[]>;
   getPackages(): Promise<TopupPackage[]>;
   topup(packageId: string): Promise<TopupResponse>;
+  // spec 09: insights & exports (server-side re-projections; no new Apple/LLM calls)
+  keywordsLite(runId: string): Promise<KeywordsLiteView>;
+  competitors(runId: string): Promise<CompetitorsView>;
+  /** ann = the user's LOCAL pins/notes, passed transiently for artifact rendering only (spec 09 §7). */
+  exportArtifact(runId: string, format: ExportFormat, ann?: { pinned?: string[]; notes?: Record<string, string> }): Promise<ExportArtifact>;
 }
 
 export interface CloudLinkDeps {
@@ -256,7 +263,7 @@ class WssCloudLink implements CloudLink {
 
   async listRuns() { return this.query("runs"); }
   async getRun(runId: string) { return this.query("run", { runId }); }
-  async listKeywords(runId: string, q: Record<string, string>) {
+  async listKeywords(runId: string, q: Record<string, unknown>) {
     return this.query("keywords", { runId, ...q, page: Number(q.page ?? 0) });
   }
   async getKeyword(runId: string, keyword: string) { return this.query("keyword", { runId, keyword }); }
@@ -264,6 +271,11 @@ class WssCloudLink implements CloudLink {
   async getBalance() { return this.query("balance"); }
   async getModels() { return this.query("models"); }
   async getPackages() { return this.query("packages"); }
+  async keywordsLite(runId: string) { return this.query("keywords-lite", { runId }); }
+  async competitors(runId: string) { return this.query("competitors", { runId }); }
+  async exportArtifact(runId: string, format: ExportFormat, ann: { pinned?: string[]; notes?: Record<string, string> } = {}) {
+    return this.query("export", { runId, format, ...ann });
+  }
 
   async createRun(brief: string, config: unknown) {
     const client_ref = `c${++this.seq}`;
@@ -331,7 +343,7 @@ class StubCloudLink implements CloudLink {
   listRuns() { return this.backend.listRuns(); }
   createRun(brief: string, config: unknown) { return this.backend.createRun(brief, config); }
   getRun(runId: string) { return this.backend.getRun(runId); }
-  listKeywords(runId: string, query: Record<string, string>) { return this.backend.listKeywords(runId, query); }
+  listKeywords(runId: string, query: Record<string, unknown>) { return this.backend.listKeywords(runId, query); }
   getKeyword(runId: string, keyword: string) { return this.backend.getKeyword(runId, keyword); }
   getLlmLog(runId: string, page: number) { return this.backend.getLlmLog(runId, page); }
   controlRun(runId: string, action: RunAction) { return this.backend.controlRun(runId, action); }
@@ -340,6 +352,11 @@ class StubCloudLink implements CloudLink {
   getModels() { return this.backend.getModels(); }
   getPackages() { return this.backend.getPackages(); }
   topup(packageId: string) { return this.backend.topup(packageId); }
+  keywordsLite(runId: string) { return this.backend.keywordsLite(runId); }
+  competitors(runId: string) { return this.backend.competitors(runId); }
+  exportArtifact(runId: string, format: ExportFormat, ann: { pinned?: string[]; notes?: Record<string, string> } = {}) {
+    return this.backend.exportArtifact(runId, format, ann);
+  }
 
   /** Dev hook: run one Apple job through apple-exec (for offline testing of executors). */
   execJob(job: Job): Promise<JobResult> { return executeJob(this.deps.http, job); }
