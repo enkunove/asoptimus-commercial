@@ -1,6 +1,7 @@
 /* ASOptimus localhost UI — vanilla JS (spec 07 + BUILD-PLAN D1/D8/D9).
    Talks ONLY to 127.0.0.1. Every /api call carries the per-launch token (D8).
-   The LLM log shows LlmLogPublic: outputs + tokens/cost, NO prompts (D9). */
+   No LLM internals in the UI: users pay in credits per keyphrase (D4), so token
+   counts/costs are never shown (spec 09 §0). R reasons stay visible per keyword. */
 "use strict";
 
 const app = document.getElementById("app");
@@ -30,18 +31,6 @@ async function api(path, opts = {}) {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function fmtTokens(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return Math.round(n / 1_000) + "k";
-  return String(n ?? 0);
-}
-function usageLine(u) {
-  const total = (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheReadTokens ?? 0);
-  let s = `LLM: ${u.calls ?? 0} calls · ${fmtTokens(total)} tokens`;
-  if (u.costUsd !== null && u.costUsd !== undefined) s += ` · ~$${u.costUsd.toFixed(2)}`;
-  return s;
-}
-
 // ---------- SSE / polling ----------
 
 let sseOk = false;
@@ -266,8 +255,8 @@ async function render() {
   const hash = location.hash || "#/runs";
   try {
     if (hash.startsWith("#/balance")) return await viewBalance();
-    const runMatch = hash.match(/^#\/run\/([^/]+)(\/llm)?/);
-    if (runMatch) return await viewRun(decodeURIComponent(runMatch[1]), runMatch[2] ? "llm" : null);
+    const runMatch = hash.match(/^#\/run\/([^/]+)/);
+    if (runMatch) return await viewRun(decodeURIComponent(runMatch[1]));
     return await viewRuns();
   } catch (e) {
     app.innerHTML = `<div class="banner error">Error: ${esc(e.message)}</div>`;
@@ -415,7 +404,6 @@ async function viewRuns() {
             <div class="row">${phaseBadge(r)} <span class="muted small">${new Date(r.updatedAt).toLocaleString()}</span></div>
             <div style="margin:8px 0"><div class="progress"><div style="width:${Math.min(100, (r.sampleCount / (r.sampleSize || 1)) * 100)}%"></div></div>
             <span class="small muted">${r.sampleCount}/${r.sampleSize} verified keywords</span></div>
-            <div class="small muted">${usageLine({ calls: r.usage.calls, inputTokens: r.usage.totalTokens, outputTokens: 0, cacheReadTokens: 0, costUsd: r.usage.costUsd })}</div>
             ${r.topKeywords.length ? `<div class="small" style="margin-top:6px">${r.topKeywords.map((k) => `<span class="badge gray">${esc(k.keyword)} · ${k.score}</span>`).join(" ")}</div>` : ""}
           </div>`).join("")}
       </div>`}`;
@@ -553,9 +541,9 @@ function renderNewRunForm(sf, models) {
 
 let runTab = "overview", lastTopSig = "", lastRunData = null, runUpdating = false;
 
-async function viewRun(slug, subroute) {
+async function viewRun(slug) {
   currentSlug = slug;
-  if (subroute === "llm") runTab = "llm";
+  if (runTab === "llm") runTab = "overview";
   const shell = document.getElementById("run-shell");
   if (!shell || shell.dataset.slug !== slug) {
     lastTopSig = ""; lastRunData = null;
@@ -617,8 +605,6 @@ function renderRunTop(slug, data) {
       <div class="row">
         <div style="flex:1;min-width:200px"><div class="progress"><div style="width:${pct}%"></div></div>
           <span class="small muted">sample ${data.sampleCount}/${config.sampleSize}</span></div>
-        <span class="small pop">${usageLine(state.usage)} <span class="q">?</span>
-          <span class="pop-body">${Object.entries(state.usage.byTask || {}).map(([t, u]) => `<div><b>${t}</b>: ${u.calls} calls · in ${fmtTokens(u.inputTokens)} / out ${fmtTokens(u.outputTokens)}${u.costUsd != null ? ` · $${u.costUsd}` : ""}</div>`).join("") || "breakdown appears as the run goes"}</span></span>
         <span class="small muted">Apple: ${state.http.requestsMade} requests · ${state.http.cacheHits} cache hits</span>
       </div>
       ${creditsOut ? `<div class="banner error credits-out" style="margin-top:10px">
@@ -634,7 +620,6 @@ function renderRunTop(slug, data) {
       <a href="javascript:void 0" data-tab="overview" class="${runTab === "overview" ? "active" : ""}">Overview</a>
       <a href="javascript:void 0" data-tab="keywords" class="${runTab === "keywords" ? "active" : ""}">Keywords</a>
       <a href="javascript:void 0" data-tab="assembly" class="${runTab === "assembly" ? "active" : ""}">Assembly</a>
-      <a href="javascript:void 0" data-tab="llm" class="${runTab === "llm" ? "active" : ""}">LLM log</a>
     </div>`;
 
   top.querySelector("#btn-pause")?.addEventListener("click", () => control(slug, "pause"));
@@ -646,7 +631,6 @@ function renderRunTop(slug, data) {
   top.querySelectorAll(".tabs a").forEach((t) =>
     t.addEventListener("click", () => {
       runTab = t.dataset.tab; lastTopSig = "";
-      location.hash = runTab === "llm" ? `#/run/${encodeURIComponent(slug)}/llm` : `#/run/${encodeURIComponent(slug)}`;
       renderRunTop(slug, lastRunData); renderTab(slug, lastRunData);
     }));
   bindContextReview(slug, context);
@@ -719,7 +703,6 @@ async function renderTab(slug, runData) {
   if (!body || !runData) return;
   const active = document.activeElement;
   if (active && body.contains(active) && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)) return;
-  if (runTab === "llm" && body.querySelector("details.llm-call[open]")) return;
   const wrap0 = body.querySelector(".table-wrap");
   const scroll = wrap0 ? { left: wrap0.scrollLeft, top: wrap0.scrollTop } : null;
   const h = body.offsetHeight;
@@ -728,7 +711,6 @@ async function renderTab(slug, runData) {
     if (runTab === "overview") await renderOverview(body, slug, runData);
     else if (runTab === "keywords") await renderKeywords(body, slug, runData);
     else if (runTab === "assembly") renderAssembly(body, slug, runData);
-    else if (runTab === "llm") await renderLlmLog(body, slug);
   } finally {
     body.style.minHeight = "";
     if (scroll) { const w = body.querySelector(".table-wrap"); if (w) { w.scrollLeft = scroll.left; w.scrollTop = scroll.top; } }
@@ -755,7 +737,6 @@ async function renderOverview(body, slug, data) {
       <div class="tile"><div class="value">${median ?? 0}</div><div class="label">median Score, top 20</div></div>
       <div class="tile"><div class="value">${cov ? Math.round(cov.coveredShare * 100) + "%" : "—"}</div><div class="label">Score covered</div></div>
       <div class="tile"><div class="value">${errors}</div><div class="label">errors</div></div>
-      <div class="tile"><div class="value">${data.state.usage.calls}</div><div class="label">LLM calls</div></div>
     </div>
     <div class="panel"><h2>Live feed</h2>
       <div class="feed" id="feed">${data.events.map((e) => `<div><span class="ts">${new Date(e.ts).toLocaleTimeString()}</span>${esc(e.kind)} ${esc(e.text)}</div>`).join("") || '<div class="muted">no events yet</div>'}</div>
@@ -865,7 +846,7 @@ function renderKeywordDetail(k, slug) {
   return `
     <div class="row spread"><h3>${esc(k.keyword)}</h3><button class="danger btn-exclude">⛔ Exclude</button></div>
     <p>${pExplain}${m.childCount ? ` Spawns ${m.childCount} children — long-tail potential.` : ""}</p>
-    ${m.R !== null && m.R !== undefined ? `<p><b>R=${m.R}</b>: ${esc(m.reason ?? "")} <a href="#/run/${encodeURIComponent(slug)}/llm">show the LLM call →</a></p>` : ""}
+    ${m.R !== null && m.R !== undefined ? `<p><b>R=${m.R}</b>: ${esc(m.reason ?? "")}</p>` : ""}
     ${m.topApps?.length ? `
       <h3>Top ${m.topApps.length} search results (serpSize=${m.serpSize}) → D=${m.D}</h3>
       <div class="table-wrap"><table>
@@ -948,47 +929,6 @@ function renderChecklist(violations) {
   }).join("");
 }
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
-
-// --- LLM log (D9: outputs + numbers only, NO prompts) ---
-
-let llmPage = 0;
-async function renderLlmLog(body, slug) {
-  const log = await api(`/api/runs/${encodeURIComponent(slug)}/llm-log?page=${llmPage}`);
-  let tIn = 0, tOut = 0, tCache = 0, tCost = 0, hasCost = false;
-  for (const e of log.items) {
-    tIn += e.tokens?.input ?? 0; tOut += e.tokens?.output ?? 0; tCache += e.tokens?.cacheRead ?? 0;
-    if (e.costUsd != null) { tCost += e.costUsd; hasCost = true; }
-  }
-  body.innerHTML = `
-    <div class="panel">
-      <h2>LLM call log <span class="muted small">(${log.total} total; showing outputs and metrics — prompts are not disclosed)</span></h2>
-      ${log.items.map((e) => `
-        <details class="llm-call">
-          <summary>
-            <span class="muted small">${new Date(e.ts).toLocaleTimeString()}</span>
-            <span class="badge">${esc(e.task)}</span>
-            <span class="mono small">${esc(e.model)}</span>
-            <span class="small">${((e.durationMs || 0) / 1000).toFixed(1)}s</span>
-            <span class="small muted">in ${fmtTokens(e.tokens?.input ?? 0)} / out ${fmtTokens(e.tokens?.output ?? 0)} / cache ${fmtTokens(e.tokens?.cacheRead ?? 0)}</span>
-            ${e.costUsd != null ? `<span class="small">$${e.costUsd}</span>` : ""}
-            ${e.error ? `<span class="badge red">error</span>` : `<span class="badge green">ok</span>`}
-          </summary>
-          ${e.error ? `<pre class="check-fail">${esc(e.error)}</pre>` : ""}
-          <h3 style="margin:8px 14px 0">${esc(e.stage || "output")}</h3>
-          <pre>${esc(prettyJson(e.output))}</pre>
-        </details>`).join("") || `<p class="muted">No calls yet.</p>`}
-      <div class="row" style="margin-top:10px">
-        ${llmPage > 0 ? `<button id="llm-prev">← Back</button>` : ""}
-        ${(llmPage + 1) * 50 < log.total ? `<button id="llm-next">Next →</button>` : ""}
-        <span class="muted small">this page: in ${fmtTokens(tIn)} / out ${fmtTokens(tOut)} / cache ${fmtTokens(tCache)}${hasCost ? ` · $${tCost.toFixed(3)}` : ""}</span>
-      </div>
-    </div>`;
-  body.querySelector("#llm-prev")?.addEventListener("click", () => { llmPage--; renderLlmLog(body, slug); });
-  body.querySelector("#llm-next")?.addEventListener("click", () => { llmPage++; renderLlmLog(body, slug); });
-}
-function prettyJson(v) {
-  try { return typeof v === "string" ? v : JSON.stringify(v, null, 2); } catch { return String(v); }
-}
 
 // ---------- start ----------
 
