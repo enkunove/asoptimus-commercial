@@ -1,0 +1,203 @@
+{
+  "_readme": "Mock-mode data (SPEC.md §6). Top-level keys map to endpoints: overview→GET /admin/api/overview, users→GET /admin/api/users, userDetail→GET /admin/api/users/:id (any id), runs→GET /admin/api/runs, runDetail→GET /admin/api/runs/:id (any id), waitlist→GET /admin/api/waitlist, finance→GET /admin/api/finance, live→GET /admin/api/live, beta→GET /admin/api/beta. Mutations mutate the in-memory copy only.",
+
+  "overview": {
+    "users": { "total": 7, "new7d": 3, "new30d": 6 },
+    "waitlist": { "pending": 4, "invited": 2, "signedUp": 2 },
+    "runs": { "total": 9, "active": 2,
+              "byPhase": { "created": 1, "context": 0, "context_review": 1, "seeding": 0,
+                            "loop": 2, "improving": 0, "assembling": 0, "done": 5 } },
+    "credits": { "granted": 221, "grantedPaid": 131, "grantedFree": 90,
+                 "spent": 84.36, "outstanding": 136.64 },
+    "finance": { "approxRevenueUsd": 131, "cogsUsd": 11.83, "cogs30dUsd": 11.83,
+                 "approxMarginUsd": 119.17 },
+    "live": { "connectedClients": 1, "activeOrchestrators": 2 }
+  },
+
+  "users": {
+    "total": 7, "page": 0, "pageSize": 50,
+    "items": [
+      { "id": "usr_Ab3xY9kQz", "email": "maker@studio.dev", "createdAt": "2026-07-01T10:00:00Z",
+        "balance": 12.5, "granted": 56, "spent": 43.5, "runs": 3,
+        "lastRunAt": "2026-07-18T20:11:00Z", "licenses": 1, "activeSessions": 1,
+        "paddleCustomerId": "ctm_01hxq3k8m2",
+        "waitlist": { "invitedAt": "2026-06-20T09:00:00Z", "signedUpAt": "2026-07-01T10:00:00Z" } },
+      { "id": "usr_Ck9mPq22L", "email": "indie<b>x</b>@mail.io", "createdAt": "2026-07-05T08:30:00Z",
+        "balance": 30, "granted": 30, "spent": 0, "runs": 0,
+        "lastRunAt": null, "licenses": 1, "activeSessions": 0,
+        "paddleCustomerId": null,
+        "waitlist": { "invitedAt": "2026-07-04T12:00:00Z", "signedUpAt": "2026-07-05T08:30:00Z" } },
+      { "id": "usr_Dn2vR8sWa", "email": "agency@growth.co", "createdAt": "2026-07-08T15:45:00Z",
+        "balance": 61.2, "granted": 110, "spent": 48.8, "runs": 4,
+        "lastRunAt": "2026-07-19T11:02:00Z", "licenses": 2, "activeSessions": 1,
+        "paddleCustomerId": "ctm_01hxq9d4n7", "waitlist": null },
+      { "id": "usr_Ee5tU1oPb", "email": "solo@night.build", "createdAt": "2026-07-12T22:10:00Z",
+        "balance": 4.9, "granted": 10, "spent": 5.1, "runs": 1,
+        "lastRunAt": "2026-07-13T01:40:00Z", "licenses": 1, "activeSessions": 0,
+        "paddleCustomerId": "ctm_01hxqf2z1c", "waitlist": null },
+      { "id": "usr_Fg7wI4mNc", "email": "pm@fitapp.team", "createdAt": "2026-07-15T09:00:00Z",
+        "balance": 0, "granted": 5, "spent": 5, "runs": 1,
+        "lastRunAt": "2026-07-15T12:20:00Z", "licenses": 1, "activeSessions": 0,
+        "paddleCustomerId": null, "waitlist": null },
+      { "id": "usr_Gh8xJ5nQd", "email": "hello@calmtimer.app", "createdAt": "2026-07-17T17:30:00Z",
+        "balance": 30, "granted": 30, "spent": 0, "runs": 0,
+        "lastRunAt": null, "licenses": 1, "activeSessions": 0,
+        "paddleCustomerId": null,
+        "waitlist": { "invitedAt": "2026-07-16T10:00:00Z", "signedUpAt": "2026-07-17T17:30:00Z" } },
+      { "id": "usr_Hi9yK6oRe", "email": "dev@puzzlebox.games", "createdAt": "2026-07-19T08:15:00Z",
+        "balance": 10, "granted": 10, "spent": 0, "runs": 1,
+        "lastRunAt": "2026-07-19T14:00:00Z", "licenses": 1, "activeSessions": 1,
+        "paddleCustomerId": "ctm_01hxqs7f9k", "waitlist": null }
+    ]
+  },
+
+  "userDetail": {
+    "user": { "id": "usr_Ab3xY9kQz", "email": "maker@studio.dev", "createdAt": "2026-07-01T10:00:00Z",
+      "balance": 12.5, "granted": 56, "spent": 43.5, "runs": 3,
+      "lastRunAt": "2026-07-18T20:11:00Z", "licenses": 1, "activeSessions": 1,
+      "paddleCustomerId": "ctm_01hxq3k8m2",
+      "waitlist": { "invitedAt": "2026-06-20T09:00:00Z", "signedUpAt": "2026-07-01T10:00:00Z" } },
+    "cogsUsd": 5.62,
+    "licenses": [
+      { "keyHash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "keyHashPrefix": "a1b2c3d4", "status": "active", "deviceBound": true, "revokedAt": null },
+      { "keyHash": "ffe2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "keyHashPrefix": "ffe2c3d4", "status": "revoked", "deviceBound": true,
+        "revokedAt": "2026-07-02T09:00:00Z" }
+    ],
+    "ledger": [
+      { "ts": "2026-07-18T20:15:00Z", "type": "debit", "delta": -0.02, "runId": "run_9f2ab61e", "ref": null, "note": null },
+      { "ts": "2026-07-18T20:14:10Z", "type": "debit", "delta": -0.02, "runId": "run_9f2ab61e", "ref": null, "note": null },
+      { "ts": "2026-07-15T11:00:00Z", "type": "grant", "delta": 26, "runId": null, "ref": "txn_01hxk3m9p2", "note": null },
+      { "ts": "2026-07-03T16:20:00Z", "type": "grant", "delta": 5, "runId": null, "ref": "admin_1783542000_x1", "note": "support comp — SERP outage" },
+      { "ts": "2026-07-01T10:00:01Z", "type": "grant", "delta": 30, "runId": null, "ref": "beta_usr_Ab3xY9kQz", "note": "beta welcome grant" }
+    ],
+    "runs": [
+      { "runId": "run_9f2ab61e", "brand": "Somna", "country": "us", "phase": "done", "paused": false,
+        "sampleCount": 150, "sampleSize": 150, "creditsSpent": 3.0, "cogsUsd": 0.41,
+        "createdAt": "2026-07-18T18:00:00Z", "updatedAt": "2026-07-18T20:11:00Z" },
+      { "runId": "run_77cd0e2a", "brand": "Somna", "country": "de", "phase": "loop", "paused": false,
+        "sampleCount": 61, "sampleSize": 150, "creditsSpent": 1.22, "cogsUsd": 0.19,
+        "createdAt": "2026-07-19T13:00:00Z", "updatedAt": "2026-07-19T14:00:00Z" },
+      { "runId": "run_5b1fe908", "brand": "Somna", "country": "us", "phase": "done", "paused": false,
+        "sampleCount": 150, "sampleSize": 150, "creditsSpent": 3.0, "cogsUsd": 0.44,
+        "createdAt": "2026-07-10T09:00:00Z", "updatedAt": "2026-07-10T11:30:00Z" }
+    ]
+  },
+
+  "runs": {
+    "total": 9, "page": 0, "pageSize": 50,
+    "items": [
+      { "runId": "run_77cd0e2a", "userEmail": "maker@studio.dev", "brand": "Somna", "country": "de",
+        "phase": "loop", "paused": false, "sampleCount": 61, "sampleSize": 150,
+        "creditsSpent": 1.22, "cogsUsd": 0.19, "updatedAt": "2026-07-19T14:00:00Z" },
+      { "runId": "run_c4d19a77", "userEmail": "dev@puzzlebox.games", "brand": "PuzzleBox", "country": "us",
+        "phase": "loop", "paused": true, "sampleCount": 34, "sampleSize": 100,
+        "creditsSpent": 0.68, "cogsUsd": 0.11, "updatedAt": "2026-07-19T13:45:00Z" },
+      { "runId": "run_9f2ab61e", "userEmail": "maker@studio.dev", "brand": "Somna", "country": "us",
+        "phase": "done", "paused": false, "sampleCount": 150, "sampleSize": 150,
+        "creditsSpent": 3.0, "cogsUsd": 0.41, "updatedAt": "2026-07-18T20:11:00Z" },
+      { "runId": "run_e81b3c55", "userEmail": "agency@growth.co", "brand": "FitPulse", "country": "us",
+        "phase": "done", "paused": false, "sampleCount": 300, "sampleSize": 300,
+        "creditsSpent": 18.0, "cogsUsd": 2.60, "updatedAt": "2026-07-17T16:00:00Z" },
+      { "runId": "run_2a9dd4f1", "userEmail": "agency@growth.co", "brand": "FitPulse", "country": "gb",
+        "phase": "context_review", "paused": false, "sampleCount": 0, "sampleSize": 200,
+        "creditsSpent": 0, "cogsUsd": 0.02, "updatedAt": "2026-07-19T11:02:00Z" },
+      { "runId": "run_b7e60c19", "userEmail": "solo@night.build", "brand": "NightOwl", "country": "us",
+        "phase": "done", "paused": false, "sampleCount": 80, "sampleSize": 80,
+        "creditsSpent": 4.8, "cogsUsd": 0.71, "updatedAt": "2026-07-13T01:40:00Z" },
+      { "runId": "run_63f1a8d0", "userEmail": "pm@fitapp.team", "brand": "FitTrack", "country": "us",
+        "phase": "done", "paused": false, "sampleCount": 100, "sampleSize": 100,
+        "creditsSpent": 5.0, "cogsUsd": 0.79, "updatedAt": "2026-07-15T12:20:00Z" },
+      { "runId": "run_48c2e7b3", "userEmail": "agency@growth.co", "brand": "GrowthKit", "country": "us",
+        "phase": "done", "paused": false, "sampleCount": 200, "sampleSize": 200,
+        "creditsSpent": 12.0, "cogsUsd": 1.85, "updatedAt": "2026-07-12T18:30:00Z" },
+      { "runId": "run_1d5f9e26", "userEmail": "agency@growth.co", "brand": "GrowthKit", "country": "de",
+        "phase": "created", "paused": true, "sampleCount": 0, "sampleSize": 150,
+        "creditsSpent": 0, "cogsUsd": 0, "updatedAt": "2026-07-19T10:00:00Z" }
+    ]
+  },
+
+  "runDetail": {
+    "userEmail": "maker@studio.dev",
+    "cogsUsd": 0.41,
+    "llm": { "calls": 15, "inputTokens": 51000, "outputTokens": 5100, "costUsd": 0.41 },
+    "debits": 150,
+    "snapshot": {
+      "state": { "runId": "run_9f2ab61e", "phase": "done", "paused": false, "failed": null,
+                 "notice": null, "hintsEndpointDown": false,
+                 "createdAt": "2026-07-18T18:00:00Z", "updatedAt": "2026-07-18T20:11:00Z",
+                 "usage": { "inputTokens": 51000, "outputTokens": 5100, "cacheReadTokens": 12000,
+                            "cacheWriteTokens": 0, "calls": 15, "costUsd": 0.41, "byTask": {} },
+                 "http": { "requestsMade": 610, "cacheHits": 240, "throttleWaitMs": 84000 } },
+      "config": { "brand": "Somna", "country": "us", "semanticLanguage": "en", "language": "en_us",
+                  "sampleSize": 150, "batchSize": 20, "exploreRatio": 0.3, "improvementRounds": 2,
+                  "serpTop": 10, "model": "claude-haiku-4-5", "extraLocale": true },
+      "context": { "productSummary": "Somna helps people build healthy sleep habits with gentle routines.",
+                   "category": "Health & Fitness", "audience": "young professionals with irregular sleep",
+                   "targetLanguage": "en" },
+      "events": [
+        { "ts": "2026-07-18T18:00:05Z", "kind": "🧠", "text": "context: analyzing the brief" },
+        { "ts": "2026-07-18T18:01:10Z", "kind": "✓", "text": "context ready — awaiting review" },
+        { "ts": "2026-07-18T18:05:00Z", "kind": "🌱", "text": "seeding: 24 seed phrases" },
+        { "ts": "2026-07-18T20:10:40Z", "kind": "🏁", "text": "assembly complete" },
+        { "ts": "2026-07-18T20:11:00Z", "kind": "💰", "text": "run finished: 3.00 cr debited for 150 keyphrases" }
+      ],
+      "assembly": {
+        "buckets": [
+          { "locale": "en-US", "title": "Somna: Sleep Habit Tracker", "subtitle": "Wind down & rest better",
+            "keywordFieldDraft": "sleep,habit,tracker,routine,bedtime,insomnia,rest" }
+        ],
+        "coverage": { "phrasesCovered": 18, "scoreCovered": 812, "scoreTotal": 990, "coveredShare": 0.82 }
+      },
+      "keywordCount": 412, "sampleCount": 150, "creditsSpent": 3.0
+    }
+  },
+
+  "waitlist": {
+    "total": 8, "counts": { "pending": 4, "invited": 2, "signedUp": 2 },
+    "page": 0, "pageSize": 100,
+    "items": [
+      { "email": "eager@dev.io", "addedAt": "2026-06-01T00:00:00Z", "invitedAt": null, "signedUpAt": null, "note": "producthunt" },
+      { "email": "waiting@app.studio", "addedAt": "2026-06-03T00:00:00Z", "invitedAt": null, "signedUpAt": null, "note": "producthunt" },
+      { "email": "curious@build.club", "addedAt": "2026-06-10T00:00:00Z", "invitedAt": null, "signedUpAt": null, "note": "twitter" },
+      { "email": "keen@ship.fast", "addedAt": "2026-06-15T00:00:00Z", "invitedAt": null, "signedUpAt": null, "note": null },
+      { "email": "invited@yet.silent", "addedAt": "2026-06-05T00:00:00Z", "invitedAt": "2026-07-10T09:00:00Z", "signedUpAt": null, "note": "twitter" },
+      { "email": "slow@to.join", "addedAt": "2026-06-06T00:00:00Z", "invitedAt": "2026-07-10T09:00:00Z", "signedUpAt": null, "note": null },
+      { "email": "maker@studio.dev", "addedAt": "2026-05-28T00:00:00Z", "invitedAt": "2026-06-20T09:00:00Z", "signedUpAt": "2026-07-01T10:00:00Z", "note": "early list" },
+      { "email": "hello@calmtimer.app", "addedAt": "2026-06-02T00:00:00Z", "invitedAt": "2026-07-16T10:00:00Z", "signedUpAt": "2026-07-17T17:30:00Z", "note": null }
+    ]
+  },
+
+  "finance": {
+    "series": [
+      { "date": "2026-07-10", "granted": 10, "grantedPaid": 10, "spent": 3.0, "cogsUsd": 0.44 },
+      { "date": "2026-07-11", "granted": 0, "grantedPaid": 0, "spent": 0, "cogsUsd": 0 },
+      { "date": "2026-07-12", "granted": 55, "grantedPaid": 55, "spent": 12.0, "cogsUsd": 1.85 },
+      { "date": "2026-07-13", "granted": 0, "grantedPaid": 0, "spent": 4.8, "cogsUsd": 0.71 },
+      { "date": "2026-07-14", "granted": 0, "grantedPaid": 0, "spent": 0, "cogsUsd": 0 },
+      { "date": "2026-07-15", "granted": 31, "grantedPaid": 26, "spent": 5.0, "cogsUsd": 0.81 },
+      { "date": "2026-07-16", "granted": 0, "grantedPaid": 0, "spent": 0, "cogsUsd": 0 },
+      { "date": "2026-07-17", "granted": 55, "grantedPaid": 30, "spent": 18.0, "cogsUsd": 2.62 },
+      { "date": "2026-07-18", "granted": 26, "grantedPaid": 0, "spent": 6.04, "cogsUsd": 0.85 },
+      { "date": "2026-07-19", "granted": 44, "grantedPaid": 10, "spent": 1.9, "cogsUsd": 0.32 }
+    ],
+    "recentTopups": [
+      { "ts": "2026-07-18T13:37:00Z", "email": "maker@studio.dev", "credits": 26, "ref": "txn_01hxk3m9p2" },
+      { "ts": "2026-07-17T10:12:00Z", "email": "agency@growth.co", "credits": 55, "ref": "txn_01hxj8w2r4" },
+      { "ts": "2026-07-15T08:40:00Z", "email": "solo@night.build", "credits": 10, "ref": "txn_01hxg1e7q9" }
+    ]
+  },
+
+  "live": {
+    "clients": [
+      { "userId": "usr_Ab3xY9kQz", "email": "maker@studio.dev", "deviceFp": "d41d8cd98f00b204" }
+    ],
+    "orchestrators": [
+      { "runId": "run_77cd0e2a", "userEmail": "maker@studio.dev", "phase": "loop", "paused": false, "sampleCount": 61 },
+      { "runId": "run_c4d19a77", "userEmail": "dev@puzzlebox.games", "phase": "loop", "paused": true, "sampleCount": 34 }
+    ]
+  },
+
+  "beta": { "gated": true, "grantCredits": 30 }
+}

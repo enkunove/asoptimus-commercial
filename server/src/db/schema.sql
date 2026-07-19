@@ -26,6 +26,18 @@ CREATE TABLE IF NOT EXISTS users (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Beta waitlist (admin-managed): pending → invited (email sent) → signed_up.
+CREATE TABLE IF NOT EXISTS waitlist (
+  email         TEXT PRIMARY KEY,
+  added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  invited_at    TIMESTAMPTZ,
+  signed_up_at  TIMESTAMPTZ,
+  note          TEXT
+);
+
+-- Free-form note on ledger rows (admin grants, beta welcome grants).
+ALTER TABLE IF EXISTS ledger ADD COLUMN IF NOT EXISTS note TEXT;
+
 -- Sessions are PERSISTED (not in-memory): a server restart/deploy must never log every
 -- client out. Raw tokens are never stored — only sha256(token).
 CREATE TABLE IF NOT EXISTS sessions (
@@ -67,6 +79,7 @@ CREATE TABLE IF NOT EXISTS ledger (
   keyword          TEXT,                   -- keyphrase (for UNIQUE(run_id, keyword), D4 v4)
   step_seq         INTEGER,                -- (legacy; unused in v4)
   paddle_event_id  TEXT,
+  note             TEXT,                   -- free-form (admin grants, beta welcome grants)
   ts               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE ledger ADD COLUMN IF NOT EXISTS keyword TEXT;

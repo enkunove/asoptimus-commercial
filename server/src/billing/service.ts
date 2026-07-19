@@ -45,8 +45,8 @@ export class BillingService {
   }
 
   /** Credit grant (Paddle top-up), idempotent by paddle_event_id = transaction id (D4/§webhooks). */
-  async grant(userId: string, credits: number, paddleEventId: string | null): Promise<boolean> {
-    const r = await this.store.grantCredits(userId, credits, paddleEventId);
+  async grant(userId: string, credits: number, paddleEventId: string | null, note: string | null = null): Promise<boolean> {
+    const r = await this.store.grantCredits(userId, credits, paddleEventId, note);
     return r.granted;
   }
 }

@@ -8,6 +8,48 @@ export interface UserRow {
   id: string;
   email: string;
   paddle_customer_id: string | null;
+  created_at?: string | Date;
+}
+
+/** Beta waitlist entry: pending (invited_at null) → invited → signed_up. */
+export interface WaitlistRow {
+  email: string;
+  added_at?: string | Date;
+  invited_at: string | Date | null;
+  signed_up_at: string | Date | null;
+  note: string | null;
+}
+
+/** Admin projection: one user with money/run aggregates (admin panel, spec admin/SPEC.md §3.2). */
+export interface AdminUserRow {
+  id: string;
+  email: string;
+  created_at: string | Date | null;
+  paddle_customer_id: string | null;
+  balance: number;
+  granted: number;
+  spent: number;
+  runs: number;
+  last_run_at: string | Date | null;
+  licenses: number;
+  active_sessions: number;
+}
+
+/** Admin projection: one run, light (NO state blob), with money aggregates. sample_count is
+ *  derived from paid debits — exactly one debit per verified keyphrase (D4 v4). */
+export interface AdminRunRow {
+  id: string;
+  user_id: string;
+  brand: string;
+  country: string;
+  phase: string;
+  paused: boolean;
+  sample_count: number;
+  sample_size: number;
+  credits_spent: number;
+  cogs_usd: number;
+  created_at: string | Date | null;
+  updated_at: string | Date | null;
 }
 
 /** Persisted session (survives restarts/deploys). token_hash = sha256(raw token). */
@@ -39,6 +81,8 @@ export interface LedgerRowDb {
   keyword: string | null;
   step_seq: number | null;
   paddle_event_id: string | null;
+  /** Free-form (admin grants, beta welcome grants). */
+  note?: string | null;
   ts?: string;
 }
 
@@ -131,8 +175,8 @@ export interface Store {
    *  (run_id, keyword). Returns: charged — debited now; alreadyCharged — row already existed;
    *  otherwise (balance < price) — not debited → hard-stop at the caller. Never goes negative. */
   debitForKeyphrase(userId: string, runId: string, keyword: string, price: number): Promise<{ charged: boolean; alreadyCharged: boolean; balance: number }>;
-  /** Atomic: grant credits, idempotent by paddle_event_id (grant/top-up). */
-  grantCredits(userId: string, credits: number, paddleEventId: string | null): Promise<{ granted: boolean; balance: number }>;
+  /** Atomic: grant credits, idempotent by paddle_event_id (grant/top-up/beta/admin). */
+  grantCredits(userId: string, credits: number, paddleEventId: string | null, note?: string | null): Promise<{ granted: boolean; balance: number }>;
 
   // ledger (immutable log; read for BalanceView/account)
   listLedger(userId: string, limit?: number): Promise<LedgerRowDb[]>;
@@ -168,6 +212,31 @@ export interface Store {
   // apple_cache (D3)
   getCache(cacheKey: string): Promise<AppleCacheRow | null>;
   putCache(row: AppleCacheRow): Promise<void>;
+
+  // ── waitlist (beta invites; admin/SPEC.md §3.6) ─────────────────────────
+  /** Insert new emails (already lowercased/validated by the caller); existing → skipped. */
+  waitlistImport(emails: string[], note: string | null): Promise<{ added: number; duplicates: number }>;
+  listWaitlist(status: "all" | "pending" | "invited" | "signed_up", page: number, pageSize: number):
+    Promise<{ total: number; counts: { pending: number; invited: number; signedUp: number }; items: WaitlistRow[] }>;
+  getWaitlistEntry(email: string): Promise<WaitlistRow | null>;
+  /** Sets invited_at ONLY when currently null (re-invites keep the original timestamp). */
+  markWaitlistInvited(email: string): Promise<void>;
+  markWaitlistSignedUp(email: string): Promise<void>;
+  deleteWaitlistEntry(email: string): Promise<void>;
+
+  // ── admin projections (admin/SPEC.md §3; beta-scale — full scans are fine) ──
+  adminUsers(): Promise<AdminUserRow[]>;
+  adminRuns(): Promise<AdminRunRow[]>;
+  /** All-time ledger money totals; paid = refs starting with 'txn_' (Paddle transactions). */
+  adminLedgerTotals(): Promise<{ granted: number; grantedPaid: number; spent: number }>;
+  /** Ledger rows since an ISO timestamp (finance series + recent top-ups). */
+  adminLedgerSince(sinceIso: string): Promise<LedgerRowDb[]>;
+  /** LLM COGS totals from llm_steps. */
+  adminCogsTotals(since30dIso: string): Promise<{ totalUsd: number; last30dUsd: number }>;
+  /** Per-day COGS rows since an ISO timestamp: [{ts, costUsd}]. */
+  adminCogsSince(sinceIso: string): Promise<Array<{ ts: string | Date; costUsd: number }>>;
+  listLicensesForUser(userId: string): Promise<LicenseRow[]>;
+  countSessionsForUser(userId: string): Promise<number>;
 
   close(): Promise<void>;
 }

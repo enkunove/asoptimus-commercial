@@ -39,6 +39,11 @@ export class ClientHub {
     return this.conns.has(userId);
   }
 
+  /** Snapshot of live connections (admin Live screen). */
+  connectedClients(): Array<{ userId: string; deviceFp: string }> {
+    return [...this.conns.values()].map((c) => ({ userId: c.userId, deviceFp: c.deviceFp }));
+  }
+
   /** Send job.dispatch and await job.result by job_id (timeout → reject). */
   dispatchJob(userId: string, jobId: string, msg: ServerToClient, timeoutMs = 120_000): Promise<JobResult> {
     const conn = this.conns.get(userId);

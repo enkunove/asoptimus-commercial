@@ -17,6 +17,8 @@ delete process.env.TOPUP_PACKAGES_JSON;
 delete process.env.PADDLE_API_KEY;
 delete process.env.PADDLE_WEBHOOK_SECRET;
 delete process.env.PADDLE_CREDIT_PRICE_ID;
+delete process.env.BETA_GATED;   // admin.test.ts sets it — signups here must stay open
+delete process.env.ADMIN_TOKEN;
 
 const { createApp } = await import("./app.ts");
 const { handleHttp } = await import("./api/http.ts");

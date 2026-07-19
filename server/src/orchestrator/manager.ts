@@ -45,6 +45,14 @@ export class RunManager {
   }
 
   onProgress(l: ProgressListener) { this.listeners.add(l); return () => this.listeners.delete(l); }
+
+  /** Snapshot of in-memory orchestrators (admin Live screen). */
+  activeOrchestrators(): Array<{ runId: string; userId: string; phase: string; paused: boolean; sampleCount: number }> {
+    return [...this.orchestrators.values()].map((o) => ({
+      runId: o.state.runId, userId: o.state.userId, phase: o.state.phase,
+      paused: o.state.paused, sampleCount: sampleCount(o.state.keywords),
+    }));
+  }
   userOf(runId: string): string | undefined { return this.runUsers.get(runId); }
 
   /** AUTHORITATIVE ownership: in-memory map first, else the store row (cold runs after a

@@ -15,14 +15,17 @@ export interface EmailMessage {
 
 export interface EmailService {
   send(msg: EmailMessage): Promise<void>;
-  sendActivationKey(to: string, key: string): Promise<void>;
+  /** freeCredits: beta welcome grant already on the key (mentioned in the email when set). */
+  sendActivationKey(to: string, key: string, freeCredits?: number): Promise<void>;
   sendReceipt(to: string, credits: number, chargeUsd: number, balance: number): Promise<void>;
+  /** Beta invite: "sign up with this email at asoptimus.com → key + free credits". */
+  sendBetaInvite(to: string, grantCredits: number): Promise<void>;
   readonly kind: "smtp" | "dev-log";
 }
 
 const FROM_FALLBACK = "ASOptimus <noreply@asoptimus.com>";
 
-function activationEmail(to: string, key: string): EmailMessage {
+function activationEmail(to: string, key: string, freeCredits?: number): EmailMessage {
   const text = [
     "Thank you for your interest in ASOptimus!",
     "",
@@ -30,11 +33,34 @@ function activationEmail(to: string, key: string): EmailMessage {
     "",
     `    ${key}`,
     "",
+    ...(freeCredits ? [
+      `Your beta balance: $${freeCredits} in credits is already on this key — free, no card needed.`,
+      "",
+    ] : []),
     "Enter it in the app on first launch. The key is bound to your device.",
     "Billing is usage-based (credits are debited per verified keyphrase). You can top up",
     "your balance right in the app.",
   ].join("\n");
   return { to, subject: "Your ASOptimus activation key", text };
+}
+
+function betaInviteEmail(to: string, grantCredits: number): EmailMessage {
+  const text = [
+    "You're in — the ASOptimus private beta is opening for you.",
+    "",
+    "ASOptimus finds the best App Store keywords for YOUR app specifically:",
+    "measured demand, measured difficulty, honest numbers you can audit.",
+    "",
+    "How to claim your access:",
+    "",
+    `  1. Go to https://asoptimus.com and sign up with THIS email address (${to}).`,
+    `  2. Your activation key arrives instantly — with $${grantCredits} in credits`,
+    "     already on it. Free, no card needed.",
+    "  3. Download the app, paste the key, run your first keyword analysis.",
+    "",
+    "The invite is personal to this email address.",
+  ].join("\n");
+  return { to, subject: "Your ASOptimus beta invite — $" + grantCredits + " in credits inside", text };
 }
 
 function receiptEmail(to: string, credits: number, chargeUsd: number, balance: number): EmailMessage {
@@ -69,10 +95,11 @@ class SmtpEmailService implements EmailService {
     await this.transport.sendMail({ from: this.from, to: msg.to, subject: msg.subject, text: msg.text, html: msg.html });
     log.info("[email] sent", { to: msg.to, subject: msg.subject });
   }
-  async sendActivationKey(to: string, key: string) { await this.send(activationEmail(to, key)); }
+  async sendActivationKey(to: string, key: string, freeCredits?: number) { await this.send(activationEmail(to, key, freeCredits)); }
   async sendReceipt(to: string, credits: number, chargeUsd: number, balance: number) {
     await this.send(receiptEmail(to, credits, chargeUsd, balance));
   }
+  async sendBetaInvite(to: string, grantCredits: number) { await this.send(betaInviteEmail(to, grantCredits)); }
 }
 
 class DevLogEmailService implements EmailService {
@@ -80,10 +107,11 @@ class DevLogEmailService implements EmailService {
   async send(msg: EmailMessage): Promise<void> {
     log.warn("[email] DEV-log (SMTP not configured; email NOT sent)", { to: msg.to, subject: msg.subject, preview: msg.text.slice(0, 160) });
   }
-  async sendActivationKey(to: string, key: string) { await this.send(activationEmail(to, key)); }
+  async sendActivationKey(to: string, key: string, freeCredits?: number) { await this.send(activationEmail(to, key, freeCredits)); }
   async sendReceipt(to: string, credits: number, chargeUsd: number, balance: number) {
     await this.send(receiptEmail(to, credits, chargeUsd, balance));
   }
+  async sendBetaInvite(to: string, grantCredits: number) { await this.send(betaInviteEmail(to, grantCredits)); }
 }
 
 export function createEmailService(): EmailService {

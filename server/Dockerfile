@@ -9,13 +9,15 @@ WORKDIR /app
 COPY server/package.json server/bun.lock ./server/
 RUN cd server && bun install --frozen-lockfile
 
-# The contract (@aso/shared) + server sources.
+# The contract (@aso/shared) + server sources + the admin SPA (served at /admin).
 COPY shared ./shared
+COPY admin/ui ./admin/ui
 COPY server/tsconfig.json ./server/
 COPY server/src ./server/src
 
 WORKDIR /app/server
 ENV PORT=8787
+ENV ADMIN_UI_DIR=/app/admin/ui
 EXPOSE 8787
 
 # HTTP (REST + SSE) + WSS /ws. Secrets/config come via env (see infra/.env.example).

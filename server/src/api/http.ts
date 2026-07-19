@@ -4,6 +4,7 @@
 // externally — outputs+numbers only (LlmLogPublic), NEVER prompts.
 
 import type { App } from "../app.ts";
+import { handleAdmin } from "./admin.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
 import { topupCatalog } from "../billing/packages.ts";
 import { modelInfos, quoteFor, pricePerKeyphrase, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
@@ -55,6 +56,10 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
 
   // ── health ───────────────────────────────────────────────────────────────
   if (path === "/health") return json({ ok: true, ts: new Date().toISOString() });
+
+  // ── admin panel (SPA + API; ADMIN_TOKEN-gated, off when unset) ───────────
+  const adminResp = await handleAdmin(app, req, url, path);
+  if (adminResp) return adminResp;
 
   // ── Paddle checkout return pages (success/cancel redirects point here).
   //    Prod: granting happens in the webhook — this page only tells the user to go back.
@@ -134,10 +139,32 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
     const b = await body(req);
     if (!b.email || typeof b.email !== "string") return err("email is required");
     const email = b.email.trim().toLowerCase();
+
+    // Beta gate (BETA_GATED=1): only invited waitlist emails may sign up; each such signup
+    // receives the free welcome grant (BETA_GRANT_CREDITS, default 30) — no card needed.
+    const gated = optionalEnv("BETA_GATED") === "1";
+    if (gated) {
+      const wl = await app.store.getWaitlistEntry(email);
+      if (!wl || !wl.invited_at) {
+        return err("the beta is invite-only right now — join the waitlist at asoptimus.com and we'll email your invite", 403);
+      }
+    }
+
     const r = await app.auth.signup(email);
     if (r.existed) return json({ message: "account already exists — key was sent earlier (use /account/resend-key)" });
+
+    let freeCredits: number | undefined;
+    if (gated) {
+      const amount = Math.max(0, Math.round(Number(optionalEnv("BETA_GRANT_CREDITS", "30")) || 0));
+      // Idempotent by ref: one beta grant per user, ever.
+      if (amount > 0 && await app.billing.grant(r.userId, amount, `beta_${r.userId}`, "beta welcome grant")) {
+        freeCredits = amount;
+      }
+      await app.store.markWaitlistSignedUp(email);
+    }
+
     try {
-      await app.email.sendActivationKey(email, r.key);
+      await app.email.sendActivationKey(email, r.key, freeCredits);
     } catch (e: any) {
       log.warn("[signup] key email not sent", { email, err: String(e?.message ?? e) });
       return json({ error: "failed to send key email — try /account/resend-key" }, 502);
