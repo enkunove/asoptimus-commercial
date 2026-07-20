@@ -10,6 +10,7 @@ import { defaultRunConfig, validateRunConfig } from "../config.ts";
 import { topupCatalog } from "../billing/packages.ts";
 import { modelInfos, quoteFor, pricePerKeyphrase, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
 import { IS_DEV, optionalEnv } from "../env.ts";
+import { isPaddleIp } from "../paddle/service.ts";
 import { log } from "../log.ts";
 import type { RunConfig, RunAction, BalanceView, ActivateResponse, RunQuote } from "@aso/shared";
 
@@ -73,6 +74,33 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   // ── health ───────────────────────────────────────────────────────────────
   if (path === "/health") return json({ ok: true, ts: new Date().toISOString() });
 
+  // ── /: humans and payment-domain reviewers land here (Paddle reviews the host that
+  //    serves /buy — a bare 404 at the root reads as "site offline"). The storefront is
+  //    asoptimus.com; this page says so and links the docs reviewers check. ──
+  if (path === "/" && method === "GET") {
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>ASOptimus — checkout &amp; API host</title></head>
+<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#FDF3DA;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#191D3A">
+<div style="max-width:480px;background:#fff;border:2.5px solid #191D3A;border-radius:16px;box-shadow:6px 6px 0 #191D3A;padding:32px 36px;margin:20px">
+<div style="width:52px;height:52px;background:#F86C1A;border:2.5px solid #191D3A;border-radius:14px;box-shadow:3px 3px 0 #191D3A;color:#fff;font-weight:800;font-size:28px;line-height:48px;text-align:center">A</div>
+<h1 style="font-size:24px;margin:14px 0 8px;letter-spacing:-0.01em">ASOptimus — checkout &amp; API host</h1>
+<p style="color:#565B76;margin:0 0 14px">This subdomain serves the secure checkout and the API for the
+<b>ASOptimus</b> desktop app — a keyword-research (ASO) tool for app developers. Usage is billed in
+prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Paddle.com</b> as merchant of record.</p>
+<p style="margin:0 0 4px">Product, pricing and legal documents live on the main site:</p>
+<ul style="color:#191D3A;margin:6px 0 14px;padding-left:22px;line-height:1.9">
+<li><a href="https://asoptimus.com/" style="color:#0244B5">Product &amp; pricing — asoptimus.com</a></li>
+<li><a href="https://asoptimus.com/terms" style="color:#0244B5">Terms of Service</a></li>
+<li><a href="https://asoptimus.com/privacy" style="color:#0244B5">Privacy Policy</a></li>
+<li><a href="https://asoptimus.com/refunds" style="color:#0244B5">Refund Policy</a></li>
+</ul>
+<p style="color:#565B76;margin:0">Operated by Individual Entrepreneur EGOR SHEVKUNOV ·
+<a href="mailto:hello@asoptimus.com" style="color:#0244B5">hello@asoptimus.com</a></p>
+</div></body></html>`;
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
   // ── admin panel (SPA + API; ADMIN_TOKEN-gated, off when unset) ───────────
   const adminResp = await handleAdmin(app, req, url, path);
   if (adminResp) return adminResp;
@@ -113,6 +141,11 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
       return checkoutPage("Payments not configured", "PADDLE_CLIENT_TOKEN is not set on this server yet.");
     }
     const sandbox = token.startsWith("test_");
+    // Paddle Retain: pwCustomer must be the PADDLE customer id (ctm_…), never our internal
+    // id or email. The page itself is anonymous, but the transaction in ?_ptxn= knows its
+    // customer — look it up server-side. Best-effort: null → initialize without it.
+    const ptxn = url.searchParams.get("_ptxn") ?? "";
+    const pwCustomerId = ptxn ? await app.payments.transactionCustomer(ptxn) : null;
     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
 <title>Checkout — ASOptimus</title></head>
@@ -135,6 +168,7 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
       // Paddle.js auto-detects ?_ptxn= and opens the overlay checkout after Initialize.
       Paddle.Initialize({
         token: ${JSON.stringify(token)},
+        ${pwCustomerId ? `pwCustomer: { id: ${JSON.stringify(pwCustomerId)} },` : ""}
         eventCallback: function (ev) {
           if (ev.name === "checkout.completed") {
             msg.textContent = "Payment received — credits land in the app within a few seconds. You can close this tab.";
@@ -221,6 +255,20 @@ export async function handleHttp(app: App, req: Request): Promise<Response> {
   }
 
   if (path === "/webhooks/paddle" && method === "POST") {
+    // Source-IP allowlist (Paddle's published egress IPs) in FRONT of the signature check.
+    // The IP is the LAST X-Forwarded-For entry — the one appended by OUR proxy (Caddy/Fly);
+    // the first entry is client-supplied and spoofable. Prod always sits behind that proxy,
+    // so an empty header is also rejected. Skipped in DEV (local tunnels, tests, mock);
+    // if the allowlist cannot be fetched, the HMAC signature alone gates (fail-open there,
+    // never on a definitive non-Paddle IP).
+    if (!IS_DEV && !app.payments.mock) {
+      const xff = req.headers.get("x-forwarded-for") ?? "";
+      const ip = xff.split(",").pop()?.trim() ?? "";
+      if ((await isPaddleIp(ip)) === false) {
+        log.warn("[paddle] webhook from non-Paddle IP rejected", { ip });
+        return json({ ok: false, note: "source IP not in Paddle's published ranges" }, 403);
+      }
+    }
     const raw = await req.text();
     const sig = req.headers.get("paddle-signature");
     const r = await app.payments.handleWebhook(raw, sig);
