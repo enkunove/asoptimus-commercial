@@ -110,6 +110,7 @@ class WssCloudLink implements CloudLink {
   private pending = new Map<string, Pending>();
   private seq = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
 
   constructor(private url: string, private deps: CloudLinkDeps) {}
@@ -143,11 +144,13 @@ class WssCloudLink implements CloudLink {
         device_fp: this.deps.session.deviceFp,
         resume_job_ids: [...this.completedJobIds],
       });
+      this.startKeepalive();
     });
     ws.addEventListener("message", (ev) => this.onMessage(String((ev as MessageEvent).data)));
     ws.addEventListener("close", () => {
       this.connected = false;
       this.ws = null;
+      this.stopKeepalive();
       this.emitter.emit({ type: "connection", connected: false });
       this.failAllPending(new Error("connection to the cloud was lost"));
       this.scheduleReconnect();
@@ -164,6 +167,23 @@ class WssCloudLink implements CloudLink {
       this.reconnectTimer = null;
       this.connect();
     }, 3000);
+  }
+
+  // A half-open TCP connection fires no 'close' — the socket sits "connected" while every
+  // push from the cloud is lost (seen in prod: the UI froze mid-assembly until re-entered).
+  // App-level keepalive: a cheap query every 30s; if it times out, force-close the socket
+  // so the normal 'close' → reconnect path takes over (worst-case detection ~50s).
+  private startKeepalive() {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      if (!this.connected) return;
+      this.query("balance")
+        .then((b) => { this.balance = b.credits; })
+        .catch(() => { try { this.ws?.close(); } catch { /* ignore */ } });
+    }, 30_000);
+  }
+  private stopKeepalive() {
+    if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
   }
 
   /** Sign every client→server message (SignedEnvelope) and send it. */
@@ -314,6 +334,7 @@ class WssCloudLink implements CloudLink {
   stop() {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.stopKeepalive();
     this.failAllPending(new Error("client stopped"));
     try { this.ws?.close(); } catch { /* ignore */ }
   }

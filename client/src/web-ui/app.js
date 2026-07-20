@@ -172,7 +172,9 @@ let sseOk = false;
 function startLive() {
   try {
     const es = new EventSource(`/api/events?token=${encodeURIComponent(TOKEN)}`);
-    es.onopen = () => (sseOk = true);
+    // On (re)open resync the current view: anything pushed while the stream was down is gone
+    // from the wire and only lives in the server snapshot.
+    es.onopen = () => { sseOk = true; scheduleLiveRefresh(null); };
     es.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
@@ -180,6 +182,9 @@ function startLive() {
         else if (msg.type === "balance") setBalance(msg.credits);
         else if (msg.type === "run-paused") { pauseReasons[msg.slug] = msg.reason || ""; pauseCodes[msg.slug] = msg.code || ""; scheduleLiveRefresh(msg.slug); }
         else if (msg.type === "phase" || msg.type === "feed") scheduleLiveRefresh(msg.slug);
+        // Cloud WSS came back after a drop: events emitted while it was down were never sent —
+        // refetch the snapshot instead of waiting for a push that already happened without us.
+        else if (msg.type === "connection" && msg.connected) scheduleLiveRefresh(null);
       } catch {}
     };
     es.onerror = () => (sseOk = false);
