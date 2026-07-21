@@ -83,6 +83,27 @@ export const rateSchema = {
   additionalProperties: false,
 } as const;
 
+export const classifySchema = {
+  type: "object",
+  properties: {
+    apps: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          trackId: { type: "integer" },
+          match: { type: "number", enum: [0, 0.5, 1] },
+          reason: { type: "string" },
+        },
+        required: ["trackId", "match", "reason"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["apps"],
+  additionalProperties: false,
+} as const;
+
 export const phraseSchema = {
   type: "object",
   properties: {
@@ -100,6 +121,7 @@ export const schemas: Record<string, object> = {
   hypothesize: hypothesizeSchema,
   phrase: phraseSchema,
   compose: phraseSchema,
+  classify: classifySchema,
 };
 
 /** Minimal structural validation of a response against a schema (code does not trust the provider, spec 06.1). */

@@ -63,6 +63,10 @@ export interface KeywordMetrics {
   reason: string | null;
   score: number | null;
   brandQuery?: boolean;
+  /** Semantic half of R: the prescreen LLM rating (0–3 integer), kept for the audit trail. */
+  semR?: number | null;
+  /** Measured half of R: positionally-weighted share of top-SERP apps in our niche (0–1). */
+  serpFit?: number | null;
 }
 
 export interface KeywordEntry {

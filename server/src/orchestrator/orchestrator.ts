@@ -24,6 +24,7 @@ import {
 import { computePopularity } from "../core/metrics/popularity.ts";
 import { computeDifficulty, isDeadBrandQuery } from "../core/metrics/difficulty.ts";
 import { opportunityScore, compareKeywords } from "../core/metrics/score.ts";
+import { serpFitOf, finalR, RELEVANCE } from "../core/metrics/relevance.ts";
 import { phraseKeys } from "../core/assembly/select.ts";
 import { optimizeAssembly, orderForField, glueField, type BucketWordPlan, type OptPhrase } from "../core/assembly/optimize.ts";
 import { placementWeight, type Placement } from "../core/assembly/place.ts";
@@ -394,6 +395,7 @@ export class Orchestrator {
         if (!k || k.status !== "candidate") continue;
         if (!rating.reason?.trim()) continue;
         k.metrics.R = rating.r;
+        k.metrics.semR = rating.r; // semantic half of R (spec 03.3v2) — survives final rating
         k.metrics.reason = `[prescreen] ${rating.reason.slice(0, 180)}`;
         if (rating.brand === true) k.metrics.brandQuery = true; // rater-detected live brand (rate.md rule 7)
         accepted++;
@@ -411,6 +413,7 @@ export class Orchestrator {
           for (const k of batch) {
             if (k.status === "candidate" && k.metrics.R === null) {
               k.metrics.R = 1;
+              k.metrics.semR = 1;
               k.metrics.reason = "[prescreen] no rating received — passed through to probe";
             }
           }
@@ -423,60 +426,89 @@ export class Orchestrator {
     }
   }
 
-  private async rateOneBatch(): Promise<number> {
-    const system = renderPrompt("rate", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
-    const batch = this.state.keywords.filter((k) => k.status === "verified").slice(0, 25);
-    if (batch.length === 0) return 0;
-    this.checkPause();
-    const items = batch.map((k) => ({
-      keyword: k.keyword,
-      P: k.degraded ? null : k.metrics.P,
-      D: k.metrics.D,
-      top3: k.metrics.topApps.slice(0, 3).map((a) => a.trackName),
-    }));
-    const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string; brand?: boolean }[] }>(
-      "rate", system, `Rate this batch of keywords:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
-    );
-    let ratedCount = 0;
-    for (const rating of res.ratings) {
-      const k = batch.find((x) => x.keyword === normalizeKeyword(rating.keyword));
-      if (!k || k.status !== "verified") continue;
-      if (!rating.reason?.trim()) continue;
-      if (rating.r >= 1) {
-        // Overshoot cap (D4 v4): don't accumulate beyond sampleSize×(1+OVERSHOOT_PCT).
-        if (this.atOvershootCap()) break;
+  /**
+   * Classify every SERP app seen but not yet judged (spec 03.3v2). ONE verdict per app,
+   * cached in state.appNiche and reused by every keyword whose top results include it — this
+   * is what makes R stable across keywords and across runs (the question "is this OUR kind of
+   * app?" is far more reproducible than "is this query core/adjacent?"). Also the niche map
+   * for the Competitors tab. No per-keyword LLM call and no charge here — pure COGS, capped by
+   * the margin fuse. Batches of 50 short name→id records.
+   */
+  private async classifyNewApps(): Promise<number> {
+    const seen = this.state.appNiche;
+    const pending = new Map<number, string>();
+    for (const k of this.state.keywords) {
+      if (k.status !== "verified" && k.status !== "rated" && k.status !== "excluded") continue;
+      for (const a of k.metrics.topApps.slice(0, this.config.serpTop)) {
+        if (seen[String(a.trackId)] === undefined && !pending.has(a.trackId)) pending.set(a.trackId, a.trackName);
+      }
+    }
+    if (pending.size === 0) return 0;
+    const system = renderPrompt("classify", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
+    const entries = [...pending.entries()];
+    let classified = 0;
+    for (let i = 0; i < entries.length; i += 50) {
+      this.checkPause();
+      const chunk = entries.slice(i, i + 50);
+      const items = chunk.map(([trackId, trackName]) => ({ trackId, trackName }));
+      const res = await this.llm<{ apps: { trackId: number; match: number; reason: string }[] }>(
+        "classify", system, `Classify these apps by niche fit:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
+      );
+      for (const a of res.apps) {
+        if (!pending.has(a.trackId)) continue;
+        const match = a.match === 1 ? 1 : a.match === 0.5 ? 0.5 : 0;
+        seen[String(a.trackId)] = { match, reason: (a.reason ?? "").slice(0, 100) };
+        classified++;
+      }
+      // Any app the model skipped: assume adjacent (0.5) so serpFit is never blocked on a
+      // missing verdict, and record it so we don't re-ask next round.
+      for (const [trackId] of chunk) {
+        if (seen[String(trackId)] === undefined) seen[String(trackId)] = { match: 0.5, reason: "not classified — assumed adjacent" };
+      }
+      await this.save();
+    }
+    if (classified > 0) await this.event("🔎", `classified ${classified} store apps by niche — the measured basis for R`);
+    return classified;
+  }
+
+  /** Human-readable, code-generated R trail (spec 03.3v2): the semantic prior, the measured
+   *  store fit, and evidence confidence — every factor traces to raw data. */
+  private relevanceReason(semReason: string, sem: number, fit: number, conf: number, R: number): string {
+    const semTxt = semReason.replace(/^\[prescreen\]\s*/, "").trim();
+    const confNote = conf < 1 ? `, thin SERP (${Math.round(conf * 100)}% of top-${this.config.serpTop})` : "";
+    return `R ${R} = semantic ${sem}/3 × store-fit ${Math.round(fit * 100)}%${confNote}. ${semTxt}`.slice(0, 240);
+  }
+
+  /**
+   * Final Relevance (spec 03.3v2). R is COMPUTED, not asked: sem = the prescreen rating (the
+   * only place an LLM judges the query), fit = the in-niche share of the MEASURED top SERP
+   * (from classifyNewApps). No per-keyword LLM call → the number no longer swings run-to-run.
+   * Charges each INCLUDED keyphrase (D4 v4, capped at the overshoot cap); beyond the cap an
+   * included phrase stays rated but free, so the charge count never exceeds the cap.
+   */
+  private async rateAll() {
+    await this.classifyNewApps();
+    const serpTop = this.config.serpTop;
+    const pending = this.state.keywords.filter((k) => k.status === "verified");
+    for (const k of pending) {
+      this.checkPause();
+      const sem = k.metrics.semR ?? k.metrics.R ?? 1;
+      const { fit, conf } = serpFitOf(k.metrics.topApps, this.state.appNiche, serpTop);
+      const R = finalR(sem, fit, conf);
+      const included = R >= RELEVANCE.includeThreshold;
+      if (included && !this.atOvershootCap()) {
         // REAL debit of a verified keyphrase (D4 v4). Insufficient → hard-stop (paused, resumable).
         const charge = await this.deps.chargeKeyphrase(k.keyword);
         if (!charge.ok) throw new InsufficientCredits(charge.price, charge.balance);
       }
-      k.metrics.R = rating.r;
-      k.metrics.reason = rating.reason.slice(0, 200);
-      if (rating.brand === true) k.metrics.brandQuery = true; // rater-detected live brand (rate.md rule 7)
-      k.status = rating.r === 0 ? "excluded" : "rated";
+      k.metrics.semR = sem;
+      k.metrics.serpFit = Math.round(fit * 100) / 100;
+      k.metrics.R = R;
+      k.metrics.reason = this.relevanceReason(k.metrics.reason ?? "", sem, fit, conf, R);
+      k.status = included ? "rated" : "excluded";
       this.recomputeScore(k);
-      ratedCount++;
-      await this.event("★", `${k.keyword} → R=${rating.r}, Score=${k.metrics.score ?? 0}`);
-    }
-    await this.save();
-    return ratedCount;
-  }
-
-  private async rateAll() {
-    let missRounds = 0;
-    while (this.state.keywords.some((k) => k.status === "verified")) {
-      this.checkPause();
-      const batch = this.state.keywords.filter((k) => k.status === "verified").slice(0, 25);
-      const ratedCount = await this.rateOneBatch();
-      if (ratedCount === 0) {
-        missRounds++;
-        if (missRounds >= 3) {
-          for (const k of batch) { k.status = "error"; k.error = "LLM returned no R rating"; }
-          await this.save();
-          missRounds = 0;
-        }
-      } else {
-        missRounds = 0;
-      }
+      await this.event("★", `${k.keyword} → R=${R} (sem ${sem}/3 · fit ${Math.round(fit * 100)}%), Score=${k.metrics.score ?? 0}`);
+      await this.save();
     }
   }
 

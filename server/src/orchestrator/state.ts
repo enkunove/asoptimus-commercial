@@ -27,6 +27,10 @@ export interface ServerRunState {
   /** Apple HTTP traffic as reported by the client (job.result.http snapshots, monotonic max). */
   http: HttpStats;
   assembly: AssemblyResult | null;
+  /** Niche verdict per SERP app (trackId → {match 0/0.5/1, reason}), classified once per run
+   *  and shared across every keyword whose top results include that app (spec 03.3v2). Powers
+   *  the measured half of R (serpFit) and, downstream, the Competitors tab. */
+  appNiche: Record<string, { match: number; reason: string }>;
   improvementState: { roundsSpent: number; topSnapshot: string[] };
   /** Monotonic logical-step counters (for llm_steps replay ids). */
   stepCounters: Record<string, number>;
@@ -47,6 +51,7 @@ export function initialState(runId: string, userId: string, brief: string, confi
     context: null, keywords: [], rejected: [],
     expansion: { done: {}, roots: [], pending: [] },
     usage: newUsage(), http: { requestsMade: 0, cacheHits: 0, throttleWaitMs: 0 }, assembly: null,
+    appNiche: {},
     improvementState: { roundsSpent: 0, topSnapshot: [] },
     stepCounters: {},
     estimateCredits,

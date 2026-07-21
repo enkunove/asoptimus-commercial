@@ -1067,8 +1067,11 @@ function healthPanel(items, findings) {
 
   const withR = items.filter((i) => i.R != null);
   const rTotal = Math.max(1, withR.length);
-  const rCounts = [3, 2, 1, 0].map((r) => withR.filter((i) => i.R === r).length);
-  const rSegs = [["r3", rCounts[0], "R=3 core"], ["r2", rCounts[1], "R=2 adjacent"], ["r1", rCounts[2], "R=1 tangent"], ["r0", rCounts[3], "R=0 excluded"]]
+  // R is continuous (spec 03.3v2): bucket by band — [2.5,3] core, [1.5,2.5) adjacent, [1,1.5) tangent, <1 excluded.
+  const rBand = (r) => (r >= 2.5 ? 0 : r >= 1.5 ? 1 : r >= 1 ? 2 : 3);
+  const rCounts = [0, 0, 0, 0];
+  for (const i of withR) rCounts[rBand(Number(i.R))]++;
+  const rSegs = [["r3", rCounts[0], "R≈3 core"], ["r2", rCounts[1], "R≈2 adjacent"], ["r1", rCounts[2], "R≈1 tangent"], ["r0", rCounts[3], "R<1 excluded"]]
     .filter(([, n]) => n > 0)
     .map(([cls, n, t]) => `<div class="seg ${cls}" style="width:${(Number(n) / rTotal) * 100}%" title="${t}: ${n}"></div>`).join("");
 

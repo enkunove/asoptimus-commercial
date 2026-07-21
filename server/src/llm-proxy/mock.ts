@@ -84,6 +84,13 @@ export class MockLlmClient implements LlmClient {
         const sub = phrases.slice(1).find((p) => p.split(" ").every((w) => !sWords.has(w))) ?? "";
         return JSON.stringify({ titleSlogan: slogan, subtitle: sub });
       }
+      case "classify": {
+        // Mock niche classifier: every SERP app is "same niche" (match 1) so serpFit ≈ 1 and
+        // computed R ≈ the prescreen semantic rating — the happy path stays deterministic.
+        const ids = extract(/"trackId"\s*:\s*(\d+)/g, req.prompt);
+        const apps = ids.map((id) => ({ trackId: Number(id), match: 1, reason: "same niche (mock)" }));
+        return JSON.stringify({ apps });
+      }
       case "compose": {
         // The optimizer already guarantees the word sets fit the budgets; echoing them
         // Title-Cased in the suggested order is a valid composition.
