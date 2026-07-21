@@ -84,8 +84,10 @@ Final R decomposes into the two factors it always meant, only one of which is se
 serpFit = Σ_i  posWeight(i) · match(app_i)        // posWeight mirrors D: (serpTop−i)/Σ
 conf    = min(1, observed / serpTop)              // thin SERP → low confidence
 fitAdj  = conf · serpFit + (1 − conf) · (sem/3)   // scarce evidence blends back to the prior
-R       = 3 · (sem/3)^0.6 · fitAdj^0.4            // 0–3, one decimal; sem=0 ⇒ 0 (anti-semantics)
+R       = 3 · (sem/3)^0.3 · fitAdj^0.7            // 0–3, one decimal; sem=0 ⇒ 0 (anti-semantics)
 ```
+
+**Weighting (v2.1).** The exponents are deliberately **fit-dominant** (0.3 semantic / 0.7 store). The measured store fit is the reliable, reproducible signal; the coarse 0–3 LLM rating is the noisy one — on a live run it rated the core term "gambling addiction" a 2 while over-rating the feature "panic button" a 3, and a symmetric blend let that inversion survive into the ranking. Leaning on fit fixes it: a store-confirmed core term can no longer be dragged below a feature by an under-rating. The LLM stays a **secondary** signal — it still (a) vetoes anti-semantics (sem=0 ⇒ R=0, non-negotiable) and (b) suppresses queries the store only coincidentally fills with our apps (generic "habit tracker …" it correctly marks tangential, which fit alone would over-promote). Exponents sum to 1, so a thin SERP (no store evidence, conf→0) returns exactly the semantic prior. Residual anti-semantic leaks (e.g. "sobriety tracker" the prescreen rated 1 and whose SERP the classifier called adjacent) are a labeling matter for the prescreen / niche-classify prompts, not the formula.
 
 R is continuous. Keywords with `R ≥ 1` are included (charged, enter the sample and assembly); below 1 they are excluded (not charged). The `reason` is code-generated and fully traceable: `"R 2.8 = semantic 3/3 × store-fit 85%. <prescreen reason>"`, with the classified top SERP available behind it. There is **no per-keyword final `rate` call** — the only LLM query-judgement is the prescreen. Implementation: `core/metrics/relevance.ts`, `prompts/classify.md`.
 

@@ -42,9 +42,17 @@ describe("finalR", () => {
   });
 
   test("inflated semantic but wrong store fit → demoted (the 'clarity cbt' case)", () => {
-    // A word-salad the LLM over-rated 3, store fit ~0.3 → clearly demoted from 3.
-    expect(finalR(3, 0.3, 1)).toBeLessThan(2.0);
-    expect(finalR(3, 0.3, 1)).toBeGreaterThan(1.3);
+    // A word-salad the LLM over-rated 3, store fit ~0.3 → fit-dominant blend demotes it hard.
+    expect(finalR(3, 0.3, 1)).toBeLessThan(1.6);
+    expect(finalR(3, 0.3, 1)).toBeGreaterThan(1.0);
+  });
+
+  test("store-confirmed core outranks an over-rated feature (the reported inversion)", () => {
+    // gambling addiction: LLM under-rated it 2, but the store strongly backs it (fit 0.75).
+    // panic button: LLM over-rated it 3, store half-backs it (fit 0.5). Core must now win.
+    const gamblingAddiction = finalR(2, 0.75, 1);
+    const panicButton = finalR(3, 0.5, 1);
+    expect(gamblingAddiction).toBeGreaterThan(panicButton);
   });
 
   test("sem 0 is a hard zero regardless of fit (anti-semantics)", () => {

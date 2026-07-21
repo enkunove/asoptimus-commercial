@@ -3,15 +3,23 @@
 // R used to be a per-keyword LLM opinion taken at final-rating time — the least stable number
 // in the pipeline (batch composition swung 2↔3, which is ±33% of Score). V2 decomposes R into
 // the only two things it ever actually meant:
-//   semantic   — does the QUERY's intent match our product? (prescreen LLM, 0–3, unchanged)
+//   semantic   — does the QUERY's intent match our product? (prescreen LLM, 0–3)
 //   store fit  — how does Apple actually interpret the query? (measured: the share of top-SERP
 //                apps that are in our niche, classified once per app per run)
-// The final number is computed, continuous, and every factor is traceable to raw data.
+//
+// v2.1 (weighting fix): the MEASURED store fit is the reliable signal; the 0–3 LLM rating is the
+// noisy one (on a live run it rated the core term "gambling addiction" 2 and the feature "panic
+// button" 3 — inverting them). So the geometric blend leans on fit (0.7) and keeps the LLM as a
+// SECONDARY signal (0.3): it still vetoes anti-semantics (sem=0 ⇒ R=0) and suppresses queries the
+// store only coincidentally associates with us (generic "habit tracker …" the LLM correctly marks
+// tangential), but it can no longer drag a store-confirmed core term below a feature. Exponents
+// sum to 1 so a thin SERP (no store evidence) returns exactly the semantic prior.
 
 export const RELEVANCE = {
-  /** Exponents of the geometric blend: both factors are necessary, semantics slightly heavier. */
-  semExp: 0.6,
-  fitExp: 0.4,
+  /** Geometric-blend exponents. Fit-dominant: the measured store signal leads; the LLM rating is
+   *  a secondary check + the anti-semantics veto. Must sum to 1 (thin-evidence blend → R=sem). */
+  semExp: 0.3,
+  fitExp: 0.7,
   /** Phrases below this R are excluded from metadata (same boundary as the old integer R≥1). */
   includeThreshold: 1.0,
 } as const;
