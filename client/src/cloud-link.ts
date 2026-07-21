@@ -169,17 +169,23 @@ class WssCloudLink implements CloudLink {
     }, 3000);
   }
 
-  // A half-open TCP connection fires no 'close' — the socket sits "connected" while every
-  // push from the cloud is lost (seen in prod: the UI froze mid-assembly until re-entered).
-  // App-level keepalive: a cheap query every 30s; if it times out, force-close the socket
-  // so the normal 'close' → reconnect path takes over (worst-case detection ~50s).
+  // A half-open TCP connection fires no 'close' — the socket sits "connected" while every push
+  // from the cloud is lost. App-level keepalive: a cheap query every 30s. Only force a reconnect
+  // after TWO consecutive misses — a single slow response during a busy run must NOT tear down a
+  // healthy socket, because a reconnect pauses/resumes the run server-side (D7). The client's
+  // unconditional live-poll (app.js) is the primary defense against a frozen view; this is just
+  // transport recovery for a genuinely dead socket.
   private startKeepalive() {
     this.stopKeepalive();
+    let misses = 0;
     this.keepaliveTimer = setInterval(() => {
       if (!this.connected) return;
       this.query("balance")
-        .then((b) => { this.balance = b.credits; })
-        .catch(() => { try { this.ws?.close(); } catch { /* ignore */ } });
+        .then((b) => { this.balance = b.credits; misses = 0; })
+        .catch(() => {
+          misses += 1;
+          if (misses >= 2) { misses = 0; try { this.ws?.close(); } catch { /* ignore */ } }
+        });
     }, 30_000);
   }
   private stopKeepalive() {

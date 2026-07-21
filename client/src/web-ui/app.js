@@ -189,8 +189,23 @@ function startLive() {
     };
     es.onerror = () => (sseOk = false);
   } catch { sseOk = false; }
-  setInterval(() => { if (!sseOk) scheduleLiveRefresh(null); }, 3000);
+  // Unconditional live poll. SSE/WSS push is only an optimization for snappiness — the view must
+  // NEVER sit on stale data while the server makes progress. A half-open WSS, a silently dropped
+  // SSE stream (onerror doesn't always fire), or a phase that emits sparse events would otherwise
+  // freeze the run view until a manual re-entry (which is just a fresh fetch). So we refetch on a
+  // steady timer regardless of sseOk. It's cheap: renderRunTop/renderTab short-circuit when the
+  // state signature is unchanged, preserve scroll, and skip while an input/menu is focused.
+  setInterval(() => {
+    liveTick++;
+    const hash = location.hash || "#/runs";
+    if (hash.startsWith("#/runs")) { scheduleLiveRefresh(null); return; }
+    if (!hash.startsWith("#/run/")) return;
+    const phase = lastRunData && lastRunData.state && lastRunData.state.phase;
+    const active = !phase || phase !== "done"; // finished runs: poll slowly (catch a reassemble)
+    if (active || liveTick % 6 === 0) scheduleLiveRefresh(null);
+  }, 2500);
 }
+let liveTick = 0;
 
 const pauseReasons = {}; // slug → pause reason text (fallback signal)
 const pauseCodes = {};   // slug → structured reason code (run.paused.code) — primary signal

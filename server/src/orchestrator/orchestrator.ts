@@ -447,6 +447,7 @@ export class Orchestrator {
     const system = renderPrompt("classify", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
     const entries = [...pending.entries()];
     let classified = 0;
+    if (entries.length > 50) await this.event("🔎", `classifying ${entries.length} store apps by niche…`);
     for (let i = 0; i < entries.length; i += 50) {
       this.checkPause();
       const chunk = entries.slice(i, i + 50);
@@ -466,6 +467,7 @@ export class Orchestrator {
         if (seen[String(trackId)] === undefined) seen[String(trackId)] = { match: 0.5, reason: "not classified — assumed adjacent" };
       }
       await this.save();
+      if (entries.length > 50) await this.event("🔎", `niche classified: ${Math.min(i + 50, entries.length)}/${entries.length} apps`);
     }
     if (classified > 0) await this.event("🔎", `classified ${classified} store apps by niche — the measured basis for R`);
     return classified;
