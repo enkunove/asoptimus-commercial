@@ -71,13 +71,31 @@ Assigned by the built-in LLM via the batch call `rate` (contract in `06-llm-adap
 
 `reason` is mandatory (non-empty), stored in state, shown in the UI next to the score; the entire LLM call itself (prompt + response) is available in the LLM call log. This makes the LLM's judgment human-verifiable. Keywords matching the anti-semantics from the context must receive R=0.
 
+### 3.3v2 Relevance is computed, not asked (supersedes the per-keyword final rating)
+
+The rubric above stayed the **prescreen** — a purely semantic, pre-measurement gate — but the *final* R is no longer a second per-keyword LLM opinion. That call was the least reproducible number in the system: its output moved with batch composition (±33% of Score on a 2↔3 flip) and differed run-to-run for the same keyword; it over-rated word salad and under-rated real cores, because "is this query core or adjacent?" asked in isolation is inherently subjective.
+
+Final R decomposes into the two factors it always meant, only one of which is semantic:
+
+- **semantic prior** `sem ∈ {0,1,2,3}` — the prescreen rating (the LLM judges the query's intent once, before measurement). Unchanged.
+- **store fit** `serpFit ∈ [0,1]` — MEASURED: the positionally-weighted share of the query's top-`serpTop` SERP that sits in our niche. Each SERP app is niche-classified **once per run** (`match ∈ {0, 0.5, 1}`, LLM task `classify`, cached in `state.appNiche` keyed by trackId) and reused by every keyword whose results include it. "Is this OUR kind of app?" is far more reproducible than rating each query, and one verdict serves dozens of keywords — so R stops drifting between keywords and between runs. The same niche map feeds the Competitors tab.
+
+```
+serpFit = Σ_i  posWeight(i) · match(app_i)        // posWeight mirrors D: (serpTop−i)/Σ
+conf    = min(1, observed / serpTop)              // thin SERP → low confidence
+fitAdj  = conf · serpFit + (1 − conf) · (sem/3)   // scarce evidence blends back to the prior
+R       = 3 · (sem/3)^0.6 · fitAdj^0.4            // 0–3, one decimal; sem=0 ⇒ 0 (anti-semantics)
+```
+
+R is continuous. Keywords with `R ≥ 1` are included (charged, enter the sample and assembly); below 1 they are excluded (not charged). The `reason` is code-generated and fully traceable: `"R 2.8 = semantic 3/3 × store-fit 85%. <prescreen reason>"`, with the classified top SERP available behind it. There is **no per-keyword final `rate` call** — the only LLM query-judgement is the prescreen. Implementation: `core/metrics/relevance.ts`, `prompts/classify.md`.
+
 ## 3.4 Opportunity Score, 0–100 — final strength
 
 ```
 Score = round(100 × (P/100)^0.6 × ((100 − D)/100)^0.4 × (R/3))
 ```
 
-The power form: both factors must be non-zero (a popular but impenetrable query ≈ useless; an empty but easy one — likewise), and the exponents 0.6/0.4 prioritize demand. R is a linear multiplier: adjacent queries (R=2) lose a third of their strength.
+The power form: both factors must be non-zero (a popular but impenetrable query ≈ useless; an empty but easy one — likewise), and the exponents 0.6/0.4 prioritize demand. R is a linear multiplier: adjacent queries (R=2) lose a third of their strength. (With R now continuous per 3.3v2, `R/3` is evaluated directly — e.g. R=2.8 → ×0.933.)
 
 **Examples:**
 - P=80, D=70, R=3 → 100 × 0.8^0.6 × 0.3^0.4 × 1 = 100 × 0.875 × 0.618 = **54**
