@@ -177,11 +177,22 @@ export class PostgresStore implements Store {
   }
 
   async appendRunEvent(runId: string, event: RunEventRow["event"]) {
-    const [r] = await this.sql<{ seq: number }[]>`
-      INSERT INTO run_events (run_id, seq, event)
-      VALUES (${runId}, (SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id = ${runId}), ${this.sql.json(event as any)})
-      RETURNING seq`;
-    return r ? Number(r.seq) : 0;
+    // seq is MAX+1 per run, which races under concurrent appends (the probe pool emits from
+    // several workers): two inserts can read the same MAX and collide on the (run_id, seq) PK.
+    // The orchestrator serializes its own events, but retry on the unique violation as defense
+    // (also covers any other concurrent emitter, e.g. the manager's own run-lifecycle events).
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const [r] = await this.sql<{ seq: number }[]>`
+          INSERT INTO run_events (run_id, seq, event)
+          VALUES (${runId}, (SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id = ${runId}), ${this.sql.json(event as any)})
+          RETURNING seq`;
+        return r ? Number(r.seq) : 0;
+      } catch (e: any) {
+        if (e?.code === "23505" && attempt < 12) continue; // seq taken by a concurrent append — recompute
+        throw e;
+      }
+    }
   }
   async listRunEvents(runId: string, afterSeq = 0) {
     return await this.sql<RunEventRow[]>`SELECT run_id, seq, ts, event FROM run_events

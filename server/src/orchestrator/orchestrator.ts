@@ -1112,9 +1112,15 @@ export class Orchestrator {
     if (this.pauseRequested) throw new PauseInterrupt();
   }
 
+  private eventChain: Promise<unknown> = Promise.resolve();
   private async event(kind: string, text: string) {
     if (this.replaying) return; // replay does not duplicate the progress feed/SSE
-    await this.deps.emitEvent(this.state.runId, kind, text);
+    // The probe pool emits events from concurrent workers; run_events.seq is allocated per run,
+    // so two overlapping appends would collide on the (run_id, seq) primary key. Serialize every
+    // event of THIS run through a promise chain — appends never overlap, feed order stays stable.
+    const next = this.eventChain.then(() => this.deps.emitEvent(this.state.runId, kind, text));
+    this.eventChain = next.catch(() => {}); // one failed append must not wedge the chain
+    return next;
   }
 
   private async save() {
