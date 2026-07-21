@@ -22,6 +22,61 @@ function apiBase(): string {
   return optionalEnv("PADDLE_ENV") === "sandbox" ? "https://sandbox-api.paddle.com" : "https://api.paddle.com";
 }
 
+// ── Webhook source-IP allowlist (defense-in-depth in FRONT of the HMAC check).
+// Paddle publishes its egress IPs at GET {apiBase}/ips (sandbox and live lists differ).
+// Fetched at runtime and cached — the endpoint is the source of truth and the list can
+// change, so it is never hard-coded. On fetch failure the caller fails OPEN (signature
+// verification still gates every delivery); a definitive non-listed IP is rejected.
+const IPS_REFRESH_MS = 6 * 60 * 60 * 1000; // re-check every 6h; serve stale on failure
+let ipsCache: { cidrs: string[]; fetchedAt: number } | null = null;
+let ipsInflight: Promise<void> | null = null;
+
+function ipv4ToInt(ip: string): number | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return null;
+  let n = 0;
+  for (let i = 1; i <= 4; i++) {
+    const octet = Number(m[i]);
+    if (octet > 255) return null;
+    n = n * 256 + octet;
+  }
+  return n;
+}
+
+function inCidr(ipInt: number, cidr: string): boolean {
+  const [base, bitsRaw] = cidr.split("/");
+  const baseInt = ipv4ToInt(base);
+  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
+  if (baseInt === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  if (bits === 0) return true; // >>> 32 is a no-op in JS, guard explicitly
+  return (ipInt >>> (32 - bits)) === (baseInt >>> (32 - bits));
+}
+
+async function refreshPaddleIps(): Promise<void> {
+  const res = await fetch(`${apiBase()}/ips`);
+  const data: any = await res.json().catch(() => null);
+  const cidrs = data?.data?.ipv4_cidrs;
+  if (!res.ok || !Array.isArray(cidrs) || cidrs.length === 0) {
+    throw new Error(`GET /ips failed (HTTP ${res.status})`);
+  }
+  ipsCache = { cidrs: cidrs.map(String), fetchedAt: Date.now() };
+}
+
+/** true/false = definitively listed / not listed; null = allowlist unavailable
+ *  (never fetched successfully) — the caller decides, the signature still gates. */
+export async function isPaddleIp(ip: string): Promise<boolean | null> {
+  const ipInt = ipv4ToInt(ip);
+  if (ipInt === null) return false; // absent or non-IPv4 — Paddle publishes IPv4 only
+  if (!ipsCache || Date.now() - ipsCache.fetchedAt > IPS_REFRESH_MS) {
+    ipsInflight ??= refreshPaddleIps()
+      .catch((e) => log.warn("[paddle] /ips allowlist refresh failed", { err: String(e?.message ?? e) }))
+      .finally(() => { ipsInflight = null; });
+    await ipsInflight;
+  }
+  if (!ipsCache) return null;
+  return ipsCache.cidrs.some((c) => inCidr(ipInt, c));
+}
+
 /** Parse `ts=…;h1=…[;h1=…]` (multiple h1 during secret rotation). */
 export function parsePaddleSignature(header: string | null): { ts: number; h1: string[] } | null {
   if (!header) return null;
@@ -218,6 +273,20 @@ export class PaddleService {
     if (url) return { checkoutUrl: url };
     if (base && txnId) return { checkoutUrl: `${base}${base.includes("?") ? "&" : "?"}_ptxn=${txnId}` };
     throw new Error("Paddle returned no checkout url — configure a default payment link in Paddle Checkout settings or set PADDLE_CHECKOUT_URL");
+  }
+
+  /** customer_id (ctm_…) of a transaction — powers pwCustomer on /buy (Paddle Retain).
+   *  Best-effort: any failure returns null and the page initializes without it. */
+  async transactionCustomer(txnId: string): Promise<string | null> {
+    if (this.mock || !/^txn_[a-z\d]+$/i.test(txnId)) return null;
+    try {
+      const res = await this.api("GET", `/transactions/${txnId}`);
+      const id = res?.data?.customer_id;
+      return typeof id === "string" && id.startsWith("ctm_") ? id : null;
+    } catch (e: any) {
+      log.warn("[paddle] transaction lookup for pwCustomer failed", { txnId, err: String(e?.message ?? e) });
+      return null;
+    }
   }
 
   /** Webhook entry: verify → parse → process. Signature is REQUIRED in every non-mock

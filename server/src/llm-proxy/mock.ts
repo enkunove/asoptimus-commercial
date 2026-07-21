@@ -84,6 +84,17 @@ export class MockLlmClient implements LlmClient {
         const sub = phrases.slice(1).find((p) => p.split(" ").every((w) => !sWords.has(w))) ?? "";
         return JSON.stringify({ titleSlogan: slogan, subtitle: sub });
       }
+      case "compose": {
+        // The optimizer already guarantees the word sets fit the budgets; echoing them
+        // Title-Cased in the suggested order is a valid composition.
+        const sets = extract(/word set: (\[[^\]]*\])/g, req.prompt);
+        const parse = (s: string | undefined): string[] => { try { return s ? (JSON.parse(s) as string[]) : []; } catch { return []; } };
+        const tc = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+        return JSON.stringify({
+          titleSlogan: parse(sets[0]).map(tc).join(" "),
+          subtitle: parse(sets[1]).map(tc).join(" "),
+        });
+      }
       default:
         return "{}";
     }

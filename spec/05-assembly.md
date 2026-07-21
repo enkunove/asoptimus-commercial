@@ -113,3 +113,36 @@ Apple indexes more than one localization per storefront: for example, for US bot
 **The extra-localization table** lives next to the storefront codes (`src/apple/storefronts.json`, field `extraLocale`): us→es-MX, gb→en-AU(→verify during the build), ru→en-GB, de→en-GB, fr→en-GB, etc.; if the extra locale for a country is unknown — pass 2 is skipped with an event in the log. Run config: `"extraLocale": true` (default; can be disabled in advanced settings).
 
 **Validation:** the T/S/K/X/W rules apply to each bucket separately, plus the new rule **X4: no folding key repeats across buckets** (including the brand). The coverage report is computed over the union of both buckets; `topUncovered` — what didn't fit even into the second one (remains as a hint in the UI).
+
+## 5.10 Assembly v2 — word-first joint optimization (supersedes 5.4–5.5 selection/placement)
+
+**Why v1 lost to a human.** V1 picked whole phrases for title/subtitle (one slogan phrase, up to
+three DISJOINT subtitle phrases), then filled keywords greedily. On the reference run it could
+never produce "Bet & Gamble Blocker" (two top queries through the shared word "blocker") or
+"Quit Gambling Addiction" (two queries overlapped in 23 chars — the disjointness rule forbade
+exactly this), and it assigned fields by phrase rank instead of global word value.
+
+**V2 model** (`core/assembly/optimize.ts`): the unit is the WORD. Six slots (title/subtitle/
+keywords × both buckets) are packed jointly to maximize
+`Σ value(p) × fieldWeight × bucketFactor × crossFactor` over completed phrases, where
+`value(p) = max(1, round(Score × rWeight))` (rWeight 1 / 0.35 / 0.1 for R3/R2/R≤1), plus:
+
+- `SECONDARY_BUCKET_FACTOR 0.93` — the primary listing wins ties, the core never drifts to the cross-locale bucket;
+- `CROSS_BUCKET_FACTOR 0.8` — phrases completed across buckets still count (the store indexes the union), discounted;
+- `COHESION_BONUS 0.15` — a phrase fully inside ONE title/subtitle slot will be composed contiguously (exact-substring beats scatter);
+- `MIN_PLACEMENT_GAIN 2` — the value-1 R1 tail never buys characters; speculative fill (5.6) tops the keyword field back to ≥92;
+- title slots refuse prefix pairs (block/blocker) — no stutter titles;
+- `bannedKeys`: words living only in brand queries (metrics.brandQuery, now also set by the rater via rate.md rule 7 `"brand": true`) are excluded outright.
+
+**Search**: phrase seeding (top R≥3 phrases claim T/S slots as whole groups — how a human starts),
+then marginal-gain greedy per character, then bounded single-word relocation passes. Deterministic.
+
+**Composition** (`prompts/compose.md`): the LLM no longer chooses words — it receives the EXACT
+word sets per field and writes human lines (any order, stopword/punctuation glue, 3 validated
+attempts). Fallback: `orderForField` (brute-force permutation maximizing contiguously realized
+phrase value) + `glueField` (Title Case, a single "&" at a non-adjacent boundary).
+
+**Reference run** (NoBettr, 218-phrase universe, honest re-rated R): v1 covered 125 phrases /
+62% of Score; a human hand-build reached 130 / 67% (weighted 1619); v2 with the deterministic
+composer reaches 142 / 72% (weighted 1926) in ~100 ms, with the core packed in bucket 1 and
+brand words excluded.

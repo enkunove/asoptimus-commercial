@@ -24,7 +24,8 @@ import {
 import { computePopularity } from "../core/metrics/popularity.ts";
 import { computeDifficulty, isDeadBrandQuery } from "../core/metrics/difficulty.ts";
 import { opportunityScore, compareKeywords } from "../core/metrics/score.ts";
-import { selectWords, phraseKeys } from "../core/assembly/select.ts";
+import { phraseKeys } from "../core/assembly/select.ts";
+import { optimizeAssembly, orderForField, glueField, type BucketWordPlan, type OptPhrase } from "../core/assembly/optimize.ts";
 import { placementWeight, type Placement } from "../core/assembly/place.ts";
 import { validate, bucketFoldKeys, wordsOf } from "../core/assembly/validate.ts";
 import { foldKey } from "../core/assembly/folding.ts";
@@ -382,7 +383,7 @@ export class Orchestrator {
       this.checkPause();
       const system = renderPrompt("rate", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
       const items = batch.map((k) => ({ keyword: k.keyword, P: null, D: null, top3: [] }));
-      const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string }[] }>(
+      const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string; brand?: boolean }[] }>(
         "rate", system, `PRESCREEN (P/D not measured yet) — rate purely semantically:\n${JSON.stringify(items, null, 2)}`,
         this.contextBlock(),
       );
@@ -394,6 +395,7 @@ export class Orchestrator {
         if (!rating.reason?.trim()) continue;
         k.metrics.R = rating.r;
         k.metrics.reason = `[prescreen] ${rating.reason.slice(0, 180)}`;
+        if (rating.brand === true) k.metrics.brandQuery = true; // rater-detected live brand (rate.md rule 7)
         accepted++;
         if (rating.r === 0) drop.add(k.keyword);
       }
@@ -432,7 +434,7 @@ export class Orchestrator {
       D: k.metrics.D,
       top3: k.metrics.topApps.slice(0, 3).map((a) => a.trackName),
     }));
-    const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string }[] }>(
+    const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string; brand?: boolean }[] }>(
       "rate", system, `Rate this batch of keywords:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
     );
     let ratedCount = 0;
@@ -449,6 +451,7 @@ export class Orchestrator {
       }
       k.metrics.R = rating.r;
       k.metrics.reason = rating.reason.slice(0, 200);
+      if (rating.brand === true) k.metrics.brandQuery = true; // rater-detected live brand (rate.md rule 7)
       k.status = rating.r === 0 ? "excluded" : "rated";
       this.recomputeScore(k);
       ratedCount++;
@@ -681,13 +684,14 @@ export class Orchestrator {
 
   private async phaseAssembling() {
     this.mustContext();
-    await this.event("🧩", "assembling metadata: core phrases into title/subtitle, words into keywords");
+    await this.event("🧩", "assembling metadata: optimizer picks the words, composer writes the lines");
     const brandWords = wordsOf(this.config.brand);
     const lang = this.config.semanticLanguage;
     const stopSet = new Set(this.config.stopwords.map((s) => s.toLowerCase()));
 
     const universe = this.state.keywords.filter((k) => (k.metrics.R ?? 0) >= 1 && (k.metrics.score ?? 0) > 0);
     const phrases = universe.map((k) => ({ keyword: k.keyword, score: k.metrics.score ?? 0 }));
+    const optPhrases: OptPhrase[] = universe.map((k) => ({ keyword: k.keyword, score: k.metrics.score ?? 0, R: k.metrics.R }));
     const scoreTotal = phrases.reduce((s, p) => s + p.score, 0);
 
     const budgets = {
@@ -696,42 +700,58 @@ export class Orchestrator {
       keywordsMax: this.config.limits.keywords,
     };
 
-    const primaryLocale = `${lang}-${this.config.country.toUpperCase()}`;
-    const bucket1 = await this.buildBucket(universe, budgets, primaryLocale, new Set());
-
-    const buckets: AssemblyBucket[] = [bucket1];
-    const keys1 = bucketFoldKeys(
-      { title: bucket1.title ?? "", subtitle: bucket1.subtitle ?? "", keywords: bucket1.keywordFieldDraft, titleWords: [], subtitleWords: [] },
-      this.config.brand, lang,
-    );
-    for (const bw of brandWords) keys1.add(foldKey(bw, lang));
-
     const extra = extraLocaleFor(this.config.country);
-    if (this.config.extraLocale) {
-      if (!extra) {
-        await this.event("ℹ️", `no extra locale known for ${this.config.country} — pass 2 skipped`);
-      } else {
-        const universe2 = universe.filter((k) => {
-          const keys = phraseKeys(k.keyword, stopSet, lang);
-          return !keys.every((x) => keys1.has(x));
-        });
-        if (universe2.length === 0) {
-          await this.event("ℹ️", "everything covered by the first bucket — pass 2 skipped");
-        } else {
-          const bucket2 = await this.buildBucket(universe2, budgets, extra, keys1);
-          buckets.push(bucket2);
-        }
+    const wantBuckets: 1 | 2 = this.config.extraLocale && extra ? 2 : 1;
+    if (this.config.extraLocale && !extra) {
+      await this.event("ℹ️", `no extra locale known for ${this.config.country} — single bucket`);
+    }
+
+    // Anchors: the leading verb of each job-to-be-done. A title slot holding one reads as a
+    // product statement ("Stop Sports Betting"), not a word pile — the optimizer gets a small
+    // bonus for that, the composer does the rest.
+    const anchorKeys = new Set(
+      this.mustContext().jobsToBeDone
+        .map((j) => wordsOf(j)[0])
+        .filter((w): w is string => !!w && !stopSet.has(w))
+        .map((w) => foldKey(w, lang)),
+    );
+
+    // Words living ONLY inside brand queries for other products (metrics.brandQuery) must not
+    // occupy budget: indexing them buys competitor-brand traffic that converts against us.
+    const brandOnly = new Map<string, boolean>();
+    for (const k of universe) {
+      const isBrand = k.metrics.brandQuery === true;
+      for (const key of phraseKeys(k.keyword, stopSet, lang)) {
+        brandOnly.set(key, (brandOnly.get(key) ?? true) && isBrand);
       }
     }
+    const bannedKeys = new Set([...brandOnly.entries()].filter(([, only]) => only).map(([k]) => k));
 
-    const allKeys = new Set<string>(keys1);
-    if (buckets[1]) {
+    const plan = optimizeAssembly({
+      phrases: optPhrases, stopwords: this.config.stopwords, brandWords,
+      language: lang, budgets, bucketCount: wantBuckets, anchorKeys, bannedKeys,
+    });
+
+    const primaryLocale = `${lang}-${this.config.country.toUpperCase()}`;
+    const buckets: AssemblyBucket[] = [];
+    const takenKeys = new Set<string>();
+    for (let bi = 0; bi < plan.buckets.length; bi++) {
+      const bp = plan.buckets[bi];
+      if (bp.title.length + bp.subtitle.length + bp.keywords.length === 0) {
+        if (bi > 0) await this.event("ℹ️", "nothing left for the cross-locale bucket — pass 2 skipped");
+        continue;
+      }
+      const locale = bi === 0 ? primaryLocale : extra!;
+      const bucket = await this.composeBucket(locale, bp, budgets, optPhrases, new Set(takenKeys));
+      buckets.push(bucket);
       for (const k of bucketFoldKeys(
-        { title: buckets[1].title ?? "", subtitle: buckets[1].subtitle ?? "", keywords: buckets[1].keywordFieldDraft, titleWords: [], subtitleWords: [] },
+        { title: bucket.title ?? "", subtitle: bucket.subtitle ?? "", keywords: bucket.keywordFieldDraft, titleWords: [], subtitleWords: [] },
         this.config.brand, lang,
-      )) allKeys.add(k);
+      )) takenKeys.add(k);
     }
+
     const brandKeys = new Set(brandWords.map((w) => foldKey(w, lang)));
+    const allKeys = new Set<string>(takenKeys);
 
     const rows: CoverageRow[] = [];
     let phrasesCovered = 0;
@@ -796,10 +816,15 @@ export class Orchestrator {
     return { bucket: null as number | null, fields: [] as string[], weight: 0 };
   }
 
-  private async buildBucket(
-    universe: KeywordEntry[],
-    budgets: { titleSloganMax: number; subtitleMax: number; keywordsMax: number },
+  /** Compose one bucket from the optimizer word plan (spec 05v2): the LLM writes the human
+   *  lines from the EXACT word sets (validator-gated, 3 attempts), deterministic contiguity
+   *  ordering as the fallback; the keyword field is the plan plus speculative fill
+   *  (unsuggested R=3 words, spec 05.6) up to the 92-char comfort floor. */
+  private async composeBucket(
     locale: string,
+    plan: BucketWordPlan,
+    budgets: { titleSloganMax: number; subtitleMax: number; keywordsMax: number },
+    optPhrases: OptPhrase[],
     otherBucketKeys: Set<string>,
   ): Promise<AssemblyBucket> {
     const lang = this.config.semanticLanguage;
@@ -807,119 +832,80 @@ export class Orchestrator {
     const brandKeys = new Set(wordsOf(this.config.brand).map((w) => foldKey(w, lang)));
     const sig = (text: string) => wordsOf(text).filter((w) => !stopSet.has(w));
     const keysOf = (text: string) => sig(text).map((w) => foldKey(w, lang));
-    const scoreOf = new Map(universe.map((k) => [k.keyword, k.metrics.score ?? 0]));
 
-    const disjoint = (kw: string, taken: Set<string>) => keysOf(kw).every((x) => !taken.has(x) && !brandKeys.has(x));
-    const rPool = (minR: number) =>
-      universe
-        .filter((k) => (k.metrics.R ?? 0) >= minR)
-        .sort((a, b) => compareKeywords(
-          { score: a.metrics.score ?? 0, P: a.metrics.P ?? 0, D: a.metrics.D ?? 0, keyword: a.keyword },
-          { score: b.metrics.score ?? 0, P: b.metrics.P ?? 0, D: b.metrics.D ?? 0, keyword: b.keyword },
-        ))
-        .map((k) => k.keyword);
-    const corePool = rPool(3);
-    const pool = corePool.length > 0 ? corePool : rPool(2);
+    const titleOrder = orderForField(plan.title, optPhrases, this.config.stopwords, lang);
+    const subOrder = orderForField(plan.subtitle, optPhrases, this.config.stopwords, lang);
+    const wantTitle = new Set(plan.title.map((w) => foldKey(w, lang)));
+    const wantSub = new Set(plan.subtitle.map((w) => foldKey(w, lang)));
 
-    const titleCands = pool.filter((kw) => kw.length <= budgets.titleSloganMax && disjoint(kw, otherBucketKeys)).slice(0, 5);
-    const subPool = pool.filter((kw) => kw.length <= budgets.subtitleMax && disjoint(kw, otherBucketKeys)).slice(0, 10);
+    const checkCompose = (slog: string, sub: string): string[] => {
+      const errors: string[] = [];
+      const gotT = keysOf(slog);
+      const gotS = keysOf(sub);
+      if (new Set(gotT).size !== gotT.length) errors.push("repeated word in slogan");
+      if (new Set(gotS).size !== gotS.length) errors.push("repeated word in subtitle");
+      for (const k of gotT) if (!wantTitle.has(k)) errors.push(`extra word in slogan (key "${k}")`);
+      for (const k of wantTitle) if (!gotT.includes(k)) errors.push(`slogan is missing a required word (key "${k}")`);
+      for (const k of gotS) if (!wantSub.has(k)) errors.push(`extra word in subtitle (key "${k}")`);
+      for (const k of wantSub) if (!gotS.includes(k)) errors.push(`subtitle is missing a required word (key "${k}")`);
+      if (slog.length > budgets.titleSloganMax) errors.push(`slogan longer than ${budgets.titleSloganMax}: ${slog.length}`);
+      if (sub.length > budgets.subtitleMax) errors.push(`subtitle longer than ${budgets.subtitleMax}: ${sub.length}`);
+      return errors;
+    };
 
-    const tc = (t: string) => t.split(" ").map((w) => (stopSet.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
-    const fbTitle = titleCands[0] ?? "";
-    const fbTitleKeys = new Set(keysOf(fbTitle));
-    const fbCombo = this.bestSubtitleCombo(subPool.filter((kw) => disjoint(kw, fbTitleKeys)), scoreOf, budgets.subtitleMax, keysOf);
-
-    const doValidate = (t: string, s: string, tw: string[], sw: string[], kwDraft: string) =>
+    const doValidate = (t: string, s: string, kwDraft: string) =>
       validate({
-        bucket: { title: t, subtitle: s, keywords: kwDraft, titleWords: tw, subtitleWords: sw },
+        bucket: { title: t, subtitle: s, keywords: kwDraft, titleWords: plan.title, subtitleWords: plan.subtitle },
         brand: this.config.brand, language: lang, stopwords: this.config.stopwords,
         competitors: this.mustContext().competitors, limits: this.config.limits, otherBucketKeys,
       });
 
-    const checkLlm = (slog: string, sub: string) => {
-      const errors: string[] = [];
-      const slogLower = slog.toLowerCase();
-      const chosenTitle = titleCands.find((c) => slogLower.includes(c)) ?? "";
-      if (!chosenTitle) errors.push("slogan does not contain any candidate phrase in full");
-      else {
-        const allowed = new Set(keysOf(chosenTitle));
-        for (const w of sig(slog)) if (!allowed.has(foldKey(w, lang))) errors.push(`extra word in slogan: "${w}"`);
-      }
-      const subLower = sub.toLowerCase();
-      const found = subPool.filter((c) => subLower.includes(c));
-      const usedSub = found.filter((c) => !found.some((o) => o !== c && o.includes(c)));
-      if (usedSub.length === 0) errors.push("subtitle does not contain any pool phrase in full");
-      const allowedSub = new Set(usedSub.flatMap((c) => keysOf(c)));
-      for (const w of sig(sub)) if (!allowedSub.has(foldKey(w, lang))) errors.push(`extra word in subtitle: "${w}"`);
-      return { errors, chosenTitle, usedSub };
-    };
-
-    const system = renderPrompt("phrase", {
-      BRAND: this.config.brand, LOCALE: locale,
-      TITLE_BUDGET: budgets.titleSloganMax, SUBTITLE_BUDGET: budgets.subtitleMax,
-    });
-
-    let title: string | null = null;
-    let subtitle: string | null = null;
-    let titleWords: string[] = [];
-    let subtitleWords: string[] = [];
+    let title = "";
+    let subtitle = "";
     let ok = false;
-    const MAX_PHRASE_ATTEMPTS = 3;
-
-    if (titleCands.length > 0) {
+    const MAX_COMPOSE_ATTEMPTS = 3;
+    if (plan.title.length > 0 || plan.subtitle.length > 0) {
+      const system = renderPrompt("compose", {
+        BRAND: this.config.brand, LOCALE: locale,
+        TITLE_BUDGET: budgets.titleSloganMax, SUBTITLE_BUDGET: budgets.subtitleMax,
+        TITLE_WORDS: JSON.stringify(titleOrder), SUBTITLE_WORDS: JSON.stringify(subOrder),
+        STOPWORDS: this.config.stopwords.join(", "),
+      });
       let note = "";
-      for (let attempt = 1; attempt <= MAX_PHRASE_ATTEMPTS && !ok; attempt++) {
+      for (let attempt = 1; attempt <= MAX_COMPOSE_ATTEMPTS && !ok; attempt++) {
         this.checkPause();
         const prompt =
-          `Title-slogan candidates — real top queries; pick ONE:\n${JSON.stringify(titleCands.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
-          `Subtitle phrase pool — use 1–3 phrases IN FULL:\n${JSON.stringify(subPool.map((c) => ({ phrase: c, score: scoreOf.get(c) })))}\n\n` +
-          `Locale: ${locale}. Budgets: slogan ≤ ${budgets.titleSloganMax}, subtitle ≤ ${budgets.subtitleMax}.` +
+          `Compose the two lines for locale ${locale}.\n` +
+          `Slogan word set: ${JSON.stringify(titleOrder)} (suggested order — reorder freely).\n` +
+          `Subtitle word set: ${JSON.stringify(subOrder)}.` +
           (note ? `\n\nPrevious attempt was rejected:\n${note}\nFix it.` : "");
-        const res = await this.llm<{ titleSlogan: string; subtitle: string }>("phrase", system, prompt, this.contextBlock());
+        const res = await this.llm<{ titleSlogan: string; subtitle: string }>("compose", system, prompt, this.contextBlock());
         const slog = res.titleSlogan.trim();
         const sub = res.subtitle.trim();
-        const check = checkLlm(slog, sub);
+        const errors = checkCompose(slog, sub);
         const t = `${this.config.brand} - ${slog}`;
-        const structuralErrors = check.errors.length === 0
-          ? doValidate(t, sub, sig(check.chosenTitle), check.usedSub.flatMap((c) => sig(c)), "")
-              .filter((v) => v.level === "error" && v.code !== "W1").map((v) => `${v.code}: ${v.message}`)
+        const structural = errors.length === 0
+          ? doValidate(t, sub, "").filter((v) => v.level === "error" && v.code !== "W1").map((v) => `${v.code}: ${v.message}`)
           : [];
-        const allErrors = [...check.errors, ...structuralErrors];
-        if (allErrors.length === 0) {
-          title = t; subtitle = sub;
-          titleWords = sig(check.chosenTitle);
-          subtitleWords = check.usedSub.flatMap((c) => sig(c));
-          ok = true;
+        const all = [...errors, ...structural];
+        if (all.length === 0) {
+          title = t; subtitle = sub; ok = true;
         } else {
-          note = allErrors.join("\n");
-          await this.event("♻️", `phrase (${locale}) attempt ${attempt}/${MAX_PHRASE_ATTEMPTS}: rejected — ${allErrors.join("; ")}`);
+          note = all.join("\n");
+          await this.event("♻️", `compose (${locale}) attempt ${attempt}/${MAX_COMPOSE_ATTEMPTS}: rejected — ${all.join("; ")}`);
         }
       }
     }
-
     if (!ok) {
-      title = `${this.config.brand} - ${tc(fbTitle)}`;
-      subtitle = fbCombo.map(tc).join(" & ");
-      titleWords = sig(fbTitle);
-      subtitleWords = fbCombo.flatMap((c) => sig(c));
-      if (titleCands.length > 0) await this.event("🛟", `phrase (${locale}): deterministic fallback — "${title}" / "${subtitle}"`);
+      const slog = glueField(titleOrder, optPhrases, this.config.stopwords, lang, budgets.titleSloganMax);
+      title = `${this.config.brand} - ${slog}`;
+      subtitle = glueField(subOrder, optPhrases, this.config.stopwords, lang, budgets.subtitleMax);
+      if (plan.title.length > 0) await this.event("🛟", `compose (${locale}): deterministic fallback — "${title}" / "${subtitle}"`);
     }
 
-    const usedKeys = new Set<string>([...keysOf(title ?? ""), ...keysOf(subtitle ?? ""), ...otherBucketKeys, ...brandKeys]);
-    const rWeight = (r: number | null) => ((r ?? 0) >= 3 ? 1 : (r ?? 0) === 2 ? 0.35 : 0.1);
-    const selPhrases = universe.map((k) => ({
-      keyword: k.keyword,
-      score: Math.max(1, Math.round((k.metrics.score ?? 0) * rWeight(k.metrics.R))),
-    }));
-    const mustCover = pool.filter((kw) => !phraseKeys(kw, stopSet, lang).every((x) => usedKeys.has(x))).slice(0, 5);
-    const kwSel = selectWords({
-      phrases: selPhrases, stopwords: this.config.stopwords, brandWords: wordsOf(this.config.brand),
-      language: lang, budgetTotal: budgets.keywordsMax, excludedFoldKeys: usedKeys, mustCover,
-    });
-    const kwWords = [...kwSel.words];
-    while (kwWords.length && kwWords.reduce((s, w) => s + w.length, 0) + kwWords.length - 1 > budgets.keywordsMax) kwWords.pop();
+    const usedKeys = new Set<string>([...keysOf(title), ...keysOf(subtitle), ...otherBucketKeys, ...brandKeys]);
+    const kwWords = [...plan.keywords];
     for (const w of kwWords) usedKeys.add(foldKey(w, lang));
-
     const speculativeWords: string[] = [];
     const draftLen = () => kwWords.reduce((s, w) => s + w.length, 0) + Math.max(0, kwWords.length - 1);
     if (draftLen() < 92) {
@@ -947,35 +933,13 @@ export class Orchestrator {
     }
     const keywordFieldDraft = kwWords.join(",");
 
-    const violations = doValidate(title ?? "", subtitle ?? "", titleWords, subtitleWords, keywordFieldDraft);
+    const violations = doValidate(title, subtitle, keywordFieldDraft);
     const finalErrors = violations.filter((v) => v.level === "error");
     if (finalErrors.length > 0) {
       throw new Error(`Bucket assembly for ${locale} failed validation: ${finalErrors.map((v) => `${v.code}: ${v.message}`).join("; ")}`);
     }
 
-    return { locale, titleWords, subtitleWords, keywordFieldDraft, title, subtitle, budgets, speculativeWords, violations };
-  }
-
-  private bestSubtitleCombo(pool: string[], scoreOf: Map<string, number>, budget: number, keysOf: (t: string) => string[]): string[] {
-    const items = pool.slice(0, 10);
-    let best: string[] = [];
-    let bestScore = -1;
-    const joinedLen = (combo: string[]) => combo.reduce((s, c) => s + c.length, 0) + 3 * Math.max(0, combo.length - 1);
-    const rec = (start: number, combo: string[], keys: Set<string>) => {
-      if (combo.length > 0) {
-        const s = combo.reduce((acc, c) => acc + (scoreOf.get(c) ?? 0), 0);
-        if (s > bestScore || (s === bestScore && combo.length < best.length)) { best = [...combo]; bestScore = s; }
-      }
-      if (combo.length >= 3) return;
-      for (let i = start; i < items.length; i++) {
-        const ks = keysOf(items[i]);
-        if (ks.some((k) => keys.has(k))) continue;
-        if (joinedLen([...combo, items[i]]) > budget) continue;
-        rec(i + 1, [...combo, items[i]], new Set([...keys, ...ks]));
-      }
-    };
-    rec(0, [], new Set());
-    return best;
+    return { locale, titleWords: plan.title, subtitleWords: plan.subtitle, keywordFieldDraft, title, subtitle, budgets, speculativeWords, violations };
   }
 
   // ---------- utilities ----------

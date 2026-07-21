@@ -72,6 +72,7 @@ export const rateSchema = {
           keyword: { type: "string" },
           r: { type: "integer", enum: [0, 1, 2, 3] },
           reason: { type: "string" },
+          brand: { type: "boolean" },
         },
         required: ["keyword", "r", "reason"],
         additionalProperties: false,
@@ -98,6 +99,7 @@ export const schemas: Record<string, object> = {
   rate: rateSchema,
   hypothesize: hypothesizeSchema,
   phrase: phraseSchema,
+  compose: phraseSchema,
 };
 
 /** Minimal structural validation of a response against a schema (code does not trust the provider, spec 06.1). */
