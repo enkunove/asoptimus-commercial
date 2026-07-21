@@ -80,7 +80,11 @@ interface WordInfo {
   phrases: number[];
 }
 
-const rWeight = (r: number | null) => ((r ?? 0) >= 3 ? 1 : (r ?? 0) === 2 ? 0.35 : 0.1);
+// R is CONTINUOUS (spec 03.3): weight a keyword's Score contribution by relevance on a smooth
+// convex curve. The old discrete `r===2 ? 0.35 : 0.1` silently collapsed EVERY float R to 0.1
+// (2.2 is neither ===2 nor ≥3), so the optimizer saw all keywords as near-equal value and could
+// not tell core from junk. (R/3)^2 keeps the old intent (R3→1, R2→0.44, R1→0.11) continuously.
+const rWeight = (r: number | null) => { const x = Math.max(0, Math.min(3, r ?? 0)) / 3; return x * x; };
 
 export function optimizeAssembly(input: OptimizeInput): OptimizeResult {
   const stopSet = new Set(input.stopwords.map((s) => s.toLowerCase()));
@@ -211,7 +215,7 @@ export function optimizeAssembly(input: OptimizeInput): OptimizeResult {
         FIELD_WEIGHTS[slots[b].field] * (slots[b].bucket > 0 ? SECONDARY_BUCKET_FACTOR : 1) -
         FIELD_WEIGHTS[slots[a].field] * (slots[a].bucket > 0 ? SECONDARY_BUCKET_FACTOR : 1));
     const seedOrder = [...input.phrases.keys()]
-      .filter((pi) => (input.phrases[pi].R ?? 0) >= 3 && phraseKeys[pi].length > 0)
+      .filter((pi) => (input.phrases[pi].R ?? 0) >= 2.5 && phraseKeys[pi].length > 0) // core seeds (R now float)
       .sort((a, b) => values[b] - values[a] || input.phrases[a].keyword.length - input.phrases[b].keyword.length);
     for (const pi of seedOrder) {
       const keys = phraseKeys[pi];

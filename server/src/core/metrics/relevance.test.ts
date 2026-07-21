@@ -42,32 +42,40 @@ describe("finalR", () => {
   });
 
   test("inflated semantic but wrong store fit → demoted (the 'clarity cbt' case)", () => {
-    // A word-salad the LLM over-rated 3, store fit ~0.3 → fit-dominant blend demotes it hard.
-    expect(finalR(3, 0.3, 1)).toBeLessThan(1.6);
-    expect(finalR(3, 0.3, 1)).toBeGreaterThan(1.0);
+    // A word-salad the LLM over-rated 3, store fit ~0.3 → store-driven R demotes it (≈0.9).
+    expect(finalR(3, 0.3, 1)).toBeLessThan(1.1);
   });
 
-  test("store-confirmed core outranks an over-rated feature (the reported inversion)", () => {
-    // gambling addiction: LLM under-rated it 2, but the store strongly backs it (fit 0.75).
-    // panic button: LLM over-rated it 3, store half-backs it (fit 0.5). Core must now win.
-    const gamblingAddiction = finalR(2, 0.75, 1);
-    const panicButton = finalR(3, 0.5, 1);
-    expect(gamblingAddiction).toBeGreaterThan(panicButton);
+  test("store RESCUES a core term the LLM under-rated (the 'gambling ban' case)", () => {
+    // LLM rated it 1 (tangential) but the store strongly backs it (fit 0.80) → R must be clearly
+    // relevant, not dragged down by the bad rating.
+    expect(finalR(1, 0.8, 1)).toBeGreaterThan(2);
   });
 
-  test("sem 0 is a hard zero regardless of fit (anti-semantics)", () => {
+  test("store-confirmed core outranks a store-mismatched feature (the reported inversion)", () => {
+    // gambling addiction: LLM under-rated it 2, store backs it (fit 0.75).
+    // panic button: LLM over-rated it 3, store shows mostly a different niche (fit 0.32).
+    expect(finalR(2, 0.75, 1)).toBeGreaterThan(finalR(3, 0.32, 1));
+  });
+
+  test("sem 0 is a hard veto regardless of fit (anti-semantics)", () => {
     expect(finalR(0, 1, 1)).toBe(0);
   });
 
-  test("thin evidence blends back toward the semantic prior", () => {
-    // conf 0 → fitAdj = sem/3, so R = 3*(s/3)^0.6*(s/3)^0.4 = s.
+  test("the LLM rating cannot lift a store-mismatched query: R is store-driven above the veto", () => {
+    // sem 3 vs sem 2 at the same fit → identical R (the LLM only vetoes, it does not grade).
+    expect(finalR(3, 0.5, 1)).toBe(finalR(2, 0.5, 1));
+  });
+
+  test("thin evidence returns the semantic prior (no store data)", () => {
+    // conf 0 → fitAdj = sem/3, so R = 3·(sem/3) = sem.
     expect(finalR(2, 0, 0)).toBeCloseTo(2, 5);
     expect(finalR(3, 0, 0)).toBeCloseTo(3, 5);
   });
 
-  test("monotonic in fit and in semantics", () => {
+  test("monotonic in fit", () => {
     expect(finalR(2, 0.8, 1)).toBeGreaterThan(finalR(2, 0.3, 1));
-    expect(finalR(3, 0.5, 1)).toBeGreaterThan(finalR(2, 0.5, 1));
+    expect(finalR(1, 0.9, 1)).toBeGreaterThan(finalR(1, 0.2, 1));
   });
 
   test("rounded to one decimal, within [0,3]", () => {

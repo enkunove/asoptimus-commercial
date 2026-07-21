@@ -555,7 +555,7 @@ export class Orchestrator {
     const lang = this.config.semanticLanguage;
 
     const provenHeads = this.state.keywords
-      .filter((k) => (k.metrics.R ?? 0) >= 3 && (k.metrics.P ?? 0) > 0)
+      .filter((k) => (k.metrics.R ?? 0) >= 2.5 && (k.metrics.P ?? 0) > 0) // core heads (R now float)
       .sort((a, b) => (b.metrics.score ?? 0) - (a.metrics.score ?? 0))
       .map((k) => k.keyword);
     const headWords: string[] = [];
@@ -972,7 +972,9 @@ export class Orchestrator {
     if (draftLen() < 92) {
       const freq = new Map<string, number>();
       for (const k of this.state.keywords) {
-        if (!(k.metrics.unsuggested && (k.metrics.R ?? 0) === 3 && k.status !== "excluded")) continue;
+        // R is float now — `=== 3` almost never matched, so the keyword field never got its
+        // speculative top-up and stayed short. ≥2.5 = "core" phantom.
+        if (!(k.metrics.unsuggested && (k.metrics.R ?? 0) >= 2.5 && k.status !== "excluded")) continue;
         for (const w of k.keyword.split(" ")) {
           if (w.length < 3 || stopSet.has(w)) continue;
           if (lang.startsWith("en") && AUX_WORDS.has(w)) continue;

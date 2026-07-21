@@ -7,19 +7,22 @@
 //   store fit  — how does Apple actually interpret the query? (measured: the share of top-SERP
 //                apps that are in our niche, classified once per app per run)
 //
-// v2.1 (weighting fix): the MEASURED store fit is the reliable signal; the 0–3 LLM rating is the
-// noisy one (on a live run it rated the core term "gambling addiction" 2 and the feature "panic
-// button" 3 — inverting them). So the geometric blend leans on fit (0.7) and keeps the LLM as a
-// SECONDARY signal (0.3): it still vetoes anti-semantics (sem=0 ⇒ R=0) and suppresses queries the
-// store only coincidentally associates with us (generic "habit tracker …" the LLM correctly marks
-// tangential), but it can no longer drag a store-confirmed core term below a feature. Exponents
-// sum to 1 so a thin SERP (no store evidence) returns exactly the semantic prior.
+// v2.2: the 0–3 LLM rating proved unreliable in BOTH directions on live runs — it under-rated the
+// core term "gambling ban" to 1 while over-rating "gambling" (a casino query) to 3 and the feature
+// "panic button" to 2. The MEASURED store fit had every one of those right (0.80 / 0.00 / 0.32).
+// So R is now driven by the store fit and the LLM is demoted to a pure VETO: it can kill a query
+// (anti-semantics ⇒ sem=0 ⇒ R=0) but it can no longer lift or drag one. This makes R the most
+// reproducible it has been (a measured signal, per-app niche reused across keywords), rescues
+// store-confirmed cores the LLM under-rated, and excludes store-mismatched "features" (a query
+// whose SERP is a different niche is a bad ASO target however on-brand it sounds). semExp=0,
+// fitExp=1; the pair still sums to 1, so a thin SERP (no store evidence) returns the semantic prior.
 
 export const RELEVANCE = {
-  /** Geometric-blend exponents. Fit-dominant: the measured store signal leads; the LLM rating is
-   *  a secondary check + the anti-semantics veto. Must sum to 1 (thin-evidence blend → R=sem). */
-  semExp: 0.3,
-  fitExp: 0.7,
+  /** Geometric-blend exponents. Store-driven: relevance IS the measured in-niche SERP share; the
+   *  LLM contributes only the anti-semantics veto (sem=0 ⇒ R=0) and the thin-evidence prior. Must
+   *  sum to 1 so conf→0 (no store data) returns exactly the semantic rating. */
+  semExp: 0,
+  fitExp: 1,
   /** Phrases below this R are excluded from metadata (same boundary as the old integer R≥1). */
   includeThreshold: 1.0,
 } as const;
