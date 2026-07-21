@@ -25,6 +25,7 @@ import { computePopularity } from "../core/metrics/popularity.ts";
 import { computeDifficulty, isDeadBrandQuery } from "../core/metrics/difficulty.ts";
 import { opportunityScore, compareKeywords } from "../core/metrics/score.ts";
 import { serpFitOf, finalR, RELEVANCE } from "../core/metrics/relevance.ts";
+import { runPool } from "../core/pool.ts";
 import { phraseKeys } from "../core/assembly/select.ts";
 import { optimizeAssembly, orderForField, glueField, type BucketWordPlan, type OptPhrase } from "../core/assembly/optimize.ts";
 import { placementWeight, type Placement } from "../core/assembly/place.ts";
@@ -44,6 +45,12 @@ import { ReplayFrontier } from "../replay.ts";
 import type { ServerRunState } from "./state.ts";
 
 class PauseInterrupt extends Error {}
+
+// Apple throughput is hard-capped by the CLIENT rate limiter (HTTP_DEFAULTS.requestsPerMinute),
+// so a probe pool does NOT beat that ceiling — a small in-flight window just keeps the client's
+// queue full (no rate-limiter tokens wasted in the gaps where the server writes DB / emits events
+// between jobs) and turns the ✓ stream continuous instead of one silent keyword at a time.
+const PROBE_CONCURRENCY = 4;
 
 const AUX_WORDS = new Set([
   "how", "what", "when", "where", "why", "who", "which", "can", "could", "should",
@@ -303,75 +310,95 @@ export class Orchestrator {
     await this.prescreenCandidates();
 
     const sourceRank: Record<string, number> = { suggest: 0, seed: 1, competitor: 2, expansion: 3 };
-    const candidates = () =>
-      this.state.keywords
-        .filter((k) => k.status === "candidate" || k.status === "error")
-        .sort((a, b) => (sourceRank[a.source] ?? 9) - (sourceRank[b.source] ?? 9));
+    const snapshot = this.state.keywords
+      .filter((k) => k.status === "candidate" || k.status === "error")
+      .sort((a, b) => (sourceRank[a.source] ?? 9) - (sourceRank[b.source] ?? 9));
+    if (snapshot.length === 0) return;
 
-    for (const k of candidates()) {
-      this.checkPause();
+    // Replay runs width 1 for a deterministic frontier; the Apple cache is content-addressed, so
+    // the order concurrent LIVE execution wrote it in doesn't matter on (sequential) replay.
+    const width = this.replaying ? 1 : PROBE_CONCURRENCY;
+    const harvest: { kw: string; terms: string[] }[] = [];
+    if (!this.replaying && snapshot.length > 1) {
+      await this.event("🌊", `probing ${snapshot.length} candidates (${Math.min(width, snapshot.length)} in parallel)`);
+    }
+    let sampleStopped = false;
+    await runPool(snapshot, width, async (k) => {
       if (stopAtSample && sampleFull()) {
-        await this.event("📊", "sample complete — the rest will wait for improving rounds");
-        break;
+        if (!sampleStopped) { sampleStopped = true; await this.event("📊", "sample complete — the rest waits for improving rounds"); }
+        return; // enough already from earlier waves
       }
-      try {
-        // P — via ProbeJob (client fetches; server computes over prefill∪fetched, D2/D3).
-        if (!this.state.hintsEndpointDown) {
-          try {
-            const raw = await this.deps.gateway.probe(k.keyword, this.storefront);
-            const pop = computePopularity(k.keyword, raw.prefixHints, raw.childTerms, raw.unsuggested, this.config.weights.popularity);
-            this.hintFailStreak = 0;
-            k.metrics.P = pop.P;
-            k.metrics.L = pop.L;
-            k.metrics.rank = pop.rank;
-            k.metrics.unsuggested = pop.unsuggested;
-            k.metrics.childCount = pop.childCount;
-            k.degraded = false;
-            await this.harvestSuggestions(k.keyword, pop.seenTerms);
-          } catch (e: any) {
-            if (e instanceof ReplayFrontier) throw e;
-            this.hintFailStreak++;
-            if (this.hintFailStreak >= 3) {
-              this.state.hintsEndpointDown = true;
-              await this.event("⚠️", `hints endpoint unavailable (${e?.message ?? e}) — Popularity degraded (P=50)`);
-            } else {
-              throw e;
-            }
+      await this.probeOne(k, harvest);
+    });
+
+    // Harvested suggest-terms are added AFTER the wave (they are probed next wave regardless), in a
+    // deterministic order — never mid-wave, so concurrent workers never race on state.keywords.
+    harvest.sort((a, b) => (a.kw < b.kw ? -1 : a.kw > b.kw ? 1 : 0));
+    for (const h of harvest) await this.harvestSuggestions(h.kw, h.terms);
+    // rate is invoked by the phase (phaseLoop/phaseImproving) AFTER probe — sequentially and
+    // deterministically (charging is never concurrent).
+  }
+
+  /** One keyword: P (ProbeJob) + D (SerpJob) → verified. Collects suggest-terms into `harvest`
+   *  for deferred, race-free harvesting. Per-keyword Apple errors are swallowed (status=error,
+   *  continue); control-flow errors rethrow to abort the wave via runPool. */
+  private async probeOne(k: KeywordEntry, harvest: { kw: string; terms: string[] }[]) {
+    this.checkPause();
+    try {
+      // P — via ProbeJob (client fetches; server computes over prefill∪fetched, D2/D3).
+      if (!this.state.hintsEndpointDown) {
+        try {
+          const raw = await this.deps.gateway.probe(k.keyword, this.storefront);
+          const pop = computePopularity(k.keyword, raw.prefixHints, raw.childTerms, raw.unsuggested, this.config.weights.popularity);
+          this.hintFailStreak = 0;
+          k.metrics.P = pop.P;
+          k.metrics.L = pop.L;
+          k.metrics.rank = pop.rank;
+          k.metrics.unsuggested = pop.unsuggested;
+          k.metrics.childCount = pop.childCount;
+          k.degraded = false;
+          harvest.push({ kw: k.keyword, terms: pop.seenTerms });
+        } catch (e: any) {
+          if (e instanceof ReplayFrontier) throw e;
+          this.hintFailStreak++;
+          if (this.hintFailStreak >= 3) {
+            this.state.hintsEndpointDown = true;
+            await this.event("⚠️", `hints endpoint unavailable (${e?.message ?? e}) — Popularity degraded (P=50)`);
+          } else {
+            throw e;
           }
         }
-        if (this.state.hintsEndpointDown) {
-          k.metrics.P = null; k.metrics.L = null; k.metrics.rank = null;
-          k.metrics.unsuggested = false; k.degraded = true;
-        }
-        // D — via SerpJob. lang = the STOREFRONT's primary locale (config.language carries the
-        // semantic language, which Apple 400s in unknown combos like ru_us).
-        const serp = await this.deps.gateway.serp(k.keyword, this.storefront, serpLangFor(this.config.country));
-        const diff = computeDifficulty(k.keyword, serp.results, serp.resultCount, this.config.serpTop, this.config.weights.difficulty);
-        k.metrics.D = diff.D;
-        k.metrics.serpSize = diff.serpSize;
-        k.metrics.topApps = diff.topApps;
-        k.metrics.brandQuery = isDeadBrandQuery(k.keyword, diff.topApps);
-        if (k.metrics.brandQuery) {
-          await this.event("🏷", `${k.keyword}: name of an unpopular app — Score zeroed`);
-        }
-        k.status = "verified";
-        k.probedAt = new Date().toISOString();
-        k.error = undefined;
-        if (k.metrics.R !== null) this.recomputeScore(k);
-        const pShown = k.degraded ? "—" : String(k.metrics.P);
-        await this.event("✓", `${k.keyword} → P=${pShown} D=${k.metrics.D}${k.metrics.score !== null ? ` Score=${k.metrics.score}` : ""}`);
-      } catch (e: any) {
-        if (e instanceof ReplayFrontier || e instanceof InsufficientCredits || e instanceof CogsExceededCeiling) throw e;
-        if (e instanceof PauseInterrupt || e instanceof LlmAuthError) throw e;
-        if (e?.name === "ClientGoneError") throw e;
-        k.status = "error";
-        k.error = String(e?.message ?? e);
-        await this.event("✗", `${k.keyword}: Apple error (${k.error}) — continuing`);
       }
-      await this.save();
+      if (this.state.hintsEndpointDown) {
+        k.metrics.P = null; k.metrics.L = null; k.metrics.rank = null;
+        k.metrics.unsuggested = false; k.degraded = true;
+      }
+      // D — via SerpJob. lang = the STOREFRONT's primary locale (config.language carries the
+      // semantic language, which Apple 400s in unknown combos like ru_us).
+      const serp = await this.deps.gateway.serp(k.keyword, this.storefront, serpLangFor(this.config.country));
+      const diff = computeDifficulty(k.keyword, serp.results, serp.resultCount, this.config.serpTop, this.config.weights.difficulty);
+      k.metrics.D = diff.D;
+      k.metrics.serpSize = diff.serpSize;
+      k.metrics.topApps = diff.topApps;
+      k.metrics.brandQuery = isDeadBrandQuery(k.keyword, diff.topApps);
+      if (k.metrics.brandQuery) {
+        await this.event("🏷", `${k.keyword}: name of an unpopular app — Score zeroed`);
+      }
+      k.status = "verified";
+      k.probedAt = new Date().toISOString();
+      k.error = undefined;
+      if (k.metrics.R !== null) this.recomputeScore(k);
+      const pShown = k.degraded ? "—" : String(k.metrics.P);
+      await this.event("✓", `${k.keyword} → P=${pShown} D=${k.metrics.D}${k.metrics.score !== null ? ` Score=${k.metrics.score}` : ""}`);
+    } catch (e: any) {
+      if (e instanceof ReplayFrontier || e instanceof InsufficientCredits || e instanceof CogsExceededCeiling) throw e;
+      if (e instanceof PauseInterrupt || e instanceof LlmAuthError) throw e;
+      if (e?.name === "ClientGoneError") throw e;
+      k.status = "error";
+      k.error = String(e?.message ?? e);
+      await this.event("✗", `${k.keyword}: Apple error (${k.error}) — continuing`);
     }
-    // rate is invoked by the phase (phaseLoop/phaseImproving) AFTER probe — sequentially and
-    // deterministically (see the decision to drop rateInFlight in the file header).
+    await this.save();
   }
 
   private async prescreenCandidates() {
