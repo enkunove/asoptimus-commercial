@@ -187,12 +187,24 @@ export class RunManager {
     this.runUsers.set(runId, row.user_id);
     const state = initialState(runId, row.user_id, row.brief ?? "", row.config, Number(row.estimate_credits ?? 0));
     const orch = this.buildOrchestrator(state);
+    const hydrateFromSnapshot = () => {
+      if (row.state) Object.assign(state, row.state, { runId, userId: row.user_id, config: row.config, brief: row.brief ?? "" });
+    };
     try {
       await orch.replayFromLogs(row.phase as ServerRunState["phase"]);
+      // replayFromLogs swallows ReplayFrontier and lands state at wherever the durable history
+      // ends. If that is EARLIER than the persisted phase, replay could not re-derive a run that
+      // is durably recorded — almost always because the pipeline changed since it ran (new/renamed
+      // LLM steps ⇒ a frontier at the first divergence). The snapshot is authoritative then; trust
+      // it. For a genuinely in-flight run replay reaches row.phase exactly, so this never fires.
+      if (state.phase !== (row.phase as ServerRunState["phase"]) && row.state) {
+        log.warn("[replay] did not reach the persisted phase — using the snapshot (pipeline drift?)", { runId, replayed: state.phase, persisted: row.phase });
+        hydrateFromSnapshot();
+      }
     } catch (e: any) {
       // Unexpected replay failure — safety net: hydrate internal fields from the snapshot projection.
       log.warn("[replay] reconstruction from logs failed — falling back to the snapshot projection", { runId, err: String(e?.message ?? e) });
-      if (row.state) Object.assign(state, row.state, { runId, userId: row.user_id, config: row.config, brief: row.brief ?? "" });
+      hydrateFromSnapshot();
     }
     this.orchestrators.set(runId, orch);
     return orch;

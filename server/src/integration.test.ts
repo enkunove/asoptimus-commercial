@@ -248,4 +248,26 @@ describe("DEV integration: signup → gates → run to done → insights & expor
     const insightPage = await app.manager.keywordPage(runId, { insight: "unsuggested", pageSize: 200 });
     expect(insightPage.total).toBe(phantoms);
   });
+
+  // Regression: a DONE run recorded by an older pipeline could not be re-loaded once the pipeline
+  // changed — replay hit a frontier at the first renamed/new LLM step and left the orchestrator
+  // stuck before "done", so reassemble threw "only available after completion". A done run's
+  // snapshot is authoritative; when replay can't reach the persisted phase, hydrate from it.
+  test("done run whose logs can't replay (pipeline drift) loads from snapshot; reassemble works", async () => {
+    // Simulate a restart under drifted code: evict the cached orchestrator and wipe this run's
+    // llm_steps so replay hits a frontier at the very first LLM call and stops far short of "done".
+    (app.manager as any).orchestrators.delete(runId);
+    (app.store as any).llmSteps = (app.store as any).llmSteps.filter((s: any) => s.run_id !== runId);
+
+    const orch = await app.manager.getOrchestrator(runId);
+    // Without the fix this would be "created"/"context" (partial replay); with it, the authoritative
+    // snapshot wins.
+    expect(orch.state.phase).toBe("done");
+    expect(orch.state.assembly).not.toBeNull();
+
+    // The actual reported symptom: reassemble must not throw now.
+    await orch.reassemble();
+    expect(orch.state.phase).toBe("done");
+    expect(orch.state.assembly).not.toBeNull();
+  });
 });
