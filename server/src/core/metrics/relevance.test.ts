@@ -1,4 +1,5 @@
-// Final Relevance v2: computed R = semantic prior × measured store fit (spec 03.3v2).
+// Final Relevance v3: intent-led computed R (spec 03.3v3).
+// Bands: sem3→3.0 flat; sem2→1.4+1.0E; sem1→0.4+0.8E; sem0→0. E = conf·fit + (1−conf)·sem/3.
 
 import { describe, test, expect } from "bun:test";
 import { serpFitOf, finalR, RELEVANCE } from "./relevance.ts";
@@ -31,62 +32,59 @@ describe("serpFitOf", () => {
   });
 });
 
-describe("finalR", () => {
-  test("strong semantic + strong fit → near 3", () => {
-    expect(finalR(3, 0.85, 1)).toBeGreaterThan(2.5);
+describe("finalR (v3: intent leads, store evidence modulates the middle)", () => {
+  test("core intent is R=3 regardless of SERP composition (the 'block betting apps' case)", () => {
+    // The SERP of a blocker's most core query is dominated by the industry the user is escaping
+    // (fit 0.09). That is COMPETITION information (D's channel), not relevance — v2 scored this
+    // 0.3 and excluded it; v3 keeps the core at 3.
+    expect(finalR(3, 0.09, 1)).toBe(3);
+    expect(finalR(3, 0.92, 1)).toBe(3);
   });
 
-  test("strong semantic but off-niche SERP → collapses (the 'gambling' case)", () => {
-    // sem 2, store shows the query is casinos (fit ~0.05) → should be well below 1.
-    expect(finalR(2, 0.05, 1)).toBeLessThan(1);
-  });
-
-  test("inflated semantic but wrong store fit → demoted (the 'clarity cbt' case)", () => {
-    // A word-salad the LLM over-rated 3, store fit ~0.3 → store-driven R demotes it (≈0.9).
-    expect(finalR(3, 0.3, 1)).toBeLessThan(1.1);
-  });
-
-  test("store RESCUES a core term the LLM under-rated (the 'gambling ban' case)", () => {
-    // LLM rated it 1 (tangential) but the store strongly backs it (fit 0.80) → R must be clearly
-    // relevant, not dragged down by the bad rating.
-    expect(finalR(1, 0.8, 1)).toBeGreaterThan(2);
-  });
-
-  test("store-confirmed core outranks a store-mismatched feature (the reported inversion)", () => {
-    // gambling addiction: LLM under-rated it 2, store backs it (fit 0.75).
-    // panic button: LLM over-rated it 3, store shows mostly a different niche (fit 0.32).
-    expect(finalR(2, 0.75, 1)).toBeGreaterThan(finalR(3, 0.32, 1));
-  });
-
-  test("sem 0 is a hard veto regardless of fit (anti-semantics)", () => {
+  test("sem 0 is a hard veto regardless of fit (anti-semantics / opposite need)", () => {
     expect(finalR(0, 1, 1)).toBe(0);
   });
 
-  test("the LLM rating cannot lift a store-mismatched query: R is store-driven above the veto", () => {
-    // sem 3 vs sem 2 at the same fit → identical R (the LLM only vetoes, it does not grade).
-    expect(finalR(3, 0.5, 1)).toBe(finalR(2, 0.5, 1));
+  test("sem=1 crosses the include threshold only with real store confirmation", () => {
+    // "days until" (generic countdown intent, counters classified out of niche) → excluded.
+    expect(finalR(1, 0.1, 1)).toBeLessThan(RELEVANCE.includeThreshold);
+    // Store strongly confirms the niche reading → marginally included.
+    expect(finalR(1, 0.8, 1)).toBeGreaterThanOrEqual(RELEVANCE.includeThreshold);
   });
 
-  test("thin evidence returns the semantic prior (no store data)", () => {
-    // conf 0 → fitAdj = sem/3, so R = 3·(sem/3) = sem.
-    expect(finalR(2, 0, 0)).toBeCloseTo(2, 5);
-    expect(finalR(3, 0, 0)).toBeCloseTo(3, 5);
+  test("sem=2 is always included; store evidence grades it within 1.4–2.4", () => {
+    expect(finalR(2, 0, 1)).toBeCloseTo(1.4, 5);
+    expect(finalR(2, 1, 1)).toBeCloseTo(2.4, 5);
+    expect(finalR(2, 0, 1)).toBeGreaterThanOrEqual(RELEVANCE.includeThreshold);
   });
 
-  test("monotonic in fit", () => {
+  test("a core always outranks a store-confirmed adjacent (no more fit inversions)", () => {
+    // v2 ranked "cbt thought record" (sem-over-rated, fit 0.85 → 2.6) above "quit gambling"
+    // (core, fit 0.73 → 2.2). v3: any sem=3 sits above every sem≤2 ceiling.
+    expect(finalR(3, 0.02, 1)).toBeGreaterThan(finalR(2, 1, 1));
+  });
+
+  test("thin evidence falls back to the semantic prior", () => {
+    // conf 0 → E = sem/3.
+    expect(finalR(2, 0, 0)).toBeCloseTo(1.4 + (2 / 3), 1);
+    expect(finalR(1, 0, 0)).toBeCloseTo(0.4 + 0.8 / 3, 1);
+    expect(finalR(3, 0, 0)).toBe(3);
+  });
+
+  test("monotonic in fit within the graded bands", () => {
     expect(finalR(2, 0.8, 1)).toBeGreaterThan(finalR(2, 0.3, 1));
     expect(finalR(1, 0.9, 1)).toBeGreaterThan(finalR(1, 0.2, 1));
   });
 
-  test("rounded to one decimal, within [0,3]", () => {
-    const r = finalR(3, 0.85, 1);
-    expect(r).toBe(Math.round(r * 10) / 10);
-    expect(r).toBeLessThanOrEqual(3);
-    expect(finalR(2.5, 0.6, 1)).toBeGreaterThanOrEqual(0);
+  test("legacy float semR from pre-v3 snapshots rounds into a band", () => {
+    expect(finalR(2.6, 0.5, 1)).toBe(3); // rounds to sem 3
+    expect(finalR(1.4, 0.5, 1)).toBe(finalR(1, 0.5, 1));
   });
 
-  test("includeThreshold gates metadata membership at R≥1", () => {
-    expect(finalR(2, 0.05, 1)).toBeLessThan(RELEVANCE.includeThreshold); // gambling → out
-    expect(finalR(3, 0.85, 1)).toBeGreaterThanOrEqual(RELEVANCE.includeThreshold); // quit gambling → in
+  test("rounded to one decimal, within [0,3]", () => {
+    const r = finalR(2, 0.37, 1);
+    expect(r).toBe(Math.round(r * 10) / 10);
+    expect(r).toBeGreaterThanOrEqual(0);
+    expect(r).toBeLessThanOrEqual(3);
   });
 });

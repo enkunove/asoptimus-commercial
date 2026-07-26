@@ -40,18 +40,36 @@ export interface DifficultyResult {
 }
 
 /**
- * "Dead brand query" detector (empirical): Apple seeds app NAMES into the suggest
- * index, so a phrase that is a dead app's name gets an inflated P with zero real
- * demand. Signature: the phrase is the exact normalized name of an app in the top-3
- * results, that app has fewer than ratingFloor ratings, and no OTHER top app contains
- * the phrase in full.
+ * "Brand-name query" detector, measured half (spec 03.3v3). Apple seeds app NAMES into the
+ * suggest index, so a phrase that exists mainly as some app's name gets an inflated P with
+ * little real demand ("cbt thought record" → P 78 off a 3-rating app). The v2 exact-equality
+ * check missed names with a prefix/suffix segment ("TellMe: CBT Thought Record"); v3 matches
+ * the query against NAME SEGMENTS (split on :|–-·) of weak top apps, and stands down when any
+ * app with ≥ strongFloor ratings carries the phrase in full — a phrase the strong own is a
+ * category term, not a tombstone. The caller must additionally guard with the intent rating
+ * (sem=3 ⇒ never a trap): young niches consist entirely of weak apps, and without that guard
+ * this signature would flag core queries like "quit gambling". Validated on judge-labeled
+ * traps: recall 0.83 in union with the prescreen brand flag, zero flags on truth≥2 keywords.
  */
-export function isDeadBrandQuery(keyword: string, topApps: TopApp[], ratingFloor = 200): boolean {
+export function isBrandNameQuery(
+  keyword: string,
+  topApps: TopApp[],
+  opts: { ratingFloor?: number; strongFloor?: number; topN?: number } = {},
+): boolean {
+  const { ratingFloor = 300, strongFloor = 1000, topN = 3 } = opts;
   const kw = normalizeKeyword(keyword);
-  const fullMatches = topApps.filter((a) => a.match === 1);
-  if (fullMatches.length > 1) return false; // category term
-  for (const a of topApps.slice(0, 3)) {
-    if (normalizeKeyword(a.trackName) === kw && a.ratingCount < ratingFloor) return true;
+  if (topApps.some((a) => a.match === 1 && a.ratingCount >= strongFloor)) return false;
+  for (const a of topApps.slice(0, topN)) {
+    if (a.ratingCount >= ratingFloor) continue;
+    const name = normalizeKeyword(a.trackName);
+    const segments = a.trackName
+      .toLowerCase()
+      .split(/[:|–—·•-]+/)
+      .map((s) => normalizeKeyword(s))
+      .filter(Boolean);
+    for (const s of [name, ...segments]) {
+      if (s === kw || s.startsWith(kw + " ") || (s.startsWith(kw) && s.length <= kw.length + 4)) return true;
+    }
   }
   return false;
 }

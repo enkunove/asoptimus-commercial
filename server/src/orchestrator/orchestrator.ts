@@ -22,7 +22,7 @@ import {
   type Violation, type AssemblyBucket, type AssemblyResult, type CoverageRow,
 } from "@aso/shared";
 import { computePopularity } from "../core/metrics/popularity.ts";
-import { computeDifficulty, isDeadBrandQuery } from "../core/metrics/difficulty.ts";
+import { computeDifficulty, isBrandNameQuery } from "../core/metrics/difficulty.ts";
 import { opportunityScore, compareKeywords } from "../core/metrics/score.ts";
 import { serpFitOf, finalR, RELEVANCE } from "../core/metrics/relevance.ts";
 import { runPool } from "../core/pool.ts";
@@ -81,6 +81,11 @@ export class Orchestrator {
   private hintFailStreak = 0;
   private replaying = false;
   running = false;
+  /** SERP-derived app evidence for classify (spec 03.3v3): genre + description snippet, keyed by
+   *  trackId. In-memory only — filled by probeOne from raw SERP responses; on restart the replay
+   *  re-runs the same SERPs from apple_cache and refills it. classify degrades to name-only for
+   *  any app missing here (snapshot-fallback path), which the prompt explicitly allows. */
+  private appMeta = new Map<number, { genre?: string; desc?: string }>();
 
   constructor(public state: ServerRunState, private deps: OrchestratorDeps) {}
 
@@ -380,9 +385,15 @@ export class Orchestrator {
       k.metrics.D = diff.D;
       k.metrics.serpSize = diff.serpSize;
       k.metrics.topApps = diff.topApps;
-      k.metrics.brandQuery = isDeadBrandQuery(k.keyword, diff.topApps);
-      if (k.metrics.brandQuery) {
-        await this.event("🏷", `${k.keyword}: name of an unpopular app — Score zeroed`);
+      // Classify evidence (spec 03.3v3): genre + description snippet from the raw SERP. The final
+      // brand-trap verdict is made in rateAll, where the intent rating is available as a guard.
+      for (const a of serp.results.slice(0, this.config.serpTop)) {
+        if (!this.appMeta.has(a.trackId)) {
+          this.appMeta.set(a.trackId, {
+            genre: a.primaryGenreName,
+            desc: typeof a.description === "string" ? a.description.slice(0, 250) : undefined,
+          });
+        }
       }
       k.status = "verified";
       k.probedAt = new Date().toISOString();
@@ -463,11 +474,13 @@ export class Orchestrator {
    */
   private async classifyNewApps(): Promise<number> {
     const seen = this.state.appNiche;
-    const pending = new Map<number, string>();
+    const pending = new Map<number, { trackName: string; ratings: number }>();
     for (const k of this.state.keywords) {
       if (k.status !== "verified" && k.status !== "rated" && k.status !== "excluded") continue;
       for (const a of k.metrics.topApps.slice(0, this.config.serpTop)) {
-        if (seen[String(a.trackId)] === undefined && !pending.has(a.trackId)) pending.set(a.trackId, a.trackName);
+        if (seen[String(a.trackId)] === undefined && !pending.has(a.trackId)) {
+          pending.set(a.trackId, { trackName: a.trackName, ratings: a.ratingCount });
+        }
       }
     }
     if (pending.size === 0) return 0;
@@ -478,7 +491,12 @@ export class Orchestrator {
     for (let i = 0; i < entries.length; i += 50) {
       this.checkPause();
       const chunk = entries.slice(i, i + 50);
-      const items = chunk.map(([trackId, trackName]) => ({ trackId, trackName }));
+      // v3: enriched evidence — genre + description snippet (when the SERP carried them) alongside
+      // the name; the strict prompt judges the app's own advertised purpose, not repurposability.
+      const items = chunk.map(([trackId, info]) => {
+        const meta = this.appMeta.get(trackId);
+        return { trackId, trackName: info.trackName, genre: meta?.genre, ratings: info.ratings, desc: meta?.desc };
+      });
       const res = await this.llm<{ apps: { trackId: number; match: number; reason: string }[] }>(
         "classify", system, `Classify these apps by niche fit:\n${JSON.stringify(items, null, 2)}`, this.contextBlock(),
       );
@@ -500,20 +518,24 @@ export class Orchestrator {
     return classified;
   }
 
-  /** Human-readable, code-generated R trail (spec 03.3v2): the semantic prior, the measured
+  /** Human-readable, code-generated R trail (spec 03.3v3): the intent rating, the measured
    *  store fit, and evidence confidence — every factor traces to raw data. */
   private relevanceReason(semReason: string, sem: number, fit: number, conf: number, R: number): string {
     const semTxt = semReason.replace(/^\[prescreen\]\s*/, "").trim();
     const confNote = conf < 1 ? `, thin SERP (${Math.round(conf * 100)}% of top-${this.config.serpTop})` : "";
-    return `R ${R} = semantic ${sem}/3 × store-fit ${Math.round(fit * 100)}%${confNote}. ${semTxt}`.slice(0, 240);
+    const fitNote = sem >= 3 ? "" : ` · store-fit ${Math.round(fit * 100)}%${confNote}`;
+    return `R ${R} = intent ${sem}/3${fitNote}. ${semTxt}`.slice(0, 240);
   }
 
   /**
-   * Final Relevance (spec 03.3v2). R is COMPUTED, not asked: sem = the prescreen rating (the
-   * only place an LLM judges the query), fit = the in-niche share of the MEASURED top SERP
-   * (from classifyNewApps). No per-keyword LLM call → the number no longer swings run-to-run.
-   * Charges each INCLUDED keyphrase (D4 v4, capped at the overshoot cap); beyond the cap an
-   * included phrase stays rated but free, so the charge count never exceeds the cap.
+   * Final Relevance (spec 03.3v3). R is COMPUTED, not asked: sem = the INTENT rating from the
+   * prescreen (the only place an LLM judges the query), fit = the in-niche share of the MEASURED
+   * top SERP (from classifyNewApps). Intent leads: sem=3 is R=3 (SERP composition is competition
+   * information — D's channel), the store evidence disambiguates only the 1–2 bands. The
+   * brand-trap verdict is finalized here too: (prescreen brand flag OR the measured name-segment
+   * signature) guarded by sem<3, then Score is zeroed via recomputeScore. No per-keyword LLM
+   * call → the number does not swing run-to-run. Charges each INCLUDED keyphrase (D4 v4, capped
+   * at the overshoot cap); beyond the cap an included phrase stays rated but free.
    */
   private async rateAll() {
     await this.classifyNewApps();
@@ -521,9 +543,13 @@ export class Orchestrator {
     const pending = this.state.keywords.filter((k) => k.status === "verified");
     for (const k of pending) {
       this.checkPause();
-      const sem = k.metrics.semR ?? k.metrics.R ?? 1;
+      const sem = Math.round(k.metrics.semR ?? k.metrics.R ?? 1);
       const { fit, conf } = serpFitOf(k.metrics.topApps, this.state.appNiche, serpTop);
       const R = finalR(sem, fit, conf);
+      // Brand trap (03.3v3): the LLM flag (famous/coined brands) ∪ the measured name-segment
+      // signature (suggest-seeded phantoms), never on core intent — young niches are all weak
+      // apps and would false-flag real cores like "quit gambling".
+      k.metrics.brandQuery = sem < 3 && (k.metrics.brandQuery === true || isBrandNameQuery(k.keyword, k.metrics.topApps));
       const included = R >= RELEVANCE.includeThreshold;
       if (included && !this.atOvershootCap()) {
         // REAL debit of a verified keyphrase (D4 v4). Insufficient → hard-stop (paused, resumable).
@@ -536,7 +562,10 @@ export class Orchestrator {
       k.metrics.reason = this.relevanceReason(k.metrics.reason ?? "", sem, fit, conf, R);
       k.status = included ? "rated" : "excluded";
       this.recomputeScore(k);
-      await this.event("★", `${k.keyword} → R=${R} (sem ${sem}/3 · fit ${Math.round(fit * 100)}%), Score=${k.metrics.score ?? 0}`);
+      if (k.metrics.brandQuery) {
+        await this.event("🏷", `${k.keyword}: another product's name — Score zeroed`);
+      }
+      await this.event("★", `${k.keyword} → R=${R} (intent ${sem}/3${sem < 3 ? ` · fit ${Math.round(fit * 100)}%` : ""}), Score=${k.metrics.score ?? 0}`);
       await this.save();
     }
   }

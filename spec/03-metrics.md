@@ -60,36 +60,46 @@ If all ten look like this — D ≈ 93 (a bloodbath). If after the top 3 come de
 
 ## 3.3 Relevance (R), 0–3 — the only LLM metric, by rubric
 
-Assigned by the built-in LLM via the batch call `rate` (contract in `06-llm-adapters.md`), which receives the business context and a batch of verified keywords. The rubric is strict and embedded in the prompt verbatim:
+The semantic half is assigned by the built-in LLM via the batch call `rate` (contract in `06-llm-adapters.md`) at PRESCREEN time — before any measurement, gating the measurement budget. The rubric (v3) rates **searcher intent** — *who types this query into the App Store search bar, and what are they hoping to install?* — embedded in the prompt verbatim:
 
 | R | Criterion |
 |---|---|
-| 3 | The query describes the CORE of the product: a user searching for this is looking for exactly this kind of app |
-| 2 | An adjacent job: our app solves it, but it is not its main function |
-| 1 | A tangential overlap: some of the searchers might be satisfied with our app |
-| 0 | Irrelevant or matches the anti-semantics from aso-context.md → excluded |
+| 3 | The dominant search intent IS the job our app does — the searcher is looking for exactly our kind of app (generic wording is fine; intent, not word overlap) |
+| 2 | A large share of searchers would be satisfied by our app: an adjacent job we genuinely cover, or a mixed-intent query where our reading is strong |
+| 1 | Small minority intent — most searchers want something else |
+| 0 | Wrong traffic: the dominant intent is something we are not — including the OPPOSITE need (wanting to gamble when we help quit) and anti-semantics matches → excluded |
 
-`reason` is mandatory (non-empty), stored in state, shown in the UI next to the score; the entire LLM call itself (prompt + response) is available in the LLM call log. This makes the LLM's judgment human-verifiable. Keywords matching the anti-semantics from the context must receive R=0.
+`reason` is mandatory (non-empty), stored in state, shown in the UI next to the score; the entire LLM call itself (prompt + response) is available in the LLM call log. This makes the LLM's judgment human-verifiable. Topic match is NOT intent match: a query can name our topic and still be 0, and can share zero words with the product and still be 3.
 
-### 3.3v2 Relevance is computed, not asked (supersedes the per-keyword final rating)
+### 3.3v3 Intent leads, the store disambiguates (supersedes v2's fit-dominant blend)
 
-The rubric above stayed the **prescreen** — a purely semantic, pre-measurement gate — but the *final* R is no longer a second per-keyword LLM opinion. That call was the least reproducible number in the system: its output moved with batch composition (±33% of Score on a 2↔3 flip) and differed run-to-run for the same keyword; it over-rated word salad and under-rated real cores, because "is this query core or adjacent?" asked in isolation is inherently subjective.
+**What v2 got right:** R is computed, not asked — no per-keyword final LLM call, `classify` verdicts cached per app per run (`state.appNiche`), full traceability. All of that stays.
 
-Final R decomposes into the two factors it always meant, only one of which is semantic:
+**What v2 got wrong (falsified on live runs):** SERP composition is *competition* information, not relevance. For counter-positioned products the SERP of the most core queries is dominated by the industry the user is escaping — "block betting apps" (a quit-gambling blocker's literal core) scored R=0.3 and was **excluded**, while generic-tool queries ("days until", "counter") scored ~2 off coincidental niche labels. Against a 3-lens judge panel over a full production run, v2's ranking correlated at ρ=0.04 (noise), with 55% pairwise inversions and 65% of truth-good keywords excluded. Folding SERP strength into R also double-counts competition, which already lives in D.
 
-- **semantic prior** `sem ∈ {0,1,2,3}` — the prescreen rating (the LLM judges the query's intent once, before measurement). Unchanged.
-- **store fit** `serpFit ∈ [0,1]` — MEASURED: the positionally-weighted share of the query's top-`serpTop` SERP that sits in our niche. Each SERP app is niche-classified **once per run** (`match ∈ {0, 0.5, 1}`, LLM task `classify`, cached in `state.appNiche` keyed by trackId) and reused by every keyword whose results include it. "Is this OUR kind of app?" is far more reproducible than rating each query, and one verdict serves dozens of keywords — so R stops drifting between keywords and between runs. The same niche map feeds the Competitors tab.
+**The fix has two halves:**
+
+1. **The prescreen rubric asks about SEARCHER INTENT, not topical overlap** (`prompts/rate.md`): *"who types this into the App Store search bar, and what are they hoping to install?"* Under the old topical rubric the LLM rated "gambling" 3 (topically core; the searcher wants a casino) and "gambling ban" 1 (intent = wants gambling banned — exactly us). Under the intent rubric, on panel-labeled data, **intent=3 predicted truth≥2 in 100% of cases** (39/43 exactly 3) — the intent rating is the ground-truth-grade signal, measured store fit is not.
+2. **`classify` judges the app's own advertised purpose** (with genre + description snippet as evidence, not name alone): purpose-built for our core job = 1; a generic tool that could be repurposed = 0.5 at most. This kills the "Counter+ directly matches bet-free streak tracking" label inflation.
+
+Final R is intent-led; the measured evidence `E` modulates only the uncertain middle bands:
 
 ```
-serpFit = Σ_i  posWeight(i) · match(app_i)        // posWeight mirrors D: (serpTop−i)/Σ
-conf    = min(1, observed / serpTop)              // thin SERP → low confidence
-fitAdj  = conf · serpFit + (1 − conf) · (sem/3)   // scarce evidence blends back to the prior
-R       = 3 · (sem/3)^0.3 · fitAdj^0.7            // 0–3, one decimal; sem=0 ⇒ 0 (anti-semantics)
+serpFit = Σ_i  posWeight(i) · match(app_i)        // as in v2; posWeight mirrors D
+conf    = min(1, observed / serpTop)
+E       = conf · serpFit + (1 − conf) · (sem/3)   // thin evidence falls back to the prior
+
+R = 0                     sem = 0    // anti-semantics / opposite-need veto, non-negotiable
+    0.4 + 0.8·E           sem = 1    // 0.4–1.2: crosses include (R≥1) only on store confirmation
+    1.4 + 1.0·E           sem = 2    // 1.4–2.4: store evidence disambiguates mixed intent
+    3.0                   sem = 3    // core intent is not negotiable by SERP composition
 ```
 
-**Weighting (v2.1).** The exponents are deliberately **fit-dominant** (0.3 semantic / 0.7 store). The measured store fit is the reliable, reproducible signal; the coarse 0–3 LLM rating is the noisy one — on a live run it rated the core term "gambling addiction" a 2 while over-rating the feature "panic button" a 3, and a symmetric blend let that inversion survive into the ranking. Leaning on fit fixes it: a store-confirmed core term can no longer be dragged below a feature by an under-rating. The LLM stays a **secondary** signal — it still (a) vetoes anti-semantics (sem=0 ⇒ R=0, non-negotiable) and (b) suppresses queries the store only coincidentally fills with our apps (generic "habit tracker …" it correctly marks tangential, which fit alone would over-promote). Exponents sum to 1, so a thin SERP (no store evidence, conf→0) returns exactly the semantic prior. Residual anti-semantic leaks (e.g. "sobriety tracker" the prescreen rated 1 and whose SERP the classifier called adjacent) are a labeling matter for the prescreen / niche-classify prompts, not the formula.
+A core phrase now scores a full 3 — differences *among* cores are demand and competition, i.e. P's and D's channels, not R's. Offline validation against judge-panel ground truth (289 measured keywords of a production run): objective 0.29 (v3) vs 2.0 (best exponent blend) vs 7.07 (v2.2); core recall (truth-3 → R≥2.8) **100%**, junk suppression 99%, false exclusions 0, rank inversions 0.
 
-R is continuous. Keywords with `R ≥ 1` are included (charged, enter the sample and assembly); below 1 they are excluded (not charged). The `reason` is code-generated and fully traceable: `"R 2.8 = semantic 3/3 × store-fit 85%. <prescreen reason>"`, with the classified top SERP available behind it. There is **no per-keyword final `rate` call** — the only LLM query-judgement is the prescreen. Implementation: `core/metrics/relevance.ts`, `prompts/classify.md`.
+**Brand traps (v3, replaces the exact-name "dead brand" detector).** Two detectors in union, finalized at rating time and guarded by intent: `brandQuery = (sem < 3) ∧ (prescreen brand flag ∨ isBrandNameQuery)`. The prescreen flag catches famous and coined brands the LLM recognizes blind; `isBrandNameQuery` catches suggest-seeded phantoms the LLM can't know: the query matches a NAME SEGMENT (split on `:|–-·`) of a weak (<300 ratings) top-3 app and no app with ≥1000 ratings owns the phrase in full ("cbt thought record" → "TellMe: CBT Thought Record", 3 ratings, phantom P=78). The sem<3 guard exists because young niches consist entirely of weak apps — without it the signature false-flags real cores ("quit gambling"). Judge-labeled traps: recall 0.83, zero flags on truth≥2 keywords; flagged keywords keep their R but Score=0.
+
+R is continuous. Keywords with `R ≥ 1` are included (charged, enter the sample and assembly); below 1 they are excluded (not charged). The `reason` stays code-generated: `"R 3 = intent 3/3. <prescreen reason>"` / `"R 1.9 = intent 2/3 · store-fit 55%. …"`. Implementation: `core/metrics/relevance.ts`, `core/metrics/difficulty.ts` (`isBrandNameQuery`), `prompts/rate.md`, `prompts/classify.md`.
 
 ## 3.4 Opportunity Score, 0–100 — final strength
 

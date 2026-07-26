@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { popularityScore, computePopularity } from "./popularity.ts";
-import { appStrength, computeDifficulty, matchScore, isDeadBrandQuery } from "./difficulty.ts";
+import { appStrength, computeDifficulty, matchScore, isBrandNameQuery } from "./difficulty.ts";
 import { opportunityScore, compareKeywords } from "./score.ts";
 
 const PW = { depth: 0.7, rank: 0.3 };
@@ -74,33 +74,38 @@ describe("Difficulty (spec 03.2)", () => {
   });
 });
 
-describe("Dead brand query detector", () => {
+describe("Brand-name query detector (03.3v3, measured half)", () => {
   const app = (trackName: string, ratingCount: number, match: number) =>
     ({ trackId: 1, trackName, ratingCount, rating: 4, updatedDaysAgo: 30, match, strength: 50 });
 
-  test("real signatures: dead app's name in its own results → true", () => {
+  test("real signatures: weak app's name (or a name segment) in its own results → true", () => {
     // 007 Breathalyzer, 0 ratings (real case from the sober-time run)
-    expect(isDeadBrandQuery("007 breathalyzer", [
+    expect(isBrandNameQuery("007 breathalyzer", [
       app("007 Breathalyzer", 0, 1), app("BACtrack", 1048, 0), app("Smart Sense BAC Breathalyzer", 2, 0),
     ])).toBe(true);
-    expect(isDeadBrandQuery("sobersense breathalyzer", [
-      app("SoberSense Breathalyzer", 37, 1), app("BACtrack", 1048, 0), app("DRIVESAFE", 0, 0),
+    // the phrase is a SEGMENT of the weak app's name — the v2 exact-equality check missed these
+    // ("cbt thought record" → "TellMe: CBT Thought Record", 3 ratings, phantom P=78 on the live run)
+    expect(isBrandNameQuery("cbt thought record", [
+      app("TellMe: CBT Thought Record", 3, 1), app("CBT Journal", 210, 0), app("Thought Diary", 480, 0),
     ])).toBe(true);
   });
 
-  test("legitimate queries are not zeroed out", () => {
-    // name contains the phrase + a tail — not an exact match (bac calculator - alcocurve)
-    expect(isDeadBrandQuery("bac calculator", [
-      app("BAC calculator - Alcocurve", 8, 1), app("Drink Tracker - BAC Buddy", 23, 0), app("Ok To Drive", 41, 0),
-    ])).toBe(false);
-    // category term: MULTIPLE apps contain the phrase in full
-    expect(isDeadBrandQuery("alcohol tracker", [
+  test("a phrase owned in full by a STRONG app is a category term / live brand, not a tombstone", () => {
+    expect(isBrandNameQuery("alcohol tracker", [
       app("DrinkControl: Alcohol Tracker", 4199, 1), app("I Am Sober", 182336, 0), app("Alcohol Tracker°", 37, 1),
     ])).toBe(false);
-    // strong brand: ratings above the floor — real traffic, do not zero out
-    expect(isDeadBrandQuery("i am sober", [
+    expect(isBrandNameQuery("i am sober", [
       app("I Am Sober", 182336, 1), app("Sober Time", 39730, 0), app("Nomo", 5000, 0),
     ])).toBe(false);
+  });
+
+  test("weak-niche cores DO match the raw signature — the sem=3 guard in rateAll is what saves them", () => {
+    // "quit gambling" over a young niche of tiny apps (real SERP from the NoBettr run): the
+    // measured signature alone fires — which is exactly why the caller must never apply it to
+    // core-intent (sem=3) keywords.
+    expect(isBrandNameQuery("quit gambling", [
+      app("Quit Gambling - No Bet Samurai", 1, 1), app("Quit Gambling: Bet Breaker", 362, 1), app("BetBlocker", 70, 0),
+    ])).toBe(true);
   });
 });
 

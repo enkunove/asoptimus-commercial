@@ -42,7 +42,11 @@ export class AnthropicClient implements LlmClient {
       messages: [{ role: "user", content: req.prompt }],
       output_config: { format: { type: "json_schema", schema: req.schema } },
     };
+    // Reproducibility (spec 03.3v3): the intent rating is the backbone of R and must not drift
+    // run-to-run; greedy decoding removes the sampling half of that variance. Thinking-enabled
+    // models require the default temperature, so this applies only to the non-thinking path.
     if (supportsAdaptiveThinking(req.model)) params.thinking = { type: "adaptive" };
+    else params.temperature = 0;
 
     try {
       // idempotencyKey (run_id+step_seq): a restart mid-call does not double COGS (D7).
