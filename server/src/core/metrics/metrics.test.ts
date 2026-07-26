@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { popularityScore, computePopularity } from "./popularity.ts";
-import { appStrength, computeDifficulty, matchScore, isBrandNameQuery } from "./difficulty.ts";
+import { appStrength, computeDifficulty, matchScore, isBrandNameQuery, isExactNameOfWeakApp } from "./difficulty.ts";
 import { opportunityScore, compareKeywords } from "./score.ts";
 
 const PW = { depth: 0.7, rank: 0.3 };
@@ -74,9 +74,29 @@ describe("Difficulty (spec 03.2)", () => {
   });
 });
 
-describe("Brand-name query detector (03.3v3, measured half)", () => {
+describe("Brand-trap candidate generators (03.3v3.1 — they nominate, the brandcheck LLM decides)", () => {
   const app = (trackName: string, ratingCount: number, match: number) =>
     ({ trackId: 1, trackName, ratingCount, rating: 4, updatedDaysAgo: 30, match, strength: 50 });
+
+  test("exact full-name of a weak single owner nominates at ANY intent (the 'gamblers recovery companion' case)", () => {
+    expect(isExactNameOfWeakApp("gamblers recovery companion", [
+      app("Gamblers Recovery Companion", 1, 1), app("Sober: Recovery Tracker", 7700, 0), app("Nomo -  Sobriety Clocks", 16138, 0),
+    ])).toBe(true);
+    // generic language that merely coincides with a tiny app's name ALSO nominates — the
+    // brandcheck verdict, not the heuristic, is what keeps it alive
+    expect(isExactNameOfWeakApp("long distance relationship ldr", [
+      app("Long Distance Relationship LDR", 12, 1), app("Lovely", 20000, 0), app("Between", 50000, 0),
+    ])).toBe(true);
+  });
+
+  test("exact-name signature stands down for strong owners and multi-owner category terms", () => {
+    expect(isExactNameOfWeakApp("i am sober", [
+      app("I Am Sober", 182336, 1), app("Sober Time", 39730, 0),
+    ])).toBe(false);
+    expect(isExactNameOfWeakApp("quit gambling", [
+      app("Quit Gambling - No Bet Samurai", 1, 1), app("Quit Gambling: Bet Breaker", 362, 1),
+    ])).toBe(false); // two full-name owners = category language
+  });
 
   test("real signatures: weak app's name (or a name segment) in its own results → true", () => {
     // 007 Breathalyzer, 0 ratings (real case from the sober-time run)

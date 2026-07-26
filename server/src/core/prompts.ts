@@ -15,6 +15,8 @@ import phraseMd from "./prompts/phrase.md" with { type: "text" };
 import composeMd from "./prompts/compose.md" with { type: "text" };
 // @ts-expect-error — Bun text import
 import classifyMd from "./prompts/classify.md" with { type: "text" };
+// @ts-expect-error — Bun text import
+import brandcheckMd from "./prompts/brandcheck.md" with { type: "text" };
 
 const templates: Record<string, string> = {
   context: contextMd,
@@ -24,6 +26,7 @@ const templates: Record<string, string> = {
   phrase: phraseMd,
   compose: composeMd,
   classify: classifyMd,
+  brandcheck: brandcheckMd,
 };
 
 /** Substitutes {{PLACEHOLDER}} values. Result is stable within a run (prompt cache). */

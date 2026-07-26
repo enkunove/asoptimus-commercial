@@ -84,6 +84,12 @@ export class MockLlmClient implements LlmClient {
         const sub = phrases.slice(1).find((p) => p.split(" ").every((w) => !sWords.has(w))) ?? "";
         return JSON.stringify({ titleSlogan: slogan, subtitle: sub });
       }
+      case "brandcheck": {
+        // Mock: every nominated phrase is generic language (no phantoms) — the happy path
+        // keeps all keywords billable and deterministic.
+        const kws = extract(/"keyword"\s*:\s*"([^"]+)"/g, req.prompt);
+        return JSON.stringify({ verdicts: kws.map((keyword) => ({ keyword, phantom: false, reason: "generic language (mock)" })) });
+      }
       case "classify": {
         // Mock niche classifier: every SERP app is "same niche" (match 1) so serpFit ≈ 1 and
         // computed R ≈ the prescreen semantic rating — the happy path stays deterministic.

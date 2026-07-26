@@ -22,7 +22,7 @@ import {
   type Violation, type AssemblyBucket, type AssemblyResult, type CoverageRow,
 } from "@aso/shared";
 import { computePopularity } from "../core/metrics/popularity.ts";
-import { computeDifficulty, isBrandNameQuery } from "../core/metrics/difficulty.ts";
+import { computeDifficulty, isBrandNameQuery, isExactNameOfWeakApp } from "../core/metrics/difficulty.ts";
 import { opportunityScore, compareKeywords } from "../core/metrics/score.ts";
 import { serpFitOf, finalR, RELEVANCE } from "../core/metrics/relevance.ts";
 import { runPool } from "../core/pool.ts";
@@ -528,29 +528,67 @@ export class Orchestrator {
   }
 
   /**
+   * Brand-trap verdicts for a rating wave (spec 03.3v3.1). Heuristics only NOMINATE: the exact
+   * full-name signature fires at any intent (a 1:1 name match with a weak app is suspicious even
+   * for a core-sounding phrase — "gamblers recovery companion", P=63 off a 1-rating app), the
+   * broader segment signature and the prescreen flag nominate at sem<3. The VERDICT — seeded
+   * phantom vs generic search language that merely coincides with a weak app's name ("long
+   * distance relationship ldr") — is a language judgement no SERP heuristic can make, so one
+   * batched `brandcheck` call decides, with the SERP as evidence. Pure COGS, uncharged.
+   */
+  private async brandVerdicts(pending: KeywordEntry[]): Promise<Map<string, string>> {
+    const traps = new Map<string, string>();
+    const candidates = pending.filter((k) => {
+      const sem = Math.round(k.metrics.semR ?? k.metrics.R ?? 1);
+      return isExactNameOfWeakApp(k.keyword, k.metrics.topApps)
+        || (sem < 3 && (k.metrics.brandQuery === true || isBrandNameQuery(k.keyword, k.metrics.topApps)));
+    });
+    if (candidates.length === 0) return traps;
+    const system = renderPrompt("brandcheck", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
+    for (let i = 0; i < candidates.length; i += 20) {
+      this.checkPause();
+      const chunk = candidates.slice(i, i + 20);
+      const items = chunk.map((k) => ({
+        keyword: k.keyword,
+        P: k.metrics.P,
+        matchedApp: k.metrics.topApps.find((a) => a.match === 1) ?? k.metrics.topApps[0] ?? null,
+        topSerp: k.metrics.topApps.slice(0, 5).map((a) => ({ name: a.trackName, ratings: a.ratingCount })),
+      }));
+      const res = await this.llm<{ verdicts: { keyword: string; phantom: boolean; reason: string }[] }>(
+        "brandcheck", system,
+        `These phrases match a weak app's name in their own results. Phantom or generic language?\n${JSON.stringify(items, null, 2)}`,
+        this.contextBlock(),
+      );
+      for (const v of res.verdicts) {
+        if (v.phantom === true) traps.set(normalizeKeyword(v.keyword), (v.reason ?? "").slice(0, 120));
+      }
+    }
+    return traps;
+  }
+
+  /**
    * Final Relevance (spec 03.3v3). R is COMPUTED, not asked: sem = the INTENT rating from the
    * prescreen (the only place an LLM judges the query), fit = the in-niche share of the MEASURED
    * top SERP (from classifyNewApps). Intent leads: sem=3 is R=3 (SERP composition is competition
-   * information — D's channel), the store evidence disambiguates only the 1–2 bands. The
-   * brand-trap verdict is finalized here too: (prescreen brand flag OR the measured name-segment
-   * signature) guarded by sem<3, then Score is zeroed via recomputeScore. No per-keyword LLM
-   * call → the number does not swing run-to-run. Charges each INCLUDED keyphrase (D4 v4, capped
-   * at the overshoot cap); beyond the cap an included phrase stays rated but free.
+   * information — D's channel), the store evidence disambiguates only the 1–2 bands. Brand traps
+   * (nominated by heuristics, confirmed by `brandcheck`) are EXCLUDED and not charged — the user
+   * must never pay for a tombstone. Charges each INCLUDED keyphrase (D4 v4, capped at the
+   * overshoot cap); beyond the cap an included phrase stays rated but free.
    */
   private async rateAll() {
     await this.classifyNewApps();
     const serpTop = this.config.serpTop;
     const pending = this.state.keywords.filter((k) => k.status === "verified");
+    if (pending.length === 0) return;
+    const traps = await this.brandVerdicts(pending);
     for (const k of pending) {
       this.checkPause();
       const sem = Math.round(k.metrics.semR ?? k.metrics.R ?? 1);
       const { fit, conf } = serpFitOf(k.metrics.topApps, this.state.appNiche, serpTop);
       const R = finalR(sem, fit, conf);
-      // Brand trap (03.3v3): the LLM flag (famous/coined brands) ∪ the measured name-segment
-      // signature (suggest-seeded phantoms), never on core intent — young niches are all weak
-      // apps and would false-flag real cores like "quit gambling".
-      k.metrics.brandQuery = sem < 3 && (k.metrics.brandQuery === true || isBrandNameQuery(k.keyword, k.metrics.topApps));
-      const included = R >= RELEVANCE.includeThreshold;
+      const trapReason = traps.get(k.keyword);
+      k.metrics.brandQuery = trapReason !== undefined;
+      const included = R >= RELEVANCE.includeThreshold && !k.metrics.brandQuery;
       if (included && !this.atOvershootCap()) {
         // REAL debit of a verified keyphrase (D4 v4). Insufficient → hard-stop (paused, resumable).
         const charge = await this.deps.chargeKeyphrase(k.keyword);
@@ -560,10 +598,11 @@ export class Orchestrator {
       k.metrics.serpFit = Math.round(fit * 100) / 100;
       k.metrics.R = R;
       k.metrics.reason = this.relevanceReason(k.metrics.reason ?? "", sem, fit, conf, R);
+      if (trapReason !== undefined) k.metrics.reason = `${k.metrics.reason} · brand trap: ${trapReason}`.slice(0, 300);
       k.status = included ? "rated" : "excluded";
       this.recomputeScore(k);
       if (k.metrics.brandQuery) {
-        await this.event("🏷", `${k.keyword}: another product's name — Score zeroed`);
+        await this.event("🏷", `${k.keyword}: an app's name, not a real query — excluded, not charged`);
       }
       await this.event("★", `${k.keyword} → R=${R} (intent ${sem}/3${sem < 3 ? ` · fit ${Math.round(fit * 100)}%` : ""}), Score=${k.metrics.score ?? 0}`);
       await this.save();

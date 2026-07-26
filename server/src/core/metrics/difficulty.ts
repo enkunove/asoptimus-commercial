@@ -40,16 +40,31 @@ export interface DifficultyResult {
 }
 
 /**
- * "Brand-name query" detector, measured half (spec 03.3v3). Apple seeds app NAMES into the
- * suggest index, so a phrase that exists mainly as some app's name gets an inflated P with
- * little real demand ("cbt thought record" → P 78 off a 3-rating app). The v2 exact-equality
- * check missed names with a prefix/suffix segment ("TellMe: CBT Thought Record"); v3 matches
- * the query against NAME SEGMENTS (split on :|–-·) of weak top apps, and stands down when any
- * app with ≥ strongFloor ratings carries the phrase in full — a phrase the strong own is a
- * category term, not a tombstone. The caller must additionally guard with the intent rating
- * (sem=3 ⇒ never a trap): young niches consist entirely of weak apps, and without that guard
- * this signature would flag core queries like "quit gambling". Validated on judge-labeled
- * traps: recall 0.83 in union with the prescreen brand flag, zero flags on truth≥2 keywords.
+ * Brand-trap CANDIDATE generators, measured half (spec 03.3v3.1). Apple seeds app NAMES into
+ * the suggest index, so a phrase that exists mainly as some app's name gets an inflated P with
+ * little real demand ("cbt thought record" → P 78 off a 3-rating app; "gamblers recovery
+ * companion" → P 63 off a 1-rating app). No SERP heuristic can tell a seeded phantom from a
+ * weak app that happens to be NAMED in generic search language ("long distance relationship
+ * ldr" is a real query AND the exact name of a tiny app; childCount separated nothing on
+ * labeled data) — so these signatures only NOMINATE candidates; the verdict is a batched LLM
+ * `brandcheck` call with the SERP as evidence (orchestrator.rateAll).
+ *
+ * isExactNameOfWeakApp — the query IS the full normalized name of a weak top-3 app and no
+ * other top app carries the phrase in full. Fires at ANY intent rating: an exact 1:1 name
+ * match is suspicious even for a core-sounding phrase.
+ */
+export function isExactNameOfWeakApp(keyword: string, topApps: TopApp[], ratingFloor = 200): boolean {
+  const kw = normalizeKeyword(keyword);
+  if (topApps.filter((a) => a.match === 1).length > 1) return false; // several owners = category language
+  return topApps.slice(0, 3).some((a) => normalizeKeyword(a.trackName) === kw && a.ratingCount < ratingFloor);
+}
+
+/**
+ * isBrandNameQuery — the broader segment signature: the query matches a NAME SEGMENT (split on
+ * :|–-·) of a weak (< ratingFloor) top-3 app and no app with ≥ strongFloor ratings owns the
+ * phrase in full ("TellMe: CBT Thought Record"). Too noisy to fire on core intent — young
+ * niches consist entirely of weak apps and it would nominate real cores like "quit gambling"
+ * — so the caller applies it only at sem<3.
  */
 export function isBrandNameQuery(
   keyword: string,

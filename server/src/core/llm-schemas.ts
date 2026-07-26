@@ -104,6 +104,27 @@ export const classifySchema = {
   additionalProperties: false,
 } as const;
 
+export const brandcheckSchema = {
+  type: "object",
+  properties: {
+    verdicts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          keyword: { type: "string" },
+          phantom: { type: "boolean" },
+          reason: { type: "string" },
+        },
+        required: ["keyword", "phantom", "reason"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["verdicts"],
+  additionalProperties: false,
+} as const;
+
 export const phraseSchema = {
   type: "object",
   properties: {
@@ -122,6 +143,7 @@ export const schemas: Record<string, object> = {
   phrase: phraseSchema,
   compose: phraseSchema,
   classify: classifySchema,
+  brandcheck: brandcheckSchema,
 };
 
 /** Minimal structural validation of a response against a schema (code does not trust the provider, spec 06.1). */
