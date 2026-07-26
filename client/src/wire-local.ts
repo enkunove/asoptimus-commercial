@@ -23,6 +23,7 @@ import type {
   LlmLogPublic,
   BalanceView,
   ModelInfo,
+  RunQuote,
   TopupCatalog,
   QueryKind,
   KeywordsLiteView,
@@ -86,6 +87,8 @@ export interface QueryData {
   "keywords-lite": KeywordsLiteView;
   competitors: CompetitorsView;
   export: ExportArtifact;
+  // D4 v5: server-side workload estimate
+  quote: RunQuote;
 }
 
 // Type-level guarantee: QueryData keys exactly match the contract's QueryKind.

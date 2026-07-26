@@ -34,9 +34,21 @@ export interface ServerRunState {
   improvementState: { roundsSpent: number; topSnapshot: string[] };
   /** Monotonic logical-step counters (for llm_steps replay ids). */
   stepCounters: Record<string, number>;
-  /** Estimated run ceiling in credits (D4 v4): ≈ sampleSize × pricePerKeyphrase. Ceiling for
+  /** Estimated run ceiling in credits (D4 v5): the workload-based quote. Ceiling for
    *  the COGS fuse; NOT a reserve (usage-based debit happens in real time). */
   estimateCredits: number;
+  /** D4 v5 usage-based billing counters (deterministic under replay — they drive ledger
+   *  idempotency keys like "probe#3"). Absent on pre-v5 snapshots (?? 0). */
+  billing?: {
+    /** Fee-schedule version the run was created under; runs with version <2 (or missing)
+     *  keep the legacy flat per-keyphrase debit forever. */
+    version: number;
+    prescreenBatches: number;
+    probeWaves: number;
+    classifyBatches: number;
+    /** Keyphrases charged so far — drives the progressive inclusion fee. */
+    keyphrasesCharged: number;
+  };
 }
 
 export function newUsage(): UsageTotals {
@@ -55,6 +67,7 @@ export function initialState(runId: string, userId: string, brief: string, confi
     improvementState: { roundsSpent: 0, topSnapshot: [] },
     stepCounters: {},
     estimateCredits,
+    billing: { version: 2, prescreenBatches: 0, probeWaves: 0, classifyBatches: 0, keyphrasesCharged: 0 },
   };
 }
 

@@ -15,7 +15,7 @@ import type { Store } from "../db/index.ts";
 
 export class InsufficientCredits extends Error {
   constructor(public needCredits: number, public haveCredits: number) {
-    super(`insufficient credits: need ${Math.max(0, needCredits - haveCredits).toFixed(2)} more (have ${haveCredits.toFixed(2)}, keyphrase costs ${needCredits})`);
+    super(`insufficient credits: need ${Math.max(0, needCredits - haveCredits).toFixed(2)} more (have ${haveCredits.toFixed(2)})`);
     this.name = "InsufficientCredits";
   }
 }
@@ -36,12 +36,14 @@ export class BillingService {
   }
 
   /**
-   * Debit one verified keyphrase IN REAL TIME (D4 v4). Atomic and idempotent by
-   * (run_id, keyword). Returns: charged — debited just now; alreadyCharged — was already debited
-   * (replay/repeat rating); otherwise (balance too low) — not debited, hard-stop at the caller.
+   * Debit one unit of run work IN REAL TIME (D4 v5). `key` is the idempotency key within the
+   * run: a keyword for inclusion fees, or a synthetic stage key ("probe#3", "prescreen#7",
+   * "classify#2") for workload fees. Atomic and idempotent by (run_id, key). Returns: charged —
+   * debited just now; alreadyCharged — was already debited (replay/repeat); otherwise (balance
+   * too low) — not debited, hard-stop at the caller.
    */
-  async chargeKeyphrase(userId: string, runId: string, keyword: string, price: number): Promise<{ charged: boolean; alreadyCharged: boolean; balance: number }> {
-    return this.store.debitForKeyphrase(userId, runId, keyword, price);
+  async chargeKeyphrase(userId: string, runId: string, key: string, price: number): Promise<{ charged: boolean; alreadyCharged: boolean; balance: number }> {
+    return this.store.debitForKeyphrase(userId, runId, key, price);
   }
 
   /** Credit grant (Paddle top-up), idempotent by paddle_event_id = transaction id (D4/§webhooks). */

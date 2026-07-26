@@ -8,10 +8,10 @@
 //                query.result / query.error (via hub).
 
 import type { App } from "../app.ts";
-import type { ClientToServer, ServerToClient, SignedEnvelope, BalanceView } from "@aso/shared";
+import type { ClientToServer, ServerToClient, SignedEnvelope, BalanceView, RunQuote } from "@aso/shared";
 import type { ClientConnection } from "../apple-dispatch/hub.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
-import { modelInfos } from "../billing/prices.ts";
+import { modelInfos, quoteFor, knownModel, OVERSHOOT_PCT, DEFAULT_MODEL } from "../billing/prices.ts";
 import { topupCatalog } from "../billing/packages.ts";
 import { IS_DEV } from "../env.ts";
 import { log } from "../log.ts";
@@ -188,6 +188,20 @@ async function handleQuery(app: App, ws: WsLike, userId: string, q: Extract<Clie
     case "models":
       data = modelInfos(); // ModelInfo[]
       break;
+    case "quote": {
+      // D4 v5: the estimate is computed server-side (workload-based, superlinear) — the client
+      // only renders it.
+      const sampleSize = Math.max(30, Math.min(500, Number(q.params?.sampleSize ?? 150)));
+      const model = knownModel(String(q.params?.model ?? "")) ? String(q.params?.model) : DEFAULT_MODEL;
+      const quote = quoteFor(sampleSize, model);
+      const rq: RunQuote = {
+        sampleSize, model,
+        pricePerKeyphrase: Math.round((quote / sampleSize) * 10_000) / 10_000,
+        quote, overshootPct: OVERSHOOT_PCT,
+      };
+      data = rq;
+      break;
+    }
     case "packages":
       data = { packages: topupCatalog(), custom: app.payments.customRange() }; // TopupCatalog
       break;

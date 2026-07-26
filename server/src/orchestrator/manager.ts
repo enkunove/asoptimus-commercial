@@ -16,7 +16,7 @@ import { toLite, aggregateCompetitors, buildExport } from "./insights.ts";
 import { sampleCount, normalizeKeyword } from "@aso/shared";
 import type { Store } from "../db/index.ts";
 import { BillingService } from "../billing/service.ts";
-import { pricePerKeyphrase, quoteFor } from "../billing/prices.ts";
+import { quoteFor, runFees } from "../billing/prices.ts";
 import type { LlmClient } from "../llm-proxy/client.ts";
 import { LlmProxy } from "../llm-proxy/proxy.ts";
 import { ClientHub, ClientGoneError } from "../apple-dispatch/hub.ts";
@@ -109,10 +109,11 @@ export class RunManager {
     if (userId) this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason, ...(code ? { code } : {}) });
   }
 
-  /** REAL keyphrase debit (D4 v4) + live balance push to the client. */
-  private async chargeKeyphrase(userId: string, runId: string, model: string, keyword: string) {
-    const price = pricePerKeyphrase(model);
-    const r = await this.billing.chargeKeyphrase(userId, runId, keyword, price);
+  /** REAL work-unit debit (D4 v5) + live balance push to the client. `key` is the ledger
+   *  idempotency key within the run (keyword or synthetic stage key), `amount` in credits. */
+  private async charge(userId: string, runId: string, key: string, amount: number) {
+    const price = Math.round(amount * 10_000) / 10_000;
+    const r = await this.billing.chargeKeyphrase(userId, runId, key, price);
     await this.broadcastBalance(userId, r.balance);
     return { ok: r.charged || r.alreadyCharged, balance: r.balance, price };
   }
@@ -125,7 +126,7 @@ export class RunManager {
       proxy: this.proxy,
       persist: (st) => this.persist(st),
       emitEvent: (rid, k, t) => this.emitEvent(rid, k, t),
-      chargeKeyphrase: (keyword) => this.chargeKeyphrase(s.userId, s.runId, s.config.model, keyword),
+      charge: (key, amount) => this.charge(s.userId, s.runId, key, amount),
       onPaused: (reason, code) => this.broadcastPaused(s.runId, reason, code),
       onDone: (st) => this.finishRun(st),
     });
@@ -159,12 +160,13 @@ export class RunManager {
    *  the run is (kept) paused with a credits_out notice, and the caller must not proceed. */
   private async creditsCoverWork(runId: string, orch: Orchestrator): Promise<boolean> {
     const userId = this.runUsers.get(runId)!;
-    const price = pricePerKeyphrase(orch.state.config.model);
+    // D4 v5: the gate only requires the balance to cover the next sliver of work.
+    const price = Math.max(0.05, runFees(orch.state.config.model).inclusionBase);
     const balance = await this.billing.balance(userId);
     if (balance >= price) return true;
     const verb = orch.state.phase === "created" ? "start" : "continue";
     orch.state.paused = true;
-    orch.state.notice = `Not enough credits to ${verb} (a keyphrase costs ${price}, balance is ${balance.toFixed(2)}). Top up your balance.`;
+    orch.state.notice = `Not enough credits to ${verb} (balance is ${balance.toFixed(2)}). Top up your balance.`;
     await this.persist(orch.state);
     await this.emitEvent(runId, "💳", orch.state.notice);
     this.hub.broadcast(userId, { t: "run.paused", run_id: runId, reason: orch.state.notice, code: "credits_out" });

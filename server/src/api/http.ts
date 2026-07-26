@@ -8,7 +8,7 @@ import { handleAdmin } from "./admin.ts";
 import { rateLimited } from "./ratelimit.ts";
 import { defaultRunConfig, validateRunConfig } from "../config.ts";
 import { topupCatalog } from "../billing/packages.ts";
-import { modelInfos, quoteFor, pricePerKeyphrase, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
+import { modelInfos, quoteFor, OVERSHOOT_PCT, knownModel, DEFAULT_MODEL } from "../billing/prices.ts";
 import { IS_DEV, optionalEnv } from "../env.ts";
 import { isPaddleIp } from "../paddle/service.ts";
 import { log } from "../log.ts";
@@ -298,7 +298,9 @@ prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Pad
     const model = url.searchParams.get("model") ?? DEFAULT_MODEL;
     if (!knownModel(model)) return err(`unknown model: ${model}`);
     if (!(sampleSize >= 30 && sampleSize <= 500)) return err("sampleSize must be in [30, 500]");
-    const q: RunQuote = { sampleSize, model, pricePerKeyphrase: pricePerKeyphrase(model), quote: quoteFor(sampleSize, model), overshootPct: OVERSHOOT_PCT };
+    const quote = quoteFor(sampleSize, model);
+    // D4 v5: pricePerKeyphrase is the effective AVERAGE at this sampleSize (display-only).
+    const q: RunQuote = { sampleSize, model, pricePerKeyphrase: Math.round((quote / sampleSize) * 10_000) / 10_000, quote, overshootPct: OVERSHOOT_PCT };
     return json(q);
   }
 

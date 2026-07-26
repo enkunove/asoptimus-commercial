@@ -498,33 +498,48 @@ function defaultModel(models, cfgDefault) {
   );
 }
 
-// ---------- live run ESTIMATE (D4 v4, usage-based): ≈ sampleSize × pricePerKeyphrase ----------
-// This is an ESTIMATE, not a reserve: credits are debited in real time as keyphrases are produced.
-function computeQuote(sampleSize, model) {
-  const price = model ? Number(model.pricePerKeyphrase) : 0;
-  return { price, quote: Math.ceil((Number(sampleSize) || 0) * price) };
+// ---------- live run ESTIMATE (D4 v5, usage-based) ----------
+// The estimate comes from the SERVER (workload-based; grows faster than linearly with the
+// sample size — deep runs work harder per surviving keyphrase). An ESTIMATE, not a reserve:
+// credits are debited in real time as the run performs work.
+const quoteCache = new Map(); // "S|model" → RunQuote
+let quoteFetchSeq = 0;
+async function fetchQuote(sampleSize, model) {
+  const key = `${sampleSize}|${model}`;
+  if (!quoteCache.has(key)) {
+    quoteCache.set(key, await api(`/api/quote?sampleSize=${encodeURIComponent(sampleSize)}&model=${encodeURIComponent(model)}`));
+  }
+  return quoteCache.get(key);
 }
 // Re-render the estimate box against the current sampleSize/model/balance. No-op if the form is absent.
-function updateQuoteUI() {
+async function updateQuoteUI() {
   const box = document.getElementById("quote-box");
   const ssEl = document.getElementById("f-samplesize");
   const modelEl = document.getElementById("f-model");
   if (!box || !ssEl || !modelEl) return;
   const sampleSize = Number(ssEl.value);
   const model = modelById(modelEl.value);
-  const { price, quote } = computeQuote(sampleSize, model);
+  const seq = ++quoteFetchSeq;
+  let quote = 0;
+  try {
+    const q = await fetchQuote(sampleSize, modelEl.value);
+    if (seq !== quoteFetchSeq) return; // a newer slider/model value superseded this fetch
+    quote = Number(q.quote) || 0;
+  } catch {
+    if (seq !== quoteFetchSeq) return;
+  }
   const maxTotal = Math.ceil(quote * (1 + OVERSHOOT_PCT)); // overshoot is debited TOO
   const known = currentBalance != null;
   const enough = !known || currentBalance >= quote;
   box.innerHTML = `
     <div class="quote-main">
       <div><span class="quote-approx">≈</span> <span class="quote-value">${quote.toLocaleString()}</span> <span class="muted">credits — estimate</span></div>
-      <div class="muted small">${sampleSize} keyphrases × ${price} cr/keyphrase${model ? ` · ${esc(model.name)}` : ""}</div>
+      <div class="muted small">up to ${sampleSize} keyphrases${model ? ` · ${esc(model.name)}` : ""}</div>
     </div>
     <p class="quote-note small muted">An estimate, not a fixed price: credits are debited <b>as the run goes, in real time</b> —
-      exactly for the keyphrases produced. The system may add <b>up to +${Math.round(OVERSHOOT_PCT * 100)}%</b> keyphrases
-      (finishing hypothesis branches already started) — <b>those are debited too</b>, so the total can reach
-      ≈${maxTotal.toLocaleString()} cr (+${Math.round(OVERSHOOT_PCT * 100)}% over the estimate).</p>
+      for the research work actually performed (exploring, measuring and verifying keyphrases for your app).
+      The system may keep finishing hypothesis branches already started — <b>that work is debited too</b>, so the total can reach
+      ≈${maxTotal.toLocaleString()} cr (up to +${Math.round(OVERSHOOT_PCT * 100)}% over the estimate).</p>
     ${known ? (enough
       ? `<p class="small check-ok">Balance: ${currentBalance.toLocaleString()} cr — should cover the estimate.</p>`
       : `<div class="quote-short"><span class="check-warn">Balance: ${currentBalance.toLocaleString()} cr — below the estimate. The run will start and debit as it goes; when credits run out it pauses, you top up and resume from that point.</span> <button type="button" class="primary small" id="quote-topup">Top up now</button></div>`)

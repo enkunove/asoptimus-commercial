@@ -116,7 +116,10 @@ export type RunAction =
 export type QueryKind =
   | "runs" | "run" | "keywords" | "keyword" | "llm-log" | "balance" | "models" | "packages"
   // [spec 09] insights & exports — re-projections of existing run data (no new Apple/LLM calls):
-  | "keywords-lite" | "competitors" | "export";
+  | "keywords-lite" | "competitors" | "export"
+  // [D4 v5] server-side run estimate (workload-based, superlinear in sampleSize — the client
+  // must NOT compute it locally from a per-keyphrase price):
+  | "quote";
 
 export type ClientToServer =
   | { t: "hello"; session_token: string; device_fp: string; resume_job_ids: string[] }
@@ -237,13 +240,16 @@ export interface ModelInfo {
 }
 
 /** [v4] Run cost ESTIMATE (usage-based, D4). NOT a hold/reserve: credits are debited in
- *  real time as keyphrases are produced; the total = actually produced keyphrases × price.
- *  The client computes the estimate live on the sampleSize slider / model change. */
+ *  real time as the run performs work; the client fetches the estimate from the server on the
+ *  sampleSize slider / model change (kind="quote" or GET /api/quote) — the schedule behind it
+ *  is internal and superlinear in sampleSize. */
 export interface RunQuote {
   sampleSize: number;
   model: string;
-  pricePerKeyphrase: number; // credits per keyphrase
-  quote: number;             // ≈ ceil(sampleSize × pricePerKeyphrase) — an ESTIMATE, not a reserve
+  /** Effective AVERAGE credits per keyphrase at this sampleSize (= quote / sampleSize) —
+   *  display-only; the actual debits are per-work-unit (D4 v5). */
+  pricePerKeyphrase: number;
+  quote: number;             // workload-based ESTIMATE in credits, not a reserve
   overshootPct: number;      // 0.1 — the total may be up to +10% higher (overshoot IS BILLED)
 }
 

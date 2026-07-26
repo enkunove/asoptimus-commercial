@@ -4,10 +4,14 @@
 // metrics, micro-reserve, llm_steps, D4/D7). Events are event-sourced in run_events.
 // Pure metric/assembly functions are 1:1 from @aso/core.
 //
-// BILLING (D4 v4): real-time debit — as soon as a keyword becomes a verified keyphrase
-// (rated, R≥1) — immediately charge pricePerKeyphrase[model] (deps.chargeKeyphrase). At zero
-// — hard-stop paused (resumable). The orchestrator caps exploration at sampleSize×(1+OVERSHOOT_PCT),
-// but whatever was produced is paid for. Internal per-attempt COGS (llm_steps) is the safety fuse.
+// BILLING (D4 v5): real-time WORKLOAD debit — every stage of real work carries a small fee
+// (prescreen per candidate, probe per measured keyword, classify per app, progressive fee per
+// included keyphrase), so spending is smooth and tracks actual effort instead of stepping once
+// per keyphrase. Stage debits are idempotent by synthetic ledger keys ("probe#3"); counters in
+// state.billing advance deterministically under replay. Runs created before v5 (state.billing
+// missing/version<2) keep the legacy flat per-keyphrase debit. At zero — hard-stop paused
+// (resumable). The orchestrator caps inclusion charges at sampleSize×(1+OVERSHOOT_PCT).
+// Internal per-attempt COGS (llm_steps) is the safety fuse.
 //
 // REPLAY (D7): on restart, state is reconstructed by RE-RUNNING (replayFromLogs), feeding
 // LLM from llm_steps and Apple from apple_cache; first log miss = frontier → stop, resumable.
@@ -40,7 +44,7 @@ import { JobError } from "../apple-dispatch/hub.ts";
 import { LlmProxy } from "../llm-proxy/proxy.ts";
 import { LlmAuthError } from "../llm-proxy/client.ts";
 import { InsufficientCredits, CogsExceededCeiling } from "../billing/service.ts";
-import { OVERSHOOT_PCT } from "../billing/prices.ts";
+import { OVERSHOOT_PCT, pricePerKeyphrase, runFees, type RunFees } from "../billing/prices.ts";
 import { ReplayFrontier } from "../replay.ts";
 import type { ServerRunState } from "./state.ts";
 
@@ -67,8 +71,9 @@ export interface OrchestratorDeps {
   persist: (s: ServerRunState) => Promise<void>;
   /** Append an event to run_events; returns seq. */
   emitEvent: (runId: string, kind: string, text: string) => Promise<void>;
-  /** REAL debit of one verified keyphrase (D4 v4). ok=false → hard-stop paused. */
-  chargeKeyphrase: (keyword: string) => Promise<{ ok: boolean; balance: number; price: number }>;
+  /** REAL debit of one unit of run work (D4 v5): key = ledger idempotency key within the run
+   *  (keyword or synthetic stage key), amount in credits. ok=false → hard-stop paused. */
+  charge: (key: string, amount: number) => Promise<{ ok: boolean; balance: number; price: number }>;
   /** Pause → run.paused to the client with a reason code (credits_out when credits run out, D4 v4). */
   onPaused?: (reason: string, code?: "credits_out" | "provider_error" | "client_offline" | "user") => void;
   /** Final balance broadcast + event on completion (no settle — usage-based). */
@@ -90,6 +95,25 @@ export class Orchestrator {
   constructor(public state: ServerRunState, private deps: OrchestratorDeps) {}
 
   private get config(): RunConfig { return this.state.config; }
+
+  // ---------- billing (D4 v5: workload fees; legacy runs keep the flat per-keyphrase debit) ----------
+
+  /** Fee schedule for this run, or null for legacy (billing.version < 2) runs. */
+  private fees(): RunFees | null {
+    return (this.state.billing?.version ?? 1) >= 2 ? runFees(this.config.model) : null;
+  }
+  private get billingCounters() {
+    return (this.state.billing ??= { version: 1, prescreenBatches: 0, probeWaves: 0, classifyBatches: 0, keyphrasesCharged: 0 });
+  }
+  /** Debit one unit of work; balance short → hard-stop (paused, resumable — the idempotent key
+   *  makes the retry debit exactly once). Counters mutate BEFORE the charge so replay derives
+   *  the same key sequence. */
+  private async chargeWork(key: string, amount: number) {
+    if (amount <= 0) return;
+    const r = await this.deps.charge(key, amount);
+    if (!r.ok) throw new InsufficientCredits(r.price, r.balance);
+  }
+
   /** Overshoot cap (D4 v4): no new branches after sampleSize×(1+OVERSHOOT_PCT). */
   private get overshootCap(): number { return Math.floor(this.config.sampleSize * (1 + OVERSHOOT_PCT)); }
   private atOvershootCap(): boolean { return sampleCount(this.state.keywords) >= this.overshootCap; }
@@ -328,13 +352,22 @@ export class Orchestrator {
       await this.event("🌊", `probing ${snapshot.length} candidates (${Math.min(width, snapshot.length)} in parallel)`);
     }
     let sampleStopped = false;
+    const wave = { measured: 0 };
     await runPool(snapshot, width, async (k) => {
       if (stopAtSample && sampleFull()) {
         if (!sampleStopped) { sampleStopped = true; await this.event("📊", "sample complete — the rest waits for improving rounds"); }
         return; // enough already from earlier waves
       }
       await this.probeOne(k, harvest);
+      if (k.status === "verified") wave.measured++;
     });
+    // D4 v5: measurement work billed per keyword actually measured this wave (one debit per
+    // wave — spending ticks smoothly with the probe stream, no per-keyword ledger spam).
+    const fees = this.fees();
+    if (fees && wave.measured > 0) {
+      const n = ++this.billingCounters.probeWaves;
+      await this.chargeWork(`probe#${n}`, fees.probePerKeyword * wave.measured);
+    }
 
     // Harvested suggest-terms are added AFTER the wave (they are probed next wave regardless), in a
     // deterministic order — never mid-wave, so concurrent workers never race on state.keywords.
@@ -420,6 +453,13 @@ export class Orchestrator {
         .slice(0, 25);
       if (batch.length === 0) return;
       this.checkPause();
+      // D4 v5: prescreen work is billed per candidate rated — including the ones it rejects;
+      // hunting for survivors is where a large run's effort actually goes.
+      const fees = this.fees();
+      if (fees) {
+        const n = ++this.billingCounters.prescreenBatches;
+        await this.chargeWork(`prescreen#${n}`, fees.prescreenPerKeyword * batch.length);
+      }
       const system = renderPrompt("rate", { SEMANTIC_LANGUAGE: this.config.semanticLanguage });
       const items = batch.map((k) => ({ keyword: k.keyword, P: null, D: null, top3: [] }));
       const res = await this.llm<{ ratings: { keyword: string; r: number; reason: string; brand?: boolean }[] }>(
@@ -491,6 +531,12 @@ export class Orchestrator {
     for (let i = 0; i < entries.length; i += 50) {
       this.checkPause();
       const chunk = entries.slice(i, i + 50);
+      // D4 v5: store-intelligence work billed per app classified (once per app per run).
+      const fees = this.fees();
+      if (fees) {
+        const n = ++this.billingCounters.classifyBatches;
+        await this.chargeWork(`classify#${n}`, fees.classifyPerApp * chunk.length);
+      }
       // v3: enriched evidence — genre + description snippet (when the SERP carried them) alongside
       // the name; the strict prompt judges the app's own advertised purpose, not repurposability.
       const items = chunk.map(([trackId, info]) => {
@@ -590,9 +636,14 @@ export class Orchestrator {
       k.metrics.brandQuery = trapReason !== undefined;
       const included = R >= RELEVANCE.includeThreshold && !k.metrics.brandQuery;
       if (included && !this.atOvershootCap()) {
-        // REAL debit of a verified keyphrase (D4 v4). Insufficient → hard-stop (paused, resumable).
-        const charge = await this.deps.chargeKeyphrase(k.keyword);
-        if (!charge.ok) throw new InsufficientCredits(charge.price, charge.balance);
+        // REAL debit of an included keyphrase (D4 v5). The fee is progressive: the k-th
+        // survivor costs base + k·slope — deeper into a run each additional keyphrase that
+        // clears the bar took more exploration to find. Legacy runs keep the flat price.
+        const fees = this.fees();
+        const price = fees
+          ? fees.inclusionBase + fees.inclusionSlope * this.billingCounters.keyphrasesCharged++
+          : pricePerKeyphrase(this.config.model);
+        await this.chargeWork(k.keyword, price);
       }
       k.metrics.semR = sem;
       k.metrics.serpFit = Math.round(fit * 100) / 100;

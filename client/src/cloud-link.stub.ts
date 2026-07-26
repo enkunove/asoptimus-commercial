@@ -6,7 +6,7 @@
 import type {
   RunSummary, RunAction, BalanceView, TopupRequest, TopupResponse, RunState, ModelInfo, TopupPackage,
   TopupCatalog, BusinessContext, KeywordEntry, LlmLogPublic, AssemblyResult,
-  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
+  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact, RunQuote,
 } from "@aso/shared";
 import type { RelayEvent } from "./cloud-link";
 import type { KeywordPage, LlmLogPage, RunSnapshot, KeywordHit, FeedEvent } from "./wire-local";
@@ -42,6 +42,7 @@ export interface StubBackend {
   deleteRun(runId: string): Promise<void>;
   getBalance(): Promise<BalanceView>;
   getModels(): Promise<ModelInfo[]>;
+  getQuote(sampleSize: number, model: string): Promise<RunQuote>;
   getPackages(): Promise<TopupCatalog>;
   topup(selection: TopupRequest): Promise<TopupResponse>;
   // spec 09 (mock projections — real aggregation lives on the server)
@@ -332,6 +333,13 @@ export function makeStubBackend(emit: (ev: RelayEvent) => void): StubBackend {
     async getBalance() { return { credits, ledger: [...ledger].reverse() }; },
 
     async getModels() { return DEV_MODELS.map((m) => ({ ...m })); },
+
+    async getQuote(sampleSize, model) {
+      // DEV mirror of the server curve: linear + progressive tail.
+      const mult = model.includes("fable") ? 7.5 : model.includes("opus") ? 4 : model.includes("sonnet") ? 2.5 : 1;
+      const quote = Math.max(1, Math.ceil(mult * (0.0276 * sampleSize + 0.0000113 * sampleSize * sampleSize)));
+      return { sampleSize, model, pricePerKeyphrase: Math.round((quote / sampleSize) * 10_000) / 10_000, quote, overshootPct: 0.1 };
+    },
 
     async getPackages(): Promise<TopupCatalog> {
       return {

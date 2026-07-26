@@ -15,7 +15,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import type {
   RunSummary, RunAction, BalanceView, TopupRequest, TopupResponse, Job, JobResult, TopupCatalog,
   ServerToClient, ClientToServer, SignedEnvelope, QueryKind, ModelInfo,
-  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact,
+  KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact, RunQuote,
 } from "@aso/shared";
 import type { AppleHttp } from "./apple/http";
 import type { Session } from "./activation";
@@ -58,6 +58,8 @@ export interface CloudLink {
   deleteRun(runId: string): Promise<void>;
   getBalance(): Promise<BalanceView>;
   getModels(): Promise<ModelInfo[]>;
+  /** D4 v5: server-side workload estimate for the run form (superlinear in sampleSize). */
+  getQuote(sampleSize: number, model: string): Promise<RunQuote>;
   getPackages(): Promise<TopupCatalog>;
   /** selection = {packageId} XOR {customCredits} (validated server-side). */
   topup(selection: TopupRequest): Promise<TopupResponse>;
@@ -297,6 +299,7 @@ class WssCloudLink implements CloudLink {
   async getLlmLog(runId: string, page: number) { return this.query("llm-log", { runId, page }); }
   async getBalance() { return this.query("balance"); }
   async getModels() { return this.query("models"); }
+  async getQuote(sampleSize: number, model: string) { return this.query("quote", { sampleSize, model }); }
   async getPackages() { return this.query("packages"); }
   async keywordsLite(runId: string) { return this.query("keywords-lite", { runId }); }
   async competitors(runId: string) { return this.query("competitors", { runId }); }
@@ -378,6 +381,7 @@ class StubCloudLink implements CloudLink {
   deleteRun(runId: string) { return this.backend.deleteRun(runId); }
   getBalance() { return this.backend.getBalance(); }
   getModels() { return this.backend.getModels(); }
+  getQuote(sampleSize: number, model: string) { return this.backend.getQuote(sampleSize, model); }
   getPackages() { return this.backend.getPackages(); }
   topup(selection: TopupRequest) { return this.backend.topup(selection); }
   keywordsLite(runId: string) { return this.backend.keywordsLite(runId); }

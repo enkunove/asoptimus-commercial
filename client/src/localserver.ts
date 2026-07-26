@@ -185,8 +185,16 @@ async function handleApi(
     return json(await cloud.getBalance());
   }
   if (path === "/api/models" && req.method === "GET") {
-    // Model registry + pricePerKeyphrase (D4 v3) — from the cloud (query kind="models"), NOT hardcoded.
+    // Model registry — from the cloud (query kind="models"), NOT hardcoded.
     return json({ models: await cloud.getModels() });
+  }
+  if (path === "/api/quote" && req.method === "GET") {
+    // D4 v5: the run estimate is computed server-side (workload-based, superlinear in
+    // sampleSize) — the web-ui only renders it.
+    const u = new URL(req.url);
+    const sampleSize = Number(u.searchParams.get("sampleSize") ?? 150);
+    const model = u.searchParams.get("model") ?? "";
+    return json(await cloud.getQuote(sampleSize, model));
   }
   if (path === "/api/packages" && req.method === "GET") {
     // TopupCatalog (packages + custom range) — from the cloud (query kind="packages"), NOT hardcoded.
