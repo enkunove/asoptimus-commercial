@@ -152,6 +152,54 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Projects (spec 10): app-centric home. versions = MetadataVersion[] JSONB (append-only, cap 100).
+CREATE TABLE IF NOT EXISTS projects (
+  id            TEXT PRIMARY KEY,                   -- proj_<uuid>
+  user_id       TEXT NOT NULL REFERENCES users(id),
+  name          TEXT NOT NULL,                      -- display name ("NoBettr")
+  brand         TEXT NOT NULL DEFAULT '',           -- brand word(s) used in titles
+  app_store_id  BIGINT,                             -- trackId (optional; unlocks Positions)
+  context       JSONB,                              -- BusinessContext (null until first run confirms)
+  versions      JSONB NOT NULL DEFAULT '[]',        -- MetadataVersion[] (append-only, cap 100)
+  live_version  INTEGER,                            -- version marked as shipped (null = none)
+  archived      BOOLEAN NOT NULL DEFAULT false,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS projects_user_idx ON projects (user_id);
+
+-- Keyword bank: every phrase ever measured for the project, deduped per storefront+language.
+-- metrics = latest {P,D,R,score,status,reason,runId,ts}; pinned/hidden are user curation.
+CREATE TABLE IF NOT EXISTS project_keywords (
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  storefront  TEXT NOT NULL,                        -- country code ("us")
+  language    TEXT NOT NULL,                        -- semantic language ("en")
+  keyword     TEXT NOT NULL,
+  metrics     JSONB NOT NULL,
+  pinned      BOOLEAN NOT NULL DEFAULT false,
+  hidden      BOOLEAN NOT NULL DEFAULT false,
+  first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, storefront, language, keyword)
+);
+
+-- Rank-verification history (append-only; NULL position = not in the fetched SERP).
+CREATE TABLE IF NOT EXISTS project_positions (
+  id          BIGSERIAL PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  storefront  TEXT NOT NULL,
+  keyword     TEXT NOT NULL,
+  position    INTEGER,
+  serp_size   INTEGER,
+  checked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS project_positions_idx ON project_positions (project_id, storefront, keyword, checked_at);
+
+-- Runs belong to a project (required for NEW runs — enforced in code, not by FK: a deleted
+-- project orphans its runs, which stay as rows but are hidden from lists).
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT;
+CREATE INDEX IF NOT EXISTS runs_project_idx ON runs (project_id);
+
 -- Network-wide cache of raw Apple data (D3), TTL by fetched_at.
 CREATE TABLE IF NOT EXISTS apple_cache (
   cache_key   TEXT PRIMARY KEY,            -- sha1(method+url+storefront)

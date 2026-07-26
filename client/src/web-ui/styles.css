@@ -494,3 +494,88 @@ details.explain .explain-body {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ── Projects (spec 10): home grid, project screen, coverage board, positions ── */
+
+.proj-avatar {
+  width: 44px; height: 44px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: var(--accent); color: #fff; font-family: var(--disp); font-weight: 700; font-size: 17px;
+  border: 2.5px solid var(--border); border-radius: 12px; box-shadow: 2px 2px 0 var(--border);
+}
+.proj-card { cursor: pointer; }
+.proj-archived { opacity: 0.6; }
+.loc-dots { display: inline-flex; gap: 4px; align-items: center; }
+.loc-dot {
+  width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--border);
+  background: var(--bg); display: inline-block;
+}
+.loc-dot.on { background: var(--accent); }
+
+/* Next-best-actions */
+.sugg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.sugg-card {
+  border: 2px solid var(--line-soft); border-radius: 12px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 4px; background: var(--bg);
+}
+.sugg-card .sugg-title { font-weight: 600; font-size: 13.5px; }
+.sugg-card .row { margin-top: auto; }
+
+/* Coverage grid: covered locale cards + dimmed market slots */
+.cov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }
+.cov-card {
+  border: 2.5px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--panel);
+  box-shadow: 3px 3px 0 var(--border);
+}
+.cov-card .meta-field { margin-top: 8px; }
+.cov-card .meta-field label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.cov-card .meta-field .value { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cov-card .meta-field .value > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cov-empty { opacity: 0.75; background: var(--bg); box-shadow: none; border-style: dashed; }
+.tier-badge.t1 { background: var(--orange-soft); color: var(--orange-deep); }
+.tier-badge.t2 { background: var(--accent-soft); }
+.tier-badge.t3 { background: var(--bg-deep, var(--bg)); color: var(--muted); }
+
+/* Version history dropdown rows */
+.ver-items { min-width: 420px; max-width: 560px; max-height: 300px; overflow-y: auto; }
+.ver-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 6px 8px; border-bottom: 1px solid var(--line-soft); font-size: 12.5px;
+}
+.ver-row:last-child { border-bottom: none; }
+
+/* Apply modal: per-locale × field selection with current → proposed */
+.apply-locales { max-height: 55vh; overflow-y: auto; padding-right: 4px; }
+.apply-locale { border: 2px solid var(--line-soft); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+.apply-locale h3 { margin: 0 0 6px; }
+.apply-field { margin: 10px 0; }
+.apply-field .apply-cur { margin: 3px 0 4px; overflow-wrap: anywhere; }
+.apply-field input.apply-edit { width: 100%; }
+
+/* Positions */
+.pos-spark { width: 90px; height: 26px; display: block; }
+.bank-hidden-row { opacity: 0.55; }
+.bank-chip { cursor: pointer; border: none; }
+
+/* Tag-list editor (Settings context) */
+.tagedit { margin-top: 10px; }
+.tagchips {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  border: 2px solid var(--line-soft); border-radius: 10px; padding: 6px 8px; background: var(--bg);
+}
+.tagchip {
+  display: inline-flex; align-items: center; gap: 4px; background: var(--accent-soft);
+  border: 1.5px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 12.5px;
+}
+.tagchip .tag-rm, .tagchip button {
+  border: none; background: none; box-shadow: none; padding: 0 2px; cursor: pointer;
+  font-size: 13px; line-height: 1; color: var(--muted);
+}
+.tagchip button:hover { color: var(--red); transform: none; box-shadow: none; }
+.taginput {
+  border: none !important; box-shadow: none !important; outline: none; flex: 1; min-width: 120px;
+  padding: 2px 4px !important; background: transparent !important;
+}
+
+/* Danger zone */
+.danger-zone { border-color: var(--red); }
+.danger-zone h2 { color: var(--red); }

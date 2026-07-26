@@ -212,11 +212,58 @@ async function handleApi(
     return json({ runs: await cloud.listRuns() });
   }
   if (path === "/api/runs" && req.method === "POST") {
-    // The UI sends JSON { brief, config } (the file is read in the browser) — no multipart.
+    // The UI sends JSON { brief, config, project_id } (the file is read in the browser) — no
+    // multipart. project_id travels at the message level (spec 10) — never inside config.
     const body = await req.json().catch(() => ({}));
     const brief = String((body as any).brief ?? "");
     const config = (body as any).config ?? {};
-    return json(await cloud.createRun(brief, config));
+    const projectId = String((body as any).project_id ?? "");
+    return json(await cloud.createRun(brief, config, projectId));
+  }
+
+  // ── spec 10: projects relay (reads = query kinds; writes = the single project.op) ──
+  if (path === "/api/projects" && req.method === "GET") {
+    return json({ projects: await cloud.listProjects() });
+  }
+  if (path === "/api/projects/op" && req.method === "POST") {
+    const body = await req.json().catch(() => ({}));
+    return json({ ok: true, data: await cloud.projectOp(body as any) });
+  }
+  const projMatch = path.match(/^\/api\/projects\/([^/]+)(\/.*)?$/);
+  if (projMatch && projMatch[1] !== "op") {
+    const projectId = decodeURIComponent(projMatch[1]);
+    const sub = projMatch[2] ?? "";
+
+    if (sub === "" && req.method === "GET") return json(await cloud.getProject(projectId));
+    if (sub === "/bank" && req.method === "GET") {
+      const q: Record<string, unknown> = {};
+      for (const [k, v] of url.searchParams) q[k] = v;
+      delete q.token;
+      return json(await cloud.getProjectBank(projectId, q));
+    }
+    if (sub === "/positions" && req.method === "GET") {
+      return json(await cloud.getProjectPositions(projectId, url.searchParams.get("storefront") ?? undefined));
+    }
+    if (sub === "/export") {
+      const format = url.searchParams.get("format") === "csv" ? "csv" as const : "json" as const;
+      if (req.method === "GET") {
+        const artifact = await cloud.projectExport(projectId, format);
+        return new Response(artifact.content, {
+          headers: {
+            "Content-Type": artifact.mime,
+            "Content-Disposition": `attachment; filename="${artifact.filename}"`,
+          },
+        });
+      }
+      if (req.method === "POST") {
+        // Desktop path (same as run exports): save straight to ~/Downloads.
+        const body = await req.json().catch(() => ({}));
+        const fmt = (body as any).format === "csv" ? "csv" as const : "json" as const;
+        const artifact = await cloud.projectExport(projectId, fmt);
+        const savedPath = saveExport(artifact.filename, artifact.content);
+        return json({ ok: true, path: savedPath, filename: artifact.filename });
+      }
+    }
   }
 
   const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/.*)?$/);

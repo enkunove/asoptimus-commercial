@@ -112,12 +112,16 @@ export class AppleGateway {
     return { prefixHints, childTerms: child, unsuggested: false };
   }
 
-  /** SerpJob: cache → dispatch → write-through. */
-  async serp(query: string, storefront: number, lang: string): Promise<RawSerp> {
+  /** SerpJob: cache → dispatch → write-through. opts.fresh (spec 10 positions) skips the cache
+   *  READ — a rank check must measure the store now, not last week's snapshot; the write-through
+   *  stays so the network cache still benefits. Replay never passes fresh. */
+  async serp(query: string, storefront: number, lang: string, opts: { fresh?: boolean } = {}): Promise<RawSerp> {
     const q = normalizeKeyword(query);
     const key = this.serpKey(storefront, lang, q);
-    const cached = this.fresh(await this.store.getCache(key));
-    if (cached) return cached.body as RawSerp;
+    if (!opts.fresh) {
+      const cached = this.fresh(await this.store.getCache(key));
+      if (cached) return cached.body as RawSerp;
+    }
     if (this.replaying) throw new ReplayFrontier(`serp ${q}`);
 
     const job: SerpJob = { job_id: randomUUID(), kind: "serp", run_id: this.runId, query: q, storefront, country: this.country, lang };

@@ -2,7 +2,7 @@
 // This is the CONTRACT (BUILD-PLAN §4). Zero-I/O, zero-secret. Imported by both server and client.
 // There are NO formulas, NO prompts, NO strategies here — only message shapes.
 
-import type { RunState, RunConfig, KeywordEntry, HttpStats, KeywordStatus, KeywordSource } from "./types.ts";
+import type { RunState, RunConfig, KeywordEntry, HttpStats, KeywordStatus, KeywordSource, ProjectOp } from "./types.ts";
 
 // ── Raw Apple data (the client returns THIS; the server computes the metrics) ──────────────
 
@@ -119,13 +119,19 @@ export type QueryKind =
   | "keywords-lite" | "competitors" | "export"
   // [D4 v5] server-side run estimate (workload-based, superlinear in sampleSize — the client
   // must NOT compute it locally from a per-keyphrase price):
-  | "quote";
+  | "quote"
+  // [spec 10] projects: the app-centric home system (reads; writes go through project.op):
+  | "projects" | "project" | "project-bank" | "project-positions" | "project-export";
 
 export type ClientToServer =
   | { t: "hello"; session_token: string; device_fp: string; resume_job_ids: string[] }
   // [reconcile v2] client_ref — correlates the request with the run.created reply (run_id learned from the reply)
-  | { t: "run.create"; client_ref: string; brief: string; config: unknown /* RunConfig from types.ts */ }
+  // [spec 10] project_id is REQUIRED at the message level (never inside RunConfig) — runs live in a project.
+  | { t: "run.create"; client_ref: string; project_id: string; brief: string; config: unknown /* RunConfig from types.ts */ }
   | { t: "run.control"; run_id: string; action: RunAction }
+  // [spec 10] the ONE project write message (create/update/apply/rollback/…); mirrors run.create's
+  // client_ref correlation. Reply: project.result.
+  | { t: "project.op"; client_ref: string; op: ProjectOp }
   // http — cumulative snapshot of the client's Apple HTTP stats (requests/cache hits), so the
   // server can surface live Apple traffic in run state; optional for older clients.
   | { t: "job.result"; result: JobResult; http?: HttpStats }
@@ -145,7 +151,9 @@ export type ServerToClient =
   | { t: "run.created"; client_ref: string; run_id: string }
   // [reconcile v2] reply to query (data — by kind: RunSummary[] | RunState | KeywordEntry[] | LlmLogPublic[] | BalanceView | model[])
   | { t: "query.result"; query_id: string; data: unknown }
-  | { t: "query.error"; query_id: string; reason: string };
+  | { t: "query.error"; query_id: string; reason: string }
+  // [spec 10] ack for project.op (data shape depends on the op; error carries the rejection reason)
+  | { t: "project.result"; client_ref: string; ok: boolean; error?: string; data?: unknown };
 
 export interface RunCounters {
   sampleCount: number;
@@ -389,3 +397,5 @@ export interface TopupCatalog {
 //   runs→RunSummary[] · run→RunSnapshot · keywords→KeywordPage · keyword→{item:KeywordEntry|null}
 //   llm-log→LlmLogPage · balance→BalanceView · models→ModelInfo[] · packages→TopupCatalog
 //   keywords-lite→KeywordsLiteView · competitors→CompetitorsView · export→ExportArtifact
+//   [spec 10] projects→ProjectCard[] · project→ProjectView · project-bank→ProjectBankPage
+//   project-positions→ProjectPositionsView · project-export→ExportArtifact

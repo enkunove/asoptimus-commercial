@@ -2,7 +2,7 @@
 // in-memory (dev fallback). All I/O sits behind this interface — so main.ts starts without a live DB.
 
 import type { RunConfig, BusinessContext, AssemblyResult, UsageTotals } from "@aso/shared";
-import type { JobKind, Job, JobResult, ProgressEvent } from "@aso/shared";
+import type { JobKind, Job, JobResult, ProgressEvent, MetadataVersion, ProjectBankMetrics } from "@aso/shared";
 
 export interface UserRow {
   id: string;
@@ -102,9 +102,51 @@ export interface LlmStepRow {
   ts?: string;
 }
 
+// ── Projects (spec 10) ──────────────────────────────────────────────────────
+
+export interface ProjectRow {
+  id: string;
+  user_id: string;
+  name: string;
+  brand: string;
+  app_store_id: number | null;
+  context: BusinessContext | null;
+  /** Append-only MetadataVersion[] (cap 100 — enforced by appendProjectVersion). */
+  versions: MetadataVersion[];
+  live_version: number | null;
+  archived: boolean;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+}
+
+export interface ProjectKeywordRow {
+  project_id: string;
+  storefront: string;
+  language: string;
+  keyword: string;
+  metrics: ProjectBankMetrics;
+  pinned: boolean;
+  hidden: boolean;
+  first_seen?: string | Date;
+  updated_at?: string | Date;
+}
+
+export interface ProjectPositionRow {
+  id?: number;
+  project_id: string;
+  storefront: string;
+  keyword: string;
+  position: number | null;
+  serp_size: number | null;
+  checked_at?: string | Date;
+}
+
 export interface RunRow {
   id: string;
   user_id: string;
+  /** Owning project (spec 10). Required for new runs (enforced in code); TEXT, no FK —
+   *  a deleted project orphans its runs (hidden from lists, rows kept). */
+  project_id: string | null;
   phase: string;
   config: RunConfig;
   /** Product brief — needed for event-replay (phaseContext reads it). */
@@ -199,6 +241,33 @@ export interface Store {
   getRun(id: string): Promise<RunRow | null>;
   updateRun(r: Partial<RunRow> & { id: string }): Promise<void>;
   listRunsByUser(userId: string): Promise<RunRow[]>;
+  listRunsByProject(projectId: string): Promise<RunRow[]>;
+
+  // ── projects (spec 10) ───────────────────────────────────────────────────
+  createProject(p: ProjectRow): Promise<void>;
+  getProject(id: string): Promise<ProjectRow | null>;
+  listProjectsByUser(userId: string): Promise<ProjectRow[]>;
+  /** Partial update of scalar/context fields (versions go through appendProjectVersion). */
+  updateProject(patch: Partial<ProjectRow> & { id: string }): Promise<void>;
+  /** Append a version atomically (read-modify-write in a transaction): the builder receives the
+   *  current latest version and the next monotonic v. Cap 100 — drop the oldest beyond the cap,
+   *  but NEVER the live one. Returns the stored version. */
+  appendProjectVersion(projectId: string, build: (prev: MetadataVersion | null, nextV: number) => MetadataVersion): Promise<MetadataVersion>;
+  /** Cascades project_keywords/project_positions; runs stay (orphaned, hidden from lists). */
+  deleteProject(id: string): Promise<void>;
+  countProjects(): Promise<number>;
+
+  /** Batch bank upsert: update metrics+updated_at, PRESERVE pinned/hidden, keep first_seen. */
+  upsertProjectKeywords(projectId: string, storefront: string, language: string,
+    rows: Array<{ keyword: string; metrics: ProjectBankMetrics }>): Promise<void>;
+  listProjectKeywords(projectId: string, filter?: { storefront?: string; language?: string }): Promise<ProjectKeywordRow[]>;
+  countProjectKeywords(projectId: string): Promise<number>;
+  setProjectKeywordFlags(projectId: string, storefront: string, language: string, keyword: string,
+    flags: { pinned?: boolean; hidden?: boolean }): Promise<void>;
+
+  insertProjectPositions(rows: ProjectPositionRow[]): Promise<void>;
+  /** All history rows for a project (optionally one storefront), checked_at ascending. */
+  listProjectPositions(projectId: string, storefront?: string): Promise<ProjectPositionRow[]>;
 
   // run_events (event-sourced)
   appendRunEvent(runId: string, event: ProgressEvent): Promise<number>;

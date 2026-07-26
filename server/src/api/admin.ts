@@ -122,12 +122,13 @@ export async function handleAdmin(app: App, req: Request, url: URL, path: string
       const now = Date.now();
       const iso30 = new Date(now - 30 * 864e5).toISOString();
       const iso7 = new Date(now - 7 * 864e5).toISOString();
-      const [users, runs, totals, cogs, wl] = await Promise.all([
+      const [users, runs, totals, cogs, wl, projectsTotal] = await Promise.all([
         app.store.adminUsers(),
         app.store.adminRuns(),
         app.store.adminLedgerTotals(),
         app.store.adminCogsTotals(iso30),
         app.store.listWaitlist("all", 0, 1),
+        app.store.countProjects(),
       ]);
       const byPhase: Record<string, number> = {};
       for (const r of runs) byPhase[r.phase] = (byPhase[r.phase] ?? 0) + 1;
@@ -136,6 +137,7 @@ export async function handleAdmin(app: App, req: Request, url: URL, path: string
         users: { total: users.length, new7d: createdAfter(iso7), new30d: createdAfter(iso30) },
         waitlist: wl.counts,
         runs: { total: runs.length, active: app.manager.activeOrchestrators().length, byPhase },
+        projects: { total: projectsTotal },
         credits: {
           granted: round2(totals.granted), grantedPaid: round2(totals.grantedPaid),
           grantedFree: round2(totals.granted - totals.grantedPaid),

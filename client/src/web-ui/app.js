@@ -20,6 +20,15 @@ let expandedCompetitor = null;
 let runAnnotations = {};      // keyword → {pinned, note} for the currently open run (local-only, spec 09 §7)
 let annotationsSlug = null;
 let runsForCompare = [];      // runs list cached per run screen (for "Compare with previous")
+// ── projects (spec 10) ──
+let projectsCache = [];       // ProjectCard[] (home grid + run-screen breadcrumb)
+let currentProjectId = null;  // open project id (#/p/<id>)
+let projectTab = "overview";
+let lastProjectData = null;   // last fetched ProjectView
+let bankQuery = { sort: "score", dir: "desc", storefront: "", language: "", q: "", page: 0, showHidden: false };
+let positionsSf = "";         // positions tab storefront selector
+let showArchived = false;     // home: archived projects behind a toggle
+let newRunPrefill = null;     // {country, language} handed from a suggestion/coverage "Research" card
 
 const OVERSHOOT_PCT = 0.1; // up to +10% keyphrases — included in the price (D4 v3)
 
@@ -197,8 +206,9 @@ function startLive() {
   // state signature is unchanged, preserve scroll, and skip while an input/menu is focused.
   setInterval(() => {
     liveTick++;
-    const hash = location.hash || "#/runs";
-    if (hash.startsWith("#/runs")) { scheduleLiveRefresh(null); return; }
+    const hash = location.hash || "#/projects";
+    if (hash.startsWith("#/projects")) { scheduleLiveRefresh(null); return; }
+    if (hash.startsWith("#/p/")) { if (liveTick % 4 === 0) scheduleLiveRefresh(null); return; }
     if (!hash.startsWith("#/run/")) return;
     const phase = lastRunData && lastRunData.state && lastRunData.state.phase;
     const active = !phase || phase !== "done"; // finished runs: poll slowly (catch a reassemble)
@@ -213,25 +223,38 @@ const pauseCodes = {};   // slug → structured reason code (run.paused.code) �
 function isCreditsPause(text) { return /credit|balance|top.?up/i.test(String(text || "")); }
 let liveTimer = null, lastLive = 0;
 function scheduleLiveRefresh(slug) {
-  const hash = location.hash || "#/runs";
-  const onList = hash.startsWith("#/runs");
+  const hash = location.hash || "#/projects";
+  const onHome = hash.startsWith("#/projects");
+  const onProject = hash.startsWith("#/p/");
   const onThisRun = currentSlug && hash.startsWith("#/run/") && (!slug || slug === currentSlug);
-  if (!onList && !onThisRun) return;
+  if (!onHome && !onProject && !onThisRun) return;
   if (liveTimer) return;
   const wait = Math.max(0, lastLive + 2000 - Date.now());
   liveTimer = setTimeout(async () => {
     liveTimer = null; lastLive = Date.now();
     try {
-      if (location.hash.startsWith("#/run/") && currentSlug) await updateRun(currentSlug);
-      else if ((location.hash || "#/runs").startsWith("#/runs")) await refreshRunsList();
+      const h = location.hash || "#/projects";
+      if (h.startsWith("#/run/") && currentSlug) await updateRun(currentSlug);
+      else if (h.startsWith("#/p/") && currentProjectId) await refreshProjectView();
+      else if (h.startsWith("#/projects")) await refreshHome();
     } catch {}
   }, wait);
 }
-async function refreshRunsList() {
-  if (newRunOpen) return;
+// Live refresh must never fight the user: skip while a modal is open or a field is focused.
+function uiBusy() {
+  if (document.getElementById("modal-overlay")) return true;
   const a = document.activeElement;
-  if (a && app.contains(a) && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName)) return;
-  await viewRuns();
+  return !!(a && app.contains(a) && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName));
+}
+async function refreshHome() {
+  if (uiBusy()) return;
+  await viewProjects();
+}
+async function refreshProjectView() {
+  if (uiBusy()) return;
+  // Settings/new-run hold form state — a background re-render would wipe half-typed edits.
+  if (projectTab === "settings" || projectTab === "new-run") return;
+  await updateProject(currentProjectId);
 }
 
 // ---------- header balance ----------
@@ -447,21 +470,25 @@ function viewLogin() {
 // ============================================================
 
 async function render() {
-  const hash = location.hash || "#/runs";
+  const hash = location.hash || "#/projects";
+  // Legacy home: the flat runs list is gone (spec 10) — #/runs redirects to #/projects.
+  if (hash.startsWith("#/runs")) { location.hash = "#/projects"; return; }
   try {
     if (hash.startsWith("#/balance")) return await viewBalance();
     const cmpMatch = hash.match(/^#\/compare\/([^/]+)\/([^/]+)/);
     if (cmpMatch) return await viewCompare(decodeURIComponent(cmpMatch[1]), decodeURIComponent(cmpMatch[2]));
     const runMatch = hash.match(/^#\/run\/([^/]+)/);
     if (runMatch) return await viewRun(decodeURIComponent(runMatch[1]));
-    return await viewRuns();
+    const pMatch = hash.match(/^#\/p\/([^/]+)(?:\/([a-z-]+))?/);
+    if (pMatch) return await viewProject(decodeURIComponent(pMatch[1]), pMatch[2] || "overview");
+    return await viewProjects();
   } catch (e) {
     app.innerHTML = `<div class="banner error">Error: ${esc(e.message)}</div>`;
   }
 }
 window.addEventListener("hashchange", () => {
   if (!session?.activated) return;
-  expandedKeyword = null; expandedCompetitor = null; kwQuery.page = 0; render();
+  expandedKeyword = null; expandedCompetitor = null; kwQuery.page = 0; bankQuery.page = 0; render();
 });
 
 async function getStorefronts() {
@@ -581,36 +608,485 @@ async function viewBalance() {
 }
 
 // ============================================================
-// Screen: run list + new-run form (spec 07.4)
+// Screen: projects home (spec 10 §6) — the app-centric grid
 // ============================================================
 
-let newRunOpen = false;
+async function projectOpApi(op) {
+  const res = await api("/api/projects/op", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(op),
+  });
+  return res.data;
+}
 
-async function viewRuns() {
+function monogram(name) {
+  const initials = String(name || "?").split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+  return `<div class="proj-avatar">${esc(initials)}</div>`;
+}
+
+function localeDots(covered) {
+  const total = Math.max(6, covered.length);
+  const dots = [];
+  for (let i = 0; i < Math.min(total, 10); i++) {
+    const locale = covered[i];
+    dots.push(`<span class="loc-dot ${locale ? "on" : ""}" title="${esc(locale || "empty slot")}"></span>`);
+  }
+  return `<span class="loc-dots">${dots.join("")}</span> <span class="muted small">${covered.length} locale${covered.length === 1 ? "" : "s"}</span>`;
+}
+
+async function viewProjects() {
+  currentSlug = null; currentProjectId = null;
+  const { projects } = await api("/api/projects");
+  projectsCache = projects;
+  const visible = projects.filter((p) => (showArchived ? true : !p.archived));
+  const archivedCount = projects.filter((p) => p.archived).length;
+
+  app.innerHTML = `
+    <div class="row spread">
+      <h1>Projects</h1>
+      <button class="primary" id="new-project">＋ New project</button>
+    </div>
+    ${projects.length === 0 ? `
+      <div class="empty-state panel">
+        <h2>Create your app's project</h2>
+        <p>Every run builds its metadata board, keyword bank and rank history — one living ASO
+        composition per app, not a pile of one-shot runs.</p>
+        <p><button class="primary" id="new-project-2">Create your first project</button></p>
+      </div>` : `
+      <div class="cards">
+        ${visible.map((p) => `
+          <div class="card proj-card ${p.archived ? "proj-archived" : ""}" data-pid="${esc(p.id)}">
+            <div class="row" style="align-items:center">
+              ${monogram(p.name)}
+              <div style="min-width:0">
+                <h3 style="margin:0">${esc(p.name)} ${p.archived ? '<span class="badge gray">archived</span>' : ""}</h3>
+                <span class="muted small">${esc(p.brand)}${p.appStoreId ? " · linked" : ""}</span>
+              </div>
+            </div>
+            <div class="row" style="margin-top:10px">${localeDots(p.localesCovered)}</div>
+            <div class="row small muted" style="margin-top:6px">
+              <span>${p.bankCount} bank keyword${p.bankCount === 1 ? "" : "s"}</span> ·
+              <span>${p.runCount} run${p.runCount === 1 ? "" : "s"}</span> ·
+              <span>${new Date(p.lastActivityTs).toLocaleDateString()}</span>
+              ${p.liveVersion != null ? ` · <span class="badge green">LIVE v${p.liveVersion}</span>` : ""}
+            </div>
+            <div class="row" style="margin-top:10px">
+              <button class="primary small proj-open" data-pid="${esc(p.id)}">Open</button>
+              <button class="small proj-newrun" data-pid="${esc(p.id)}">New run</button>
+            </div>
+          </div>`).join("")}
+      </div>
+      ${archivedCount ? `<p class="small" style="margin-top:12px"><a href="javascript:void 0" id="toggle-archived">${showArchived ? "Hide" : "Show"} archived (${archivedCount})</a></p>` : ""}`}`;
+
+  const openNew = () => openNewProjectModal();
+  document.getElementById("new-project")?.addEventListener("click", openNew);
+  document.getElementById("new-project-2")?.addEventListener("click", openNew);
+  document.getElementById("toggle-archived")?.addEventListener("click", () => { showArchived = !showArchived; viewProjects(); });
+  document.querySelectorAll(".proj-card").forEach((c) =>
+    c.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      location.hash = `#/p/${encodeURIComponent(c.dataset.pid)}`;
+    }));
+  document.querySelectorAll(".proj-open").forEach((b) =>
+    b.addEventListener("click", () => { location.hash = `#/p/${encodeURIComponent(b.dataset.pid)}`; }));
+  document.querySelectorAll(".proj-newrun").forEach((b) =>
+    b.addEventListener("click", () => { location.hash = `#/p/${encodeURIComponent(b.dataset.pid)}/new-run`; }));
+}
+
+function openNewProjectModal() {
+  const m = openModal(`
+    <h2>New project</h2>
+    <p class="muted small">A project is your app's living ASO composition: metadata board, keyword bank, rank history.</p>
+    <label>App name *</label><input id="np-name" placeholder="NoBettr">
+    <label>Brand (word(s) used in titles) *</label><input id="np-brand" placeholder="NoBettr">
+    <label>App Store URL or id <span class="muted small">(optional — unlocks rank checks)</span></label>
+    <input id="np-url" placeholder="https://apps.apple.com/us/app/…/id1234567890">
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="np-create">Create project</button>
+      <span id="np-error" class="field-error"></span>
+    </div>`);
+  const go = async () => {
+    const errEl = m.querySelector("#np-error");
+    errEl.textContent = "";
+    try {
+      const r = await projectOpApi({
+        kind: "create",
+        name: m.querySelector("#np-name").value.trim(),
+        brand: m.querySelector("#np-brand").value.trim(),
+        appStoreUrl: m.querySelector("#np-url").value.trim() || undefined,
+      });
+      document.getElementById("modal-overlay")?.remove();
+      location.hash = `#/p/${encodeURIComponent(r.projectId)}`;
+    } catch (e) { errEl.textContent = e.message; }
+  };
+  m.querySelector("#np-create").addEventListener("click", go);
+  m.querySelectorAll("input").forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); }));
+  m.querySelector("#np-name").focus();
+}
+
+// ============================================================
+// Screen: project (#/p/<id>) — Overview / Runs / Keywords / Positions / Settings / New run
+// ============================================================
+
+async function viewProject(id, tab) {
   currentSlug = null;
-  const [{ runs }, sf, models] = await Promise.all([api("/api/runs"), getStorefronts(), getModels()]);
+  const tabChanged = currentProjectId !== id || projectTab !== tab;
+  currentProjectId = id;
+  projectTab = tab;
+  const shell = document.getElementById("proj-shell");
+  if (!shell || shell.dataset.pid !== id) {
+    lastProjectData = null;
+    app.innerHTML = `<div id="proj-shell" data-pid="${esc(id)}"><div id="proj-top"></div><div id="proj-body"><div class="loading">Loading…</div></div></div>`;
+  } else if (tabChanged) {
+    const body = document.getElementById("proj-body");
+    if (body) body.innerHTML = `<div class="loading">Loading…</div>`;
+  }
+  await updateProject(id);
+}
 
+async function updateProject(id) {
+  const view = await api(`/api/projects/${encodeURIComponent(id)}`);
+  lastProjectData = view;
+  renderProjectTop(view);
+  await renderProjectTab(view);
+}
+
+function renderProjectTop(view) {
+  const top = document.getElementById("proj-top");
+  if (!top) return;
+  const tabs = [
+    ["overview", "Overview", ""], ["runs", "Runs", "/runs"], ["keywords", "Keywords", "/keywords"],
+    ["positions", "Positions", "/positions"], ["settings", "Settings", "/settings"],
+  ];
+  const base = `#/p/${encodeURIComponent(view.id)}`;
+  top.innerHTML = `
+    <div class="panel">
+      <div class="row spread">
+        <div class="row" style="align-items:center">
+          ${monogram(view.name)}
+          <div>
+            <h1 style="margin:0">${esc(view.name)} ${view.archived ? '<span class="badge gray">archived</span>' : ""}</h1>
+            <span class="muted small">${esc(view.brand)}
+              ${view.appStoreId ? ` · <a href="javascript:void 0" id="proj-store-link" class="small">App Store #${view.appStoreId}</a>` : ""}
+              ${view.liveVersion != null ? ` · <span class="badge green">LIVE v${view.liveVersion}</span>` : ""}</span>
+          </div>
+        </div>
+        <button class="primary" id="proj-new-run">＋ New run</button>
+      </div>
+    </div>
+    <div class="tabs">
+      ${tabs.map(([id2, name, suffix]) => `<a href="${base}${suffix}" class="${projectTab === id2 ? "active" : ""}">${name}</a>`).join("")}
+    </div>`;
+  top.querySelector("#proj-new-run")?.addEventListener("click", () => { location.hash = `${base}/new-run`; });
+  top.querySelector("#proj-store-link")?.addEventListener("click", () => {
+    api("/api/open-external", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: `https://apps.apple.com/app/id${view.appStoreId}` }),
+    }).catch(() => {});
+  });
+}
+
+async function renderProjectTab(view) {
+  const body = document.getElementById("proj-body");
+  if (!body || !view) return;
+  if (uiBusy()) return;
+  if (projectTab === "runs") await renderProjectRuns(body, view);
+  else if (projectTab === "keywords") await renderProjectBank(body, view);
+  else if (projectTab === "positions") await renderProjectPositions(body, view);
+  else if (projectTab === "settings") renderProjectSettings(body, view);
+  else if (projectTab === "new-run") await renderProjectNewRun(body, view);
+  else renderProjectOverview(body, view);
+}
+
+// ---------- Overview: the money screen (coverage grid + versions + suggestions) ----------
+
+const FIELD_MAX = { title: 30, subtitle: 30, keywords: 100 };
+
+function charMeter(value, max) {
+  const len = (value ?? "").length;
+  return `<span class="char-count ${len > max ? "over" : ""}">${len}/${max}</span>`;
+}
+
+function sourceLabel(source) {
+  if (!source) return "";
+  if (source.type === "run") return `from run ${esc((source.runId || "").replace(/^run_/, "").slice(0, 8))}`;
+  if (source.type === "rollback") return `restore of v${source.fromV}`;
+  return "manual edit";
+}
+
+function suggestionCard(view, s) {
+  const btnLabel = { "link-app": "Link app", "apply-run": "Review & save", "new-locale": "Research", refresh: "Refresh", "check-positions": "Check positions" }[s.kind] || "Go";
+  return `
+    <div class="sugg-card" data-go="${esc(s.action.go || "")}" data-runid="${esc(s.action.runId || "")}"
+         data-country="${esc(s.action.country || "")}" data-language="${esc(s.action.language || "")}">
+      <div class="sugg-title">${esc(s.title)}</div>
+      <div class="small muted">${esc(s.detail)}</div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <button class="small primary sugg-go">${btnLabel}</button>
+        ${s.credits ? `<span class="badge gray">≈${s.credits} cr</span>` : '<span class="badge green">free</span>'}
+      </div>
+    </div>`;
+}
+
+function bindSuggestionActions(root, view) {
+  root.querySelectorAll(".sugg-card .sugg-go").forEach((b) =>
+    b.addEventListener("click", () => {
+      const card = b.closest(".sugg-card");
+      const base = `#/p/${encodeURIComponent(view.id)}`;
+      switch (card.dataset.go) {
+        case "settings": location.hash = `${base}/settings`; break;
+        case "positions": location.hash = `${base}/positions`; break;
+        case "apply": openApplyModal(view.id, card.dataset.runid); break;
+        case "new-run":
+          newRunPrefill = { country: card.dataset.country, language: card.dataset.language };
+          location.hash = `${base}/new-run`;
+          break;
+      }
+    }));
+}
+
+function renderProjectOverview(body, view) {
+  const prop = view.proposals && view.proposals[0];
+  const latest = view.latestVersion;
+  const liveHint = view.liveVersion != null && latest != null && view.liveVersion !== latest
+    ? `<span class="badge yellow" title="The latest version differs from what is marked live">draft ≠ live (v${view.liveVersion})</span>` : "";
+
+  const coverageCards = view.coverage.map((slot) => {
+    if (slot.covered) {
+      const f = slot.fields || { title: "", subtitle: "", keywords: "" };
+      const stale = (slot.staleDays ?? 0) > 45 ? `<span class="badge yellow" title="Newest research for this locale">${slot.staleDays}d old</span>` : "";
+      const src = slot.sourceRunId ? `<a class="badge gray" href="#/run/${encodeURIComponent(slot.sourceRunId)}" title="Source run">run ${esc(slot.sourceRunId.replace(/^run_/, "").slice(0, 8))}</a>` : "";
+      const block = `Title: ${f.title}\nSubtitle: ${f.subtitle}\nKeywords: ${f.keywords}`;
+      return `
+        <div class="cov-card" data-locale="${esc(slot.locale)}">
+          <div class="row spread">
+            <b>${esc(slot.locale)}</b>
+            <span class="row" style="gap:6px">${stale}${src}
+              <button class="small copy-btn" data-copy="${esc(block)}" title="Copy the whole locale block">⧉ all</button>
+              <button class="small cov-edit" data-locale="${esc(slot.locale)}" title="Edit fields manually">✎</button></span>
+          </div>
+          ${slot.market ? `<div class="small muted">${esc(slot.market.name)}</div>` : ""}
+          <div class="meta-field"><label>Title</label><div class="value"><span>${esc(f.title)}</span>${charMeter(f.title, FIELD_MAX.title)}<button class="copy-btn" data-copy="${esc(f.title)}">⧉</button></div></div>
+          <div class="meta-field"><label>Subtitle</label><div class="value"><span>${esc(f.subtitle)}</span>${charMeter(f.subtitle, FIELD_MAX.subtitle)}<button class="copy-btn" data-copy="${esc(f.subtitle)}">⧉</button></div></div>
+          <div class="meta-field"><label>Keywords</label><div class="value"><span class="mono small">${esc(f.keywords)}</span>${charMeter(f.keywords, FIELD_MAX.keywords)}<button class="copy-btn" data-copy="${esc(f.keywords)}">⧉</button></div></div>
+        </div>`;
+    }
+    const m = slot.market;
+    return `
+      <div class="cov-card cov-empty" data-country="${esc(m?.country || "")}" data-language="${esc(m?.language || "")}">
+        <div class="row spread"><b>${esc(slot.locale)}</b><span class="badge tier-badge t${m?.tier ?? 3}">tier ${m?.tier ?? "?"}</span></div>
+        <div class="small muted">${esc(m?.name || "")}${m?.note ? ` — ${esc(m.note)}` : ""}</div>
+        <div class="row" style="margin-top:10px;align-items:center">
+          <button class="small primary cov-research">Research</button>
+          <span class="badge gray">≈${slot.estimateCredits ?? "?"} cr</span>
+        </div>
+      </div>`;
+  }).join("");
+
+  body.innerHTML = `
+    ${prop ? `
+      <div class="banner warn" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>📦 <b>Run ${esc(prop.runId.replace(/^run_/, "").slice(0, 8))}</b> produced metadata for
+          <b>${Object.keys(prop.locales).map(esc).join(", ")}</b> — review &amp; save it to the board.</div>
+        <button class="primary" id="prop-review">Review &amp; save</button>
+      </div>` : ""}
+    ${view.suggestions.length ? `
+      <div class="panel">
+        <h2>Next best actions</h2>
+        <div class="sugg-grid">${view.suggestions.map((s) => suggestionCard(view, s)).join("")}</div>
+      </div>` : ""}
+    <div class="panel">
+      <div class="row spread" style="flex-wrap:wrap;gap:8px">
+        <h2 style="margin:0">Metadata board ${latest ? `<span class="badge">v${latest}</span>` : ""}
+          ${view.liveVersion === latest && latest != null ? '<span class="badge green">LIVE</span>' : ""} ${liveHint}</h2>
+        <div class="row">
+          ${latest ? `
+            <details class="export-menu" id="ver-menu"><summary>v${latest} · history</summary>
+              <div class="export-items ver-items">
+                ${view.versionsSummary.map((v) => `
+                  <div class="ver-row">
+                    <span><b>v${v.v}</b> ${v.isLive ? '<span class="badge green">LIVE</span>' : ""}
+                      <span class="muted small">${new Date(v.ts).toLocaleString()} · ${esc(v.note)} · ${sourceLabel(v.source)} · ${v.localeCount} locale${v.localeCount === 1 ? "" : "s"}</span></span>
+                    <span class="row" style="gap:6px">
+                      ${!v.isLive ? `<button class="small ver-live" data-v="${v.v}" title="Mark this version as shipped">Mark live</button>` : ""}
+                      ${v.v !== latest ? `<button class="small ver-restore" data-v="${v.v}" title="Copy this version forward as the newest">Restore</button>` : ""}
+                    </span>
+                  </div>`).join("")}
+              </div>
+            </details>
+            <button id="proj-export-csv" title="Current version + keyword bank">⬇ CSV</button>
+            <button id="proj-export-json">⬇ JSON</button>` : ""}
+        </div>
+      </div>
+      ${latest ? "" : `<p class="muted">No metadata saved yet — finish a run and apply its proposal, or add fields manually from a locale card.</p>`}
+      <div class="cov-grid">${coverageCards}</div>
+    </div>`;
+
+  body.querySelector("#prop-review")?.addEventListener("click", () => openApplyModal(view.id, prop.runId));
+  bindSuggestionActions(body, view);
+  body.querySelectorAll(".copy-btn").forEach((b) => {
+    const original = b.textContent;
+    b.addEventListener("click", async () => {
+      const ok = await uiCopy(b.dataset.copy);
+      b.textContent = ok ? "✓" : "✗";
+      setTimeout(() => (b.textContent = original), 1200);
+    });
+  });
+  body.querySelectorAll(".cov-research").forEach((b) =>
+    b.addEventListener("click", () => {
+      const card = b.closest(".cov-empty");
+      newRunPrefill = { country: card.dataset.country, language: card.dataset.language };
+      location.hash = `#/p/${encodeURIComponent(view.id)}/new-run`;
+    }));
+  body.querySelectorAll(".cov-edit").forEach((b) =>
+    b.addEventListener("click", () => openManualEditModal(view, b.dataset.locale)));
+  body.querySelectorAll(".ver-restore").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await projectOpApi({ kind: "rollback", projectId: view.id, toV: Number(b.dataset.v) });
+        toast(`✓ restored v${b.dataset.v} as the newest version`);
+        updateProject(view.id);
+      } catch (e) { toast(`✗ ${esc(e.message)}`, true); }
+    }));
+  body.querySelectorAll(".ver-live").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await projectOpApi({ kind: "markLive", projectId: view.id, v: Number(b.dataset.v) });
+        toast(`✓ v${b.dataset.v} marked live`);
+        updateProject(view.id);
+      } catch (e) { toast(`✗ ${esc(e.message)}`, true); }
+    }));
+  const exportProj = async (format) => {
+    try {
+      const res = await api(`/api/projects/${encodeURIComponent(view.id)}/export`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format }),
+      });
+      toast(`✓ <b>${esc(res.filename)}</b> saved to <span class="mono small">${esc(shortPath(res.path))}</span>`);
+    } catch (e) { toast(`✗ export failed: ${esc(e.message)}`, true); }
+  };
+  body.querySelector("#proj-export-csv")?.addEventListener("click", () => exportProj("csv"));
+  body.querySelector("#proj-export-json")?.addEventListener("click", () => exportProj("json"));
+}
+
+// Manual per-locale edit (spec 10 §2): three fields with char meters → a new `manual` version.
+function openManualEditModal(view, locale) {
+  const f = (view.current?.locales || {})[locale] || { title: "", subtitle: "", keywords: "" };
+  const m = openModal(`
+    <h2>Edit ${esc(locale)}</h2>
+    <label>Title <span id="me-title-n" class="muted small"></span></label><input id="me-title" value="${esc(f.title)}" maxlength="120">
+    <label>Subtitle <span id="me-subtitle-n" class="muted small"></span></label><input id="me-subtitle" value="${esc(f.subtitle)}" maxlength="120">
+    <label>Keywords <span id="me-keywords-n" class="muted small"></span></label><input id="me-keywords" class="mono" value="${esc(f.keywords)}" maxlength="300">
+    <label>Version note</label><input id="me-note" placeholder="what changed (optional)">
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="me-save">Save as new version</button>
+      <span id="me-error" class="field-error"></span>
+    </div>`);
+  const meter = (id, max) => {
+    const input = m.querySelector(`#me-${id}`), label = m.querySelector(`#me-${id}-n`);
+    const upd = () => { label.textContent = `${input.value.length}/${max}`; label.className = input.value.length > max ? "check-fail small" : "muted small"; };
+    input.addEventListener("input", upd); upd();
+  };
+  meter("title", FIELD_MAX.title); meter("subtitle", FIELD_MAX.subtitle); meter("keywords", FIELD_MAX.keywords);
+  m.querySelector("#me-save").addEventListener("click", async () => {
+    try {
+      await projectOpApi({
+        kind: "editMetadata", projectId: view.id,
+        locales: { [locale]: { title: m.querySelector("#me-title").value, subtitle: m.querySelector("#me-subtitle").value, keywords: m.querySelector("#me-keywords").value } },
+        note: m.querySelector("#me-note").value.trim() || undefined,
+      });
+      document.getElementById("modal-overlay")?.remove();
+      toast(`✓ ${esc(locale)} saved as a new version`);
+      updateProject(view.id);
+    } catch (e) { m.querySelector("#me-error").textContent = e.message; }
+  });
+}
+
+// ---------- Apply modal (spec 10 §2/§6): per-locale×field selection, current → proposed ----------
+
+async function openApplyModal(projectId, runId, afterSave) {
+  const [run, view] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(runId)}`),
+    api(`/api/projects/${encodeURIComponent(projectId)}`),
+  ]);
+  const buckets = (run.assembly && run.assembly.buckets) || [];
+  if (!buckets.length) { toast("✗ this run has no assembled metadata yet", true); return; }
+  const proposed = {};
+  for (const b of buckets) proposed[b.locale] = { title: b.title || "", subtitle: b.subtitle || "", keywords: b.keywordFieldDraft || "" };
+  const current = (view.current && view.current.locales) || {};
+
+  const fieldRow = (locale, field, cur, prop) => `
+    <div class="apply-field">
+      <label class="row" style="gap:8px;align-items:center">
+        <input type="checkbox" class="apply-pick" data-locale="${esc(locale)}" data-field="${field}" checked>
+        <b style="text-transform:capitalize">${field}</b>
+        ${charMeter(prop, FIELD_MAX[field])}
+      </label>
+      ${cur ? `<div class="small muted apply-cur" title="Current value">now: ${esc(cur)}</div>` : `<div class="small muted apply-cur">now: <i>empty</i></div>`}
+      <input class="apply-edit ${field === "keywords" ? "mono" : ""}" data-locale="${esc(locale)}" data-field="${field}" value="${esc(prop)}">
+    </div>`;
+
+  const m = openModal(`
+    <h2>Save run metadata to ${esc(view.name)}</h2>
+    <p class="muted small">Pick the fields to keep — unchecked fields keep their current values. Edit inline before saving.</p>
+    <div class="apply-locales">
+      ${Object.entries(proposed).map(([locale, f]) => `
+        <div class="apply-locale">
+          <h3>${esc(locale)}</h3>
+          ${fieldRow(locale, "title", (current[locale] || {}).title || "", f.title)}
+          ${fieldRow(locale, "subtitle", (current[locale] || {}).subtitle || "", f.subtitle)}
+          ${fieldRow(locale, "keywords", (current[locale] || {}).keywords || "", f.keywords)}
+        </div>`).join("")}
+    </div>
+    <label>Version note</label><input id="apply-note" placeholder="e.g. Q3 iteration (optional)">
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="apply-save">Save as new version</button>
+      <span id="apply-error" class="field-error"></span>
+    </div>`);
+
+  m.querySelector("#apply-save").addEventListener("click", async () => {
+    const selection = {}, edits = {};
+    m.querySelectorAll(".apply-pick").forEach((cb) => {
+      if (!cb.checked) return;
+      const { locale, field } = cb.dataset;
+      (selection[locale] ??= {})[field] = true;
+      const input = m.querySelector(`.apply-edit[data-locale="${CSS.escape(locale)}"][data-field="${field}"]`);
+      if (input && input.value !== proposed[locale][field]) (edits[locale] ??= {})[field] = input.value;
+    });
+    if (!Object.keys(selection).length) { m.querySelector("#apply-error").textContent = "nothing selected"; return; }
+    try {
+      const r = await projectOpApi({
+        kind: "applyMetadata", projectId, runId, selection,
+        ...(Object.keys(edits).length ? { edits } : {}),
+        note: m.querySelector("#apply-note").value.trim() || undefined,
+      });
+      document.getElementById("modal-overlay")?.remove();
+      toast(`✓ saved as v${r.version.v}`);
+      if (afterSave) afterSave(); else if (currentProjectId) updateProject(currentProjectId);
+    } catch (e) { m.querySelector("#apply-error").textContent = e.message; }
+  });
+}
+
+// ---------- Runs tab: the existing list, scoped to the project ----------
+
+async function renderProjectRuns(body, view) {
+  const { runs } = await api("/api/runs");
+  const mine = runs.filter((r) => r.projectId === view.id);
   const phaseBadge = (r) => {
     if (r.failed) return `<span class="badge red">error</span>`;
     if (r.paused) return `<span class="badge yellow">⏸ paused</span>`;
     const names = { created: "created", context: "context", context_review: "awaiting review", seeding: "seeding", loop: "loop", improving: "improving", assembling: "assembling", done: "done" };
     return `<span class="badge ${r.phase === "done" ? "green" : ""}">${names[r.phase] || r.phase}</span>`;
   };
-
-  app.innerHTML = `
-    <div class="row spread">
-      <h1>Runs</h1>
-      <button class="primary" id="new-run">+ New run</button>
-    </div>
-    <div id="new-run-form"></div>
-    ${runs.length === 0 && !newRunOpen ? `
+  body.innerHTML = `
+    ${mine.length === 0 ? `
       <div class="empty-state panel">
-        <h2>Drop in a description of your app —<br>get the best keywords, title and subtitle back</h2>
-        <p>You need a brief: what the app does, who it's for, competitors, market.</p>
-        <p><button class="primary" id="new-run-2">Create your first run</button></p>
+        <h2>No runs yet</h2>
+        <p>A run researches keywords for one storefront and drafts the metadata for its locale slots.</p>
+        <p><button class="primary" id="runs-new">＋ New run</button></p>
       </div>` : `
       <div class="cards">
-        ${runs.map((r) => `
+        ${mine.map((r) => `
           <div class="card" data-slug="${esc(r.runId)}">
             <div class="menu row">
               ${r.phase === "done" ? `<button class="small cmp" data-slug="${esc(r.runId)}" title="Compare with another run">⇄</button>` : ""}
@@ -623,27 +1099,398 @@ async function viewRuns() {
             ${r.topKeywords.length ? `<div class="small" style="margin-top:6px">${r.topKeywords.map((k) => `<span class="badge gray">${esc(k.keyword)} · ${k.score}</span>`).join(" ")}</div>` : ""}
           </div>`).join("")}
       </div>`}`;
-
-  document.getElementById("new-run")?.addEventListener("click", () => toggleNewRun(sf, models));
-  document.getElementById("new-run-2")?.addEventListener("click", () => toggleNewRun(sf, models));
-  document.querySelectorAll(".card[data-slug]").forEach((c) =>
+  body.querySelector("#runs-new")?.addEventListener("click", () => { location.hash = `#/p/${encodeURIComponent(view.id)}/new-run`; });
+  body.querySelectorAll(".card[data-slug]").forEach((c) =>
     c.addEventListener("click", (e) => {
       if (e.target.closest(".menu")) return;
       location.hash = `#/run/${encodeURIComponent(c.dataset.slug)}`;
     }));
-  document.querySelectorAll(".del").forEach((b) =>
+  body.querySelectorAll(".del").forEach((b) =>
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (!(await uiConfirm(`Delete run ${b.dataset.slug}?`))) return;
       try { await api(`/api/runs/${encodeURIComponent(b.dataset.slug)}`, { method: "DELETE" }); } catch (err) { toast(`✗ ${esc(err.message)}`, true); }
-      render();
+      updateProject(view.id);
     }));
-  document.querySelectorAll(".cmp").forEach((b) =>
+  body.querySelectorAll(".cmp").forEach((b) =>
     b.addEventListener("click", (e) => {
       e.stopPropagation();
-      openCompareModal(runs, b.dataset.slug);
+      openCompareModal(mine, b.dataset.slug);
     }));
-  if (newRunOpen) renderNewRunForm(sf, models);
+}
+
+// ---------- Keywords tab: the project bank (spec 10 §6) ----------
+
+async function renderProjectBank(body, view) {
+  const params = new URLSearchParams({ sort: bankQuery.sort, dir: bankQuery.dir, page: String(bankQuery.page) });
+  if (bankQuery.storefront) params.set("storefront", bankQuery.storefront);
+  if (bankQuery.language) params.set("language", bankQuery.language);
+  if (bankQuery.q) params.set("q", bankQuery.q);
+  if (bankQuery.showHidden) params.set("showHidden", "1");
+  const page = await api(`/api/projects/${encodeURIComponent(view.id)}/bank?${params}`);
+
+  const scoreClass = (s) => (s == null ? "" : s >= 50 ? "score-hi" : s >= 25 ? "score-mid" : s >= 1 ? "score-low" : "score-zero");
+  const sortArrow = (col) => (bankQuery.sort === col ? (bankQuery.dir === "desc" ? " ↓" : " ↑") : "");
+  const th = (col, label, num) => `<th data-sort="${col}" class="${num ? "num" : ""}">${label}${sortArrow(col)}</th>`;
+  const chip = (b) => {
+    const on = bankQuery.storefront === b.storefront && bankQuery.language === b.language;
+    return `<button class="badge bank-chip ${on ? "green" : "gray"}" data-sf="${esc(b.storefront)}" data-lang="${esc(b.language)}">${esc(b.storefront.toUpperCase())}/${esc(b.language)} · ${b.count}</button>`;
+  };
+
+  body.innerHTML = `
+    <div class="panel">
+      <p class="muted small" style="margin-top:0">Every phrase ever measured for this app — deduped per storefront+language, refreshed by
+        each run. Pin the ones you target (pins join rank checks); hide the noise.</p>
+      <div class="row">
+        ${page.buckets.map(chip).join(" ")}
+        <input id="bank-q" placeholder="filter by text" style="max-width:200px" value="${esc(bankQuery.q)}">
+        <span class="muted small">${page.total} keywords</span>
+        <span style="flex:1"></span>
+        <label class="small muted row" style="gap:4px;align-items:center"><input type="checkbox" id="bank-hidden" ${bankQuery.showHidden ? "checked" : ""}> show hidden (${page.hiddenCount})</label>
+        <button id="bank-export" title="CSV of the current version + full bank">⬇ CSV</button>
+      </div>
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th title="Pin — pinned phrases join rank checks">★</th>
+          ${th("keyword", "Keyword")}${th("P", "P", true)}${th("D", "D", true)}${th("R", "R", true)}${th("score", "Score", true)}
+          ${th("status", "Status")}<th>Source run</th>${th("updated", "Updated")}<th></th>
+        </tr></thead>
+        <tbody>
+          ${page.items.map((r) => `
+            <tr class="${r.hidden ? "bank-hidden-row" : ""}">
+              <td class="pin-cell"><button class="pin-btn ${r.pinned ? "on" : ""}" data-kw="${esc(r.keyword)}" data-sf="${esc(r.storefront)}" data-lang="${esc(r.language)}" data-pinned="${r.pinned ? 1 : 0}" title="${r.pinned ? "Unpin" : "Pin"}">${r.pinned ? "★" : "☆"}</button></td>
+              <td class="mono">${esc(r.keyword)} <span class="muted small">${esc(r.storefront)}/${esc(r.language)}</span></td>
+              <td class="num">${r.metrics.P ?? ""}</td>
+              <td class="num">${r.metrics.D ?? ""}</td>
+              <td class="num">${r.metrics.R ?? ""}</td>
+              <td class="num ${scoreClass(r.metrics.score)}">${r.metrics.score ?? ""}</td>
+              <td><span class="badge ${r.metrics.status === "excluded" || r.metrics.status === "error" ? "red" : r.metrics.status === "selected" ? "green" : "gray"}">${esc(r.metrics.status)}</span></td>
+              <td><a class="mono small" href="#/run/${encodeURIComponent(r.metrics.runId || "")}">${esc((r.metrics.runId || "").replace(/^run_/, "").slice(0, 8))}</a></td>
+              <td class="small muted">${r.updatedAt ? new Date(r.updatedAt).toLocaleDateString() : ""}</td>
+              <td><button class="small bank-hide" data-kw="${esc(r.keyword)}" data-sf="${esc(r.storefront)}" data-lang="${esc(r.language)}" data-hidden="${r.hidden ? 1 : 0}" title="${r.hidden ? "Unhide" : "Hide from the bank view"}">${r.hidden ? "↩" : "🚫"}</button></td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      </div>
+      ${page.total === 0 ? `<p class="muted">The bank fills as runs measure keywords — start a run to grow it.</p>` : ""}
+      <div class="row" style="margin-top:10px">
+        ${page.page > 0 ? `<button id="bank-prev">← Back</button>` : ""}
+        <span class="muted small">page ${page.page + 1} of ${Math.max(1, Math.ceil(page.total / page.pageSize))}</span>
+        ${(page.page + 1) * page.pageSize < page.total ? `<button id="bank-next">Next →</button>` : ""}
+      </div>
+    </div>`;
+
+  const rerender = () => renderProjectBank(body, view);
+  body.querySelectorAll(".bank-chip").forEach((b) =>
+    b.addEventListener("click", () => {
+      const on = bankQuery.storefront === b.dataset.sf && bankQuery.language === b.dataset.lang;
+      bankQuery.storefront = on ? "" : b.dataset.sf;
+      bankQuery.language = on ? "" : b.dataset.lang;
+      bankQuery.page = 0;
+      rerender();
+    }));
+  body.querySelectorAll("th[data-sort]").forEach((el) =>
+    el.addEventListener("click", () => {
+      const col = el.dataset.sort;
+      if (bankQuery.sort === col) bankQuery.dir = bankQuery.dir === "desc" ? "asc" : "desc";
+      else { bankQuery.sort = col; bankQuery.dir = "desc"; }
+      bankQuery.page = 0; rerender();
+    }));
+  body.querySelector("#bank-q").addEventListener("change", (e) => { bankQuery.q = e.target.value; bankQuery.page = 0; rerender(); });
+  body.querySelector("#bank-hidden").addEventListener("change", (e) => { bankQuery.showHidden = e.target.checked; bankQuery.page = 0; rerender(); });
+  body.querySelector("#bank-prev")?.addEventListener("click", () => { bankQuery.page--; rerender(); });
+  body.querySelector("#bank-next")?.addEventListener("click", () => { bankQuery.page++; rerender(); });
+  body.querySelector("#bank-export").addEventListener("click", async () => {
+    try {
+      const res = await api(`/api/projects/${encodeURIComponent(view.id)}/export`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format: "csv" }),
+      });
+      toast(`✓ <b>${esc(res.filename)}</b> saved to <span class="mono small">${esc(shortPath(res.path))}</span>`);
+    } catch (e) { toast(`✗ export failed: ${esc(e.message)}`, true); }
+  });
+  const flag = async (b, flags) => {
+    try {
+      await projectOpApi({ kind: "bankFlag", projectId: view.id, storefront: b.dataset.sf, language: b.dataset.lang, keyword: b.dataset.kw, ...flags });
+      rerender();
+    } catch (e) { toast(`✗ ${esc(e.message)}`, true); }
+  };
+  body.querySelectorAll(".pin-btn").forEach((b) =>
+    b.addEventListener("click", () => flag(b, { pinned: b.dataset.pinned !== "1" })));
+  body.querySelectorAll(".bank-hide").forEach((b) =>
+    b.addEventListener("click", () => flag(b, { hidden: b.dataset.hidden !== "1" })));
+}
+
+// ---------- Positions tab (spec 10 §3/§6): rank verification ----------
+
+function sparkline(history) {
+  // history: newest first → render oldest→newest, rank 1 at the top. Null = gap.
+  const pts = [...history].reverse();
+  if (pts.length < 2) return "";
+  const W = 90, H = 26, maxRank = Math.max(10, ...pts.map((p) => p.position ?? 0));
+  const X = (i) => 2 + (i / (pts.length - 1)) * (W - 4);
+  const Y = (rank) => 2 + ((rank - 1) / Math.max(1, maxRank - 1)) * (H - 4);
+  const segs = [];
+  let seg = [];
+  pts.forEach((p, i) => {
+    if (p.position == null) { if (seg.length > 1) segs.push(seg); seg = []; return; }
+    seg.push(`${X(i).toFixed(1)},${Y(p.position).toFixed(1)}`);
+  });
+  if (seg.length > 1) segs.push(seg);
+  const dots = pts.map((p, i) => (p.position == null ? "" :
+    `<circle cx="${X(i).toFixed(1)}" cy="${Y(p.position).toFixed(1)}" r="1.8" fill="var(--accent)"/>`)).join("");
+  return `<svg class="pos-spark" viewBox="0 0 ${W} ${H}" title="last ${pts.length} checks">
+    ${segs.map((s) => `<polyline points="${s.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`).join("")}${dots}</svg>`;
+}
+
+async function renderProjectPositions(body, view) {
+  const q = positionsSf ? `?storefront=${encodeURIComponent(positionsSf)}` : "";
+  const pos = await api(`/api/projects/${encodeURIComponent(view.id)}/positions${q}`);
+  positionsSf = pos.storefront;
+  // Storefront options: history ∪ covered locale countries ∪ the current selection.
+  const sfSet = new Set([...(pos.storefronts || []), pos.storefront]);
+  for (const slot of view.coverage) if (slot.covered) sfSet.add((slot.locale.split("-")[1] || "").toLowerCase());
+  sfSet.delete("");
+
+  const deltaChip = (item) => {
+    if (item.position == null && item.history.length && item.history.some((h) => h.position != null)) return `<span class="delta down">lost</span>`;
+    if (item.position == null) return "";
+    const prev = item.history[1];
+    if (!prev || prev.position == null) return `<span class="delta up">new</span>`;
+    if (item.delta > 0) return `<span class="delta up">↑${item.delta}</span>`;
+    if (item.delta < 0) return `<span class="delta down">↓${-item.delta}</span>`;
+    return `<span class="delta zero">=</span>`;
+  };
+
+  body.innerHTML = `
+    <div class="panel">
+      <div class="row spread" style="flex-wrap:wrap;gap:8px">
+        <div class="row" style="align-items:center">
+          <h2 style="margin:0">Positions</h2>
+          <select id="pos-sf" style="max-width:110px">${[...sfSet].map((s) => `<option value="${esc(s)}" ${s === pos.storefront ? "selected" : ""}>${esc(s.toUpperCase())}</option>`).join("")}</select>
+          ${pos.checkedAt ? `<span class="muted small">last check ${new Date(pos.checkedAt).toLocaleString()}</span>` : `<span class="muted small">never checked</span>`}
+        </div>
+        <div class="row" style="align-items:center">
+          <span class="muted small">${pos.tracked.length} tracked phrase${pos.tracked.length === 1 ? "" : "s"}</span>
+          <button class="primary" id="pos-check" ${!view.appStoreId || !pos.tracked.length ? "disabled" : ""}>Check now (≈${pos.estimateCredits} cr)</button>
+        </div>
+      </div>
+      ${!view.appStoreId ? `
+        <div class="banner warn" style="margin-top:10px">
+          <b>Link your App Store listing to verify real rankings.</b>
+          <div class="row" style="margin-top:8px">
+            <input id="pos-link-url" placeholder="https://apps.apple.com/us/app/…/id1234567890" style="max-width:380px">
+            <button class="primary" id="pos-link-save">Link</button>
+            <span id="pos-link-error" class="field-error"></span>
+          </div>
+        </div>` : ""}
+      ${view.appStoreId && !pos.tracked.length ? `<p class="muted" style="margin-top:10px">Nothing to track yet: save metadata for this storefront (its keywords field becomes the tracked set) or pin bank keywords.</p>` : ""}
+      <p class="muted small">Tracked = current version's keywords for this storefront ∪ pinned bank phrases (max 50). Checks fetch
+        FRESH results through your desktop client — the ranks real users see from your region.</p>
+      ${pos.items.length ? `
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Phrase</th><th class="num">Position</th><th>Δ</th><th>Trend</th><th class="num">SERP</th><th>Checked</th></tr></thead>
+        <tbody>
+          ${pos.items.map((i) => `
+            <tr>
+              <td class="mono">${esc(i.keyword)}</td>
+              <td class="num">${i.position != null ? `<b>#${i.position}</b>` : i.checkedAt ? '<span class="muted">not ranked</span>' : '<span class="muted small">—</span>'}</td>
+              <td>${deltaChip(i)}</td>
+              <td>${sparkline(i.history)}</td>
+              <td class="num small muted">${i.serpSize ?? ""}</td>
+              <td class="small muted">${i.checkedAt ? new Date(i.checkedAt).toLocaleDateString() : "never"}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      </div>` : ""}
+    </div>`;
+
+  body.querySelector("#pos-sf").addEventListener("change", (e) => {
+    positionsSf = e.target.value;
+    renderProjectPositions(body, view);
+  });
+  body.querySelector("#pos-check")?.addEventListener("click", async (e) => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.textContent = "checking…";
+    try {
+      const r = await projectOpApi({ kind: "checkPositions", projectId: view.id, storefront: pos.storefront });
+      toast(`✓ check started: ${r.tracked} phrases, ${r.credits} cr debited — results land as fetches finish`);
+      setTimeout(() => renderProjectPositions(body, view), 1500);
+    } catch (err) {
+      toast(`✗ ${esc(err.message)}`, true);
+      btn.disabled = false;
+      btn.textContent = `Check now (≈${pos.estimateCredits} cr)`;
+    }
+  });
+  body.querySelector("#pos-link-save")?.addEventListener("click", async () => {
+    const errEl = body.querySelector("#pos-link-error");
+    errEl.textContent = "";
+    try {
+      await projectOpApi({ kind: "update", projectId: view.id, appStoreUrl: body.querySelector("#pos-link-url").value.trim() });
+      toast("✓ App Store listing linked");
+      updateProject(view.id);
+    } catch (e2) { errEl.textContent = e2.message; }
+  });
+}
+
+// ---------- Settings tab (spec 10 §6): identity, context editor, danger zone ----------
+
+function tagListEditor(id, label, values) {
+  return `
+    <div class="tagedit" id="${id}">
+      <label>${label}</label>
+      <div class="tagchips">
+        ${values.map((v, i) => `<span class="tagchip">${esc(v)}<button class="tag-rm" data-i="${i}" title="Remove">×</button></span>`).join("")}
+        <input class="taginput" placeholder="add + Enter">
+      </div>
+    </div>`;
+}
+function bindTagEditor(root, id, values, onChange) {
+  const box = root.querySelector(`#${id}`);
+  box.querySelectorAll(".tag-rm").forEach((b) =>
+    b.addEventListener("click", () => { values.splice(Number(b.dataset.i), 1); onChange(); }));
+  const input = box.querySelector(".taginput");
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const v = input.value.trim();
+    if (v) { values.push(v); onChange(); }
+  });
+}
+
+function renderProjectSettings(body, view) {
+  const ctx = view.context ? JSON.parse(JSON.stringify(view.context)) : null;
+  const renderAll = () => {
+    body.innerHTML = `
+      <div class="panel">
+        <h2>Project</h2>
+        <div class="grid2">
+          <div><label>Name</label><input id="ps-name" value="${esc(view.name)}"></div>
+          <div><label>Brand</label><input id="ps-brand" value="${esc(view.brand)}"></div>
+        </div>
+        <label>App Store URL or id <span class="muted small">(unlocks rank checks; clear to unlink)</span></label>
+        <input id="ps-url" value="${view.appStoreId ? esc(String(view.appStoreId)) : ""}" placeholder="https://apps.apple.com/us/app/…/id1234567890">
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="ps-save">Save</button>
+          <span id="ps-error" class="field-error"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Business context</h2>
+        ${!ctx ? `<p class="muted">The context appears after your first run confirms it — every later run reuses it (no re-extraction fee).</p>` : `
+        <p class="muted small">Reused by every run of this project (extraction is skipped). This editor is the only place that changes it.</p>
+        <div class="grid2">
+          <div><label>Product in one paragraph</label><textarea id="pc-productSummary">${esc(ctx.productSummary)}</textarea></div>
+          <div><label>Audience</label><textarea id="pc-audience">${esc(ctx.audience)}</textarea></div>
+          <div><label>Category</label><input id="pc-category" value="${esc(ctx.category)}"></div>
+          <div><label>Anti-semantics: what the app is NOT</label><textarea id="pc-antiSemantics">${esc(ctx.antiSemantics)}</textarea></div>
+        </div>
+        ${tagListEditor("pc-jobs", "Jobs to be done", ctx.jobsToBeDone)}
+        ${tagListEditor("pc-vocab", "Feature vocabulary", ctx.featureVocabulary)}
+        ${tagListEditor("pc-comp", "Competitors", ctx.competitors)}
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="pc-save">Save context</button>
+          <span id="pc-error" class="field-error"></span>
+        </div>`}
+      </div>
+      <div class="panel danger-zone">
+        <h2>Danger zone</h2>
+        <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span class="small muted">${view.archived ? "Archived — hidden from the home grid." : "Archive hides the project from the home grid (reversible)."}</span>
+          <button id="ps-archive">${view.archived ? "Unarchive" : "Archive"}</button>
+        </div>
+        <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px">
+          <span class="small muted">Delete removes the metadata board, keyword bank and rank history. Forever.</span>
+          <button class="danger" id="ps-delete">Delete project…</button>
+        </div>
+      </div>`;
+    bind();
+  };
+
+  const bind = () => {
+    body.querySelector("#ps-save").addEventListener("click", async () => {
+      const errEl = body.querySelector("#ps-error");
+      errEl.textContent = "";
+      try {
+        const url = body.querySelector("#ps-url").value.trim();
+        await projectOpApi({
+          kind: "update", projectId: view.id,
+          name: body.querySelector("#ps-name").value.trim(),
+          brand: body.querySelector("#ps-brand").value.trim(),
+          appStoreUrl: url === "" ? null : url,
+        });
+        toast("✓ project saved");
+        updateProject(view.id);
+      } catch (e) { errEl.textContent = e.message; }
+    });
+    if (ctx) {
+      const refreshCtx = () => { collectTextFields(); renderAll(); };
+      const collectTextFields = () => {
+        ctx.productSummary = body.querySelector("#pc-productSummary").value;
+        ctx.audience = body.querySelector("#pc-audience").value;
+        ctx.category = body.querySelector("#pc-category").value;
+        ctx.antiSemantics = body.querySelector("#pc-antiSemantics").value;
+      };
+      bindTagEditor(body, "pc-jobs", ctx.jobsToBeDone, refreshCtx);
+      bindTagEditor(body, "pc-vocab", ctx.featureVocabulary, refreshCtx);
+      bindTagEditor(body, "pc-comp", ctx.competitors, refreshCtx);
+      body.querySelector("#pc-save").addEventListener("click", async () => {
+        const errEl = body.querySelector("#pc-error");
+        errEl.textContent = "";
+        collectTextFields();
+        try {
+          await projectOpApi({ kind: "updateContext", projectId: view.id, context: ctx });
+          toast("✓ context saved — future runs use it");
+          updateProject(view.id);
+        } catch (e) { errEl.textContent = e.message; }
+      });
+    }
+    body.querySelector("#ps-archive").addEventListener("click", async () => {
+      try {
+        await projectOpApi({ kind: "archive", projectId: view.id, archived: !view.archived });
+        toast(view.archived ? "✓ project unarchived" : "✓ project archived");
+        updateProject(view.id);
+      } catch (e) { toast(`✗ ${esc(e.message)}`, true); }
+    });
+    body.querySelector("#ps-delete").addEventListener("click", () => {
+      const m = openModal(`
+        <h2>Delete ${esc(view.name)}?</h2>
+        <p class="muted small">This deletes the metadata board (${view.versionsSummary.length} versions), the keyword bank
+          (${view.bankCount} phrases) and the whole rank history. Runs keep their records but leave every list.</p>
+        <label>Type the project name to confirm</label>
+        <input id="del-confirm" placeholder="${esc(view.name)}">
+        <div class="row" style="margin-top:14px">
+          <button class="danger" id="del-go" disabled>Delete forever</button>
+          <span id="del-error" class="field-error"></span>
+        </div>`);
+      const input = m.querySelector("#del-confirm"), go = m.querySelector("#del-go");
+      input.addEventListener("input", () => { go.disabled = input.value.trim() !== view.name; });
+      go.addEventListener("click", async () => {
+        try {
+          await projectOpApi({ kind: "delete", projectId: view.id, confirmName: input.value.trim() });
+          document.getElementById("modal-overlay")?.remove();
+          toast("✓ project deleted");
+          location.hash = "#/projects";
+        } catch (e) { m.querySelector("#del-error").textContent = e.message; }
+      });
+      input.focus();
+    });
+  };
+
+  renderAll();
+}
+
+// ---------- New-run tab: the run form, scoped to the project (spec 10 §6) ----------
+
+async function renderProjectNewRun(body, view) {
+  const [sf, models] = await Promise.all([getStorefronts(), getModels()]);
+  body.innerHTML = `<div id="new-run-form"></div>`;
+  const prefill = newRunPrefill;
+  newRunPrefill = null; // one-shot: consumed by this form
+  renderNewRunForm(sf, models, { projectId: view.id, brand: view.brand, prefill });
 }
 
 // Pick the second run for a diff (spec 09 §5): same brand+storefront, both finished.
@@ -671,21 +1518,20 @@ function openCompareModal(runs, slug) {
     }));
 }
 
-function toggleNewRun(sf, models) {
-  newRunOpen = true;
-  renderNewRunForm(sf, models);
-  document.getElementById("new-run-form").scrollIntoView({ behavior: "smooth" });
-}
-
-function renderNewRunForm(sf, models) {
+/** The run form now lives INSIDE a project (spec 10): opts = { projectId, brand, prefill }.
+ *  brand pre-fills from the project (still editable per run); prefill carries the locale a
+ *  suggestion/coverage "Research" card selected. */
+function renderNewRunForm(sf, models, opts = {}) {
   const d = sf.defaults;
   models = models || modelsCache || [];
   const el = document.getElementById("new-run-form");
   if (!el) return;
   const defModel = defaultModel(models, d.model);
+  const startCountry = opts.prefill?.country && sf.storefronts[opts.prefill.country] ? opts.prefill.country : d.country;
+  const startLang = opts.prefill?.language || (sf.storefronts[startCountry]?.primaryLanguage ?? d.semanticLanguage);
   el.innerHTML = `
     <div class="panel">
-      <div class="row spread"><h2>New run</h2><button id="close-form">✕</button></div>
+      <div class="row spread"><h2>New run</h2><button id="close-form" title="Back to the project">✕</button></div>
       <label>Brief: what the app does, who it's for, competitors, market (200 characters minimum)</label>
       <textarea id="brief-text" placeholder="Describe the product…"></textarea>
       <div class="dropzone" id="dropzone">…or drop a .md/.txt brief file here<br><span id="brief-name" class="small"></span></div>
@@ -695,10 +1541,10 @@ function renderNewRunForm(sf, models) {
         <span class="hint" style="margin:0">paste it to an AI assistant opened in your app's repo — it studies the code, asks what's unclear, and saves a ready <span class="mono">asoptimus-brief.md</span> to drop here</span>
       </div>
       <div class="grid2">
-        <div><label>Brand *</label><input id="f-brand" placeholder="Somna"><div class="field-error" id="e-brand"></div></div>
-        <div><label>Country (storefront)</label><select id="f-country">${Object.keys(sf.storefronts).map((c) => `<option value="${c}" ${c === d.country ? "selected" : ""}>${c.toUpperCase()}</option>`).join("")}</select></div>
+        <div><label>Brand *</label><input id="f-brand" placeholder="Somna" value="${esc(opts.brand || "")}"><div class="field-error" id="e-brand"></div></div>
+        <div><label>Country (storefront)</label><select id="f-country">${Object.keys(sf.storefronts).map((c) => `<option value="${c}" ${c === startCountry ? "selected" : ""}>${c.toUpperCase()}</option>`).join("")}</select></div>
         <div><label>Semantic language <span class="pop"><span class="q">?</span><span class="pop-body">The language hypotheses are generated and scored in. Auto-filled from the country, editable.</span></span></label>
-          <select id="f-semlang">${["en","ru","de","fr","it","es","pt","nl","sv","ja","ko","zh","tr","uk","pl","hi"].map((l) => `<option ${l === d.semanticLanguage ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+          <select id="f-semlang">${["en","ru","de","fr","it","es","pt","nl","sv","ja","ko","zh","tr","uk","pl","hi"].map((l) => `<option ${l === startLang ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         <div><label>Model</label><select id="f-model">${models.map((m) => `<option value="${esc(m.id)}" ${defModel && m.id === defModel.id ? "selected" : ""}>${esc(m.name)}${m.note ? ` — ${esc(m.note)}` : ""}</option>`).join("") || `<option value="">no models available</option>`}</select>
           <div class="hint">stronger model → pricier keyphrase</div></div>
       </div>
@@ -732,7 +1578,9 @@ function renderNewRunForm(sf, models) {
   });
   el.querySelector("#f-samplesize").addEventListener("input", (e) => { el.querySelector("#ss-val").textContent = e.target.value; updateQuoteUI(); });
   el.querySelector("#f-model").addEventListener("change", updateQuoteUI);
-  el.querySelector("#close-form").addEventListener("click", () => { newRunOpen = false; render(); });
+  el.querySelector("#close-form").addEventListener("click", () => {
+    location.hash = opts.projectId ? `#/p/${encodeURIComponent(opts.projectId)}` : "#/projects";
+  });
   updateQuoteUI(); // initial render of the live estimate
 
   el.querySelector("#copy-brief-prompt").addEventListener("click", async () => {
@@ -783,10 +1631,10 @@ function renderNewRunForm(sf, models) {
     try {
       const res = await api("/api/runs", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief, config }),
+        // spec 10: project_id travels at the message level — never inside config.
+        body: JSON.stringify({ brief, config, project_id: opts.projectId }),
       });
-      newRunOpen = false;
-      location.hash = `#/run/${encodeURIComponent(res.run_id)}`;
+      location.hash = `#/run/${encodeURIComponent(res.run_id ?? res.runId)}`;
     } catch (e) { errEl.textContent = e.message; }
   });
 }
@@ -806,8 +1654,17 @@ async function viewRun(slug) {
     app.innerHTML = `<div id="run-shell" data-slug="${esc(slug)}"><div id="run-top"></div><div id="tab-body"><div class="loading">Loading…</div></div></div>`;
     await loadAnnotations(slug, true);
     try { runsForCompare = (await api("/api/runs")).runs || []; } catch { runsForCompare = []; }
+    // Breadcrumb "‹ ProjectName" + "Save to project" need the owning project (spec 10).
+    try { projectsCache = (await api("/api/projects")).projects || []; } catch { /* keep stale cache */ }
   }
   await updateRun(slug);
+}
+
+/** Owning project of a run (via the cached summaries; RunSummary carries projectId). */
+function projectOfRun(slug) {
+  const summary = runsForCompare.find((r) => r.runId === slug);
+  if (!summary || !summary.projectId) return null;
+  return projectsCache.find((p) => p.id === summary.projectId) || { id: summary.projectId, name: "Project" };
 }
 
 /** STRICTLY OLDER `done` run of the same brand+country (spec 09 §5 "Compare with previous").
@@ -829,7 +1686,7 @@ async function updateRun(slug) {
     const data = await api(`/api/runs/${encodeURIComponent(slug)}`);
     if (!data) {
       const body = document.getElementById("tab-body");
-      if (body) body.innerHTML = `<div class="banner error">Run not found — it may have been deleted, or the cloud restarted. <a href="#/runs">Back to runs</a></div>`;
+      if (body) body.innerHTML = `<div class="banner error">Run not found — it may have been deleted, or the cloud restarted. <a href="#/projects">Back to projects</a></div>`;
       return;
     }
     lastRunData = data;
@@ -858,8 +1715,10 @@ function renderRunTop(slug, data) {
   const canResume = state.paused && state.phase !== "done";
   const canStop = data.sampleCount >= 30 && ["loop", "improving"].includes(state.phase);
 
+  const proj = projectOfRun(slug);
   top.innerHTML = `
     <div class="panel">
+      ${proj ? `<p class="small" style="margin:0 0 6px"><a href="#/p/${encodeURIComponent(proj.id)}">‹ ${esc(proj.name)}</a></p>` : ""}
       <div class="row spread">
         <h1 style="margin:0">${esc(config.brand)} · ${esc((config.country || "").toUpperCase())} <span class="muted small mono">${esc(slug)}</span></h1>
         <div class="row">
@@ -867,6 +1726,7 @@ function renderRunTop(slug, data) {
           ${canResume ? `<button class="primary" id="btn-resume">▶ Resume</button>` : ""}
           ${canStop ? `<button id="btn-stop">⏹ Stop &amp; assemble</button>` : ""}
           ${state.phase === "done" ? `<button id="btn-reassemble">↻ Reassemble</button>` : ""}
+          ${state.phase === "done" && data.assembly && proj ? `<button class="primary" id="btn-save-project" title="Apply this run's metadata to the project board">💾 Save to project</button>` : ""}
           ${state.phase === "done" ? `<button id="btn-report" title="Self-contained HTML report — send it to anyone">⬇ Export report</button>` : ""}
           ${state.phase === "done" && previousRunFor(slug, config, state.updatedAt) ? `<button id="btn-compare" title="Diff against the previous run of this app">⇄ Compare with previous</button>` : ""}
         </div>
@@ -896,6 +1756,10 @@ function renderRunTop(slug, data) {
     </div>`;
 
   top.querySelector("#btn-report")?.addEventListener("click", () => exportRun(slug, "html"));
+  top.querySelector("#btn-save-project")?.addEventListener("click", () => {
+    const p = projectOfRun(slug);
+    if (p) openApplyModal(p.id, slug, () => toast("✓ saved — open the project to see the new version"));
+  });
   top.querySelector("#btn-compare")?.addEventListener("click", () => {
     const prev = previousRunFor(slug, config, state.updatedAt);
     if (prev) location.hash = `#/compare/${encodeURIComponent(prev.runId)}/${encodeURIComponent(slug)}`;
@@ -1568,13 +2432,13 @@ async function viewCompare(aId, bId) {
     api(`/api/runs/${encodeURIComponent(bId)}/keywords-lite`),
   ]);
   if (!snapA || !snapB) {
-    app.innerHTML = `<div class="banner error">One of the runs was not found. <a href="#/runs">Back to runs</a></div>`;
+    app.innerHTML = `<div class="banner error">One of the runs was not found. <a href="#/projects">Back to projects</a></div>`;
     return;
   }
   const cfgA = snapA.config, cfgB = snapB.config;
   if (cfgA.country !== cfgB.country || cfgA.semanticLanguage !== cfgB.semanticLanguage) {
     app.innerHTML = `
-      <div class="row spread"><h1>Compare runs</h1><a href="#/runs">← Runs</a></div>
+      <div class="row spread"><h1>Compare runs</h1><a href="#/projects">← Projects</a></div>
       <div class="banner error">These runs use different storefronts or semantic languages (${esc(cfgA.country)}/${esc(cfgA.semanticLanguage)} vs ${esc(cfgB.country)}/${esc(cfgB.semanticLanguage)}) — apples to apples only.</div>`;
     return;
   }
@@ -1610,7 +2474,7 @@ async function viewCompare(aId, bId) {
   app.innerHTML = `
     <div class="row spread">
       <h1 style="margin-bottom:0">${esc(cfgB.brand)} · ${esc((cfgB.country || "").toUpperCase())} — run diff</h1>
-      <a href="#/runs">← Runs</a>
+      <a href="#/projects">← Projects</a>
     </div>
     <p class="muted small" style="margin:4px 0 16px">
       <a href="#/run/${encodeURIComponent(aId)}" class="mono">${esc(aId.slice(0, 12))}…</a> (${when(snapA)})

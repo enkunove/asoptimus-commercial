@@ -265,6 +265,13 @@ export class Orchestrator {
   // ---------- phases ----------
 
   private async phaseContext() {
+    // spec 10 §2: a project-seeded context skips the LLM extraction entirely — the user still
+    // reviews (and may tweak) the copy at context_review. Replay stays deterministic: seeded
+    // runs never wrote an llm_steps "context" entry, and getOrchestrator re-seeds before replay.
+    if (this.state.contextSeeded && this.state.context) {
+      await this.event("🧠", "using project context — review or edit, then confirm");
+      return;
+    }
     await this.event("🧠", "extracting business context from the brief");
     const system = renderPrompt("context", {
       COUNTRY: this.config.country,

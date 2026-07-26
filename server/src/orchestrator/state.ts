@@ -10,6 +10,11 @@ import { sampleCount } from "@aso/shared";
 export interface ServerRunState {
   runId: string;
   userId: string;
+  /** Owning project (spec 10). Kept OUT of RunConfig by contract — state/row only. */
+  projectId?: string;
+  /** True when the context was seeded from the project at createRun: phaseContext skips the
+   *  LLM extraction (deterministic under replay — no llm_steps "context" entry exists). */
+  contextSeeded?: boolean;
   phase: RunPhase;
   paused: boolean;
   failed: string | null;

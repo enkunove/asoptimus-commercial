@@ -16,6 +16,7 @@ import type {
   RunSummary, RunAction, BalanceView, TopupRequest, TopupResponse, Job, JobResult, TopupCatalog,
   ServerToClient, ClientToServer, SignedEnvelope, QueryKind, ModelInfo,
   KeywordsLiteView, CompetitorsView, ExportFormat, ExportArtifact, RunQuote,
+  ProjectOp, ProjectCard, ProjectView, ProjectBankPage, ProjectPositionsView,
 } from "@aso/shared";
 import type { AppleHttp } from "./apple/http";
 import type { Session } from "./activation";
@@ -48,7 +49,8 @@ export interface CloudLink {
 
   // REST relay (browser → localhost → WSS/HTTPS):
   listRuns(): Promise<RunSummary[]>;
-  createRun(brief: string, config: unknown): Promise<{ run_id: string }>;
+  /** spec 10: runs require a project — project_id travels at the message level (not in config). */
+  createRun(brief: string, config: unknown, projectId: string): Promise<{ run_id: string }>;
   getRun(runId: string): Promise<RunSnapshot>;
   /** query values may include an `only: string[]` keyword allowlist (spec 09 §7 pinned filter). */
   listKeywords(runId: string, query: Record<string, unknown>): Promise<KeywordPage>;
@@ -68,6 +70,13 @@ export interface CloudLink {
   competitors(runId: string): Promise<CompetitorsView>;
   /** ann = the user's LOCAL pins/notes, passed transiently for artifact rendering only (spec 09 §7). */
   exportArtifact(runId: string, format: ExportFormat, ann?: { pinned?: string[]; notes?: Record<string, string> }): Promise<ExportArtifact>;
+  // spec 10: projects — reads are query kinds, ALL writes go through the single project.op message.
+  listProjects(): Promise<ProjectCard[]>;
+  getProject(projectId: string): Promise<ProjectView>;
+  getProjectBank(projectId: string, query: Record<string, unknown>): Promise<ProjectBankPage>;
+  getProjectPositions(projectId: string, storefront?: string): Promise<ProjectPositionsView>;
+  projectExport(projectId: string, format: "csv" | "json"): Promise<ExportArtifact>;
+  projectOp(op: ProjectOp): Promise<unknown>;
 }
 
 export interface CloudLinkDeps {
@@ -231,6 +240,17 @@ class WssCloudLink implements CloudLink {
         this.emitter.emit({ type: "run-changed", slug: m.run_id });
         break;
       }
+      case "project.result": {
+        // spec 10: ack of project.op — shares the client_ref/query_id correlation space.
+        const p = this.pending.get(m.client_ref);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(m.client_ref);
+          if (m.ok) p.resolve(m.data);
+          else p.reject(new Error(m.error || "project operation failed"));
+        }
+        break;
+      }
       case "job.dispatch":
         await this.runJob(m.job);
         break;
@@ -306,12 +326,23 @@ class WssCloudLink implements CloudLink {
   async exportArtifact(runId: string, format: ExportFormat, ann: { pinned?: string[]; notes?: Record<string, string> } = {}) {
     return this.query("export", { runId, format, ...ann });
   }
+  async listProjects() { return this.query("projects"); }
+  async getProject(projectId: string) { return this.query("project", { projectId }); }
+  async getProjectBank(projectId: string, q: Record<string, unknown>) { return this.query("project-bank", { projectId, ...q }); }
+  async getProjectPositions(projectId: string, storefront?: string) {
+    return this.query("project-positions", { projectId, ...(storefront ? { storefront } : {}) });
+  }
+  async projectExport(projectId: string, format: "csv" | "json") { return this.query("project-export", { projectId, format }); }
+  async projectOp(op: ProjectOp) {
+    const client_ref = `p${++this.seq}`;
+    return this.awaitCorrelated<unknown>(client_ref, () => this.send({ t: "project.op", client_ref, op }));
+  }
 
-  async createRun(brief: string, config: unknown) {
+  async createRun(brief: string, config: unknown, projectId: string) {
     const client_ref = `c${++this.seq}`;
     return this.awaitCorrelated<{ run_id: string }>(
       client_ref,
-      () => this.send({ t: "run.create", client_ref, brief, config }),
+      () => this.send({ t: "run.create", client_ref, project_id: projectId, brief, config }),
     );
   }
   async controlRun(runId: string, action: RunAction) {
@@ -372,7 +403,7 @@ class StubCloudLink implements CloudLink {
   stop() { /* nothing to close */ }
 
   listRuns() { return this.backend.listRuns(); }
-  createRun(brief: string, config: unknown) { return this.backend.createRun(brief, config); }
+  createRun(brief: string, config: unknown, projectId: string) { return this.backend.createRun(brief, config, projectId); }
   getRun(runId: string) { return this.backend.getRun(runId); }
   listKeywords(runId: string, query: Record<string, unknown>) { return this.backend.listKeywords(runId, query); }
   getKeyword(runId: string, keyword: string) { return this.backend.getKeyword(runId, keyword); }
@@ -389,6 +420,12 @@ class StubCloudLink implements CloudLink {
   exportArtifact(runId: string, format: ExportFormat, ann: { pinned?: string[]; notes?: Record<string, string> } = {}) {
     return this.backend.exportArtifact(runId, format, ann);
   }
+  listProjects() { return this.backend.listProjects(); }
+  getProject(projectId: string) { return this.backend.getProject(projectId); }
+  getProjectBank(projectId: string, query: Record<string, unknown>) { return this.backend.getProjectBank(projectId, query); }
+  getProjectPositions(projectId: string, storefront?: string) { return this.backend.getProjectPositions(projectId, storefront); }
+  projectExport(projectId: string, format: "csv" | "json") { return this.backend.projectExport(projectId, format); }
+  projectOp(op: ProjectOp) { return this.backend.projectOp(op); }
 
   /** Dev hook: run one Apple job through apple-exec (for offline testing of executors). */
   execJob(job: Job): Promise<JobResult> { return executeJob(this.deps.http, job); }

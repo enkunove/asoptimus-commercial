@@ -88,18 +88,31 @@ export async function wssMessage(app: App, ws: WsLike, raw: string | Buffer): Pr
 
   switch (msg.t) {
     case "run.create": {
+      // spec 10: runs REQUIRE a project (message-level project_id — never inside RunConfig).
+      const projectId = String(msg.project_id ?? "").trim();
+      if (!projectId) {
+        send(ws, { t: "query.error", query_id: msg.client_ref, reason: "project_id is required — create a project first" });
+        break;
+      }
       const config = defaultRunConfig((msg.config ?? {}) as any);
       const verrs = validateRunConfig(config);
       if (Object.keys(verrs).length) {
         send(ws, { t: "query.error", query_id: msg.client_ref, reason: `config invalid: ${Object.values(verrs).join("; ")}` });
         break;
       }
-      void app.manager.createRun(userId, msg.brief, config).then((runId) => {
+      void app.manager.createRun(userId, msg.brief, config, projectId).then((runId) => {
         send(ws, { t: "run.created", client_ref: msg.client_ref, run_id: runId }); // ack links client_ref ↔ run_id
         void app.manager.startRun(runId);
-      });
+      }).catch((e) => // foreign/missing project → fail-closed rejection on the same correlation id
+        send(ws, { t: "query.error", query_id: msg.client_ref, reason: e?.message ?? String(e) }));
       break;
     }
+    case "project.op":
+      // The ONE project write message (spec 10 §5) — validated + owner-gated in the manager.
+      void app.manager.projectOp(userId, msg.op)
+        .then((data) => send(ws, { t: "project.result", client_ref: msg.client_ref, ok: true, data }))
+        .catch((e) => send(ws, { t: "project.result", client_ref: msg.client_ref, ok: false, error: e?.message ?? String(e) }));
+      break;
     case "run.control":
       // Same authoritative ownership gate as the query path — control (pause/resume/delete/
       // exclude/confirmContext) must never act on another user's run.
@@ -204,6 +217,23 @@ async function handleQuery(app: App, ws: WsLike, userId: string, q: Extract<Clie
     }
     case "packages":
       data = { packages: topupCatalog(), custom: app.payments.customRange() }; // TopupCatalog
+      break;
+    // ── spec 10: projects (owner gating lives inside the manager — fail-closed "not found") ──
+    case "projects":
+      data = await app.manager.projectCards(userId); // ProjectCard[]
+      break;
+    case "project":
+      data = await app.manager.projectView(userId, String(q.params?.projectId ?? "")); // ProjectView
+      break;
+    case "project-bank":
+      data = await app.manager.projectBank(userId, String(q.params?.projectId ?? ""), q.params ?? {}); // ProjectBankPage
+      break;
+    case "project-positions":
+      data = await app.manager.projectPositions(userId, String(q.params?.projectId ?? ""),
+        q.params?.storefront ? String(q.params.storefront) : undefined); // ProjectPositionsView
+      break;
+    case "project-export":
+      data = await app.manager.projectExport(userId, String(q.params?.projectId ?? ""), String(q.params?.format ?? "json")); // ExportArtifact
       break;
     default:
       throw new Error(`unknown query kind: ${(q as any).kind}`);

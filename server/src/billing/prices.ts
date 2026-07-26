@@ -178,6 +178,14 @@ export function knownModel(model: string): boolean {
   return MODELS.some((m) => m.id === model);
 }
 
+/** Positions rank-check fee per keyword in credits (spec 10 §3): flat, NO model multiplier —
+ *  no LLM is involved, the client fetches SERPs from the user's own IP. Env-overridable. */
+const DEFAULT_POSITIONS_FEE = 0.002;
+export function positionsFee(): number {
+  const raw = Number(optionalEnv("POSITIONS_FEE"));
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_POSITIONS_FEE;
+}
+
 /** Cost of a single LLM attempt in USD (cacheRead 0.1×input, cacheWrite 1.25×input; spec 06.2).
  *  Internal COGS accounting (D4) — NOT the user's bill. */
 export function costUsdFor(

@@ -29,6 +29,10 @@ import type {
   KeywordsLiteView,
   CompetitorsView,
   ExportArtifact,
+  ProjectCard,
+  ProjectView,
+  ProjectBankPage,
+  ProjectPositionsView,
 } from "@aso/shared";
 
 /** Paginated keyword list (projection for the UI table). */
@@ -89,6 +93,12 @@ export interface QueryData {
   export: ExportArtifact;
   // D4 v5: server-side workload estimate
   quote: RunQuote;
+  // spec 10: projects
+  projects: ProjectCard[];
+  project: ProjectView;
+  "project-bank": ProjectBankPage;
+  "project-positions": ProjectPositionsView;
+  "project-export": ExportArtifact;
 }
 
 // Type-level guarantee: QueryData keys exactly match the contract's QueryKind.

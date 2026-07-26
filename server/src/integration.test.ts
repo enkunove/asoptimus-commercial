@@ -60,6 +60,7 @@ const BRIEF = "Somna is a habit tracking app that helps people build healthy dai
 describe("DEV integration: signup → gates → run to done → insights & exports", () => {
   let token = "";
   let runId = "";
+  let projectId = "";
 
   test("signup issues a dev key; activation exchanges it for a session", async () => {
     const su = await http("POST", "/signup", { email: "it@test.dev" });
@@ -76,8 +77,16 @@ describe("DEV integration: signup → gates → run to done → insights & expor
   test("zero balance: create pauses at the gate; resume and confirmContext stay blocked; zero LLM calls", async () => {
     expect(await app.billing.balance((app.auth.verifySession(token))!.userId)).toBe(0);
 
+    // spec 10: a run cannot exist outside a project.
+    const noProject = await http("POST", "/api/runs", { brief: BRIEF, config: { brand: "Somna" } }, token);
+    expect(noProject.status).toBe(400);
+    const proj = await http("POST", "/api/projects/op", { kind: "create", name: "Somna", brand: "Somna" }, token);
+    expect(proj.status).toBe(200);
+    projectId = (await proj.json()).data.projectId;
+
     const created = await http("POST", "/api/runs", {
       brief: BRIEF,
+      project_id: projectId,
       config: { brand: "Somna", sampleSize: 30, batchSize: 10, improvementRounds: 0 },
     }, token);
     expect(created.status).toBe(200);

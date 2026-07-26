@@ -386,12 +386,61 @@ prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Pad
     if (!sess) return err("unauthorized", 401);
     const b = await body(req);
     if (!b.brief || typeof b.brief !== "string") return err("brief is required");
+    // spec 10: runs require a project (message-level project_id, never inside RunConfig).
+    const projectId = String(b.project_id ?? "").trim();
+    if (!projectId) return err("project_id is required — create a project first");
     const config: RunConfig = defaultRunConfig((b.config ?? {}) as Partial<RunConfig>);
     const verrs = validateRunConfig(config);
     if (Object.keys(verrs).length) return json({ error: "config invalid", fields: verrs }, 400);
-    const runId = await app.manager.createRun(sess.userId, b.brief, config);
+    let runId: string;
+    try { runId = await app.manager.createRun(sess.userId, b.brief, config, projectId); }
+    catch (e: any) { return err(e?.message ?? String(e), 404); }
     void app.manager.startRun(runId); // background: context → context_review
     return json({ runId });
+  }
+
+  // ── projects (spec 10; session-token auth mirrors /api/runs) ─────────────
+  if (path === "/api/projects" && method === "GET") {
+    if (!sess) return err("unauthorized", 401);
+    return json({ projects: await app.manager.projectCards(sess.userId) });
+  }
+  if (path === "/api/projects/op" && method === "POST") {
+    if (!sess) return err("unauthorized", 401);
+    const b = await body(req);
+    try { return json({ ok: true, data: await app.manager.projectOp(sess.userId, b as any) }); }
+    catch (e: any) { return err(e?.message ?? String(e)); }
+  }
+  const projMatch = path.match(/^\/api\/projects\/([^/]+)(\/[^/]+)?$/);
+  if (projMatch && projMatch[1] !== "op") {
+    if (!sess) return err("unauthorized", 401);
+    const projectId = decodeURIComponent(projMatch[1]);
+    const sub = projMatch[2];
+    try {
+      if (!sub && method === "GET") return json(await app.manager.projectView(sess.userId, projectId));
+      if (sub === "/bank" && method === "GET") {
+        const params: Record<string, unknown> = {};
+        for (const [k, v] of url.searchParams) params[k] = v;
+        return json(await app.manager.projectBank(sess.userId, projectId, params));
+      }
+      if (sub === "/positions" && method === "GET") {
+        return json(await app.manager.projectPositions(sess.userId, projectId, url.searchParams.get("storefront") ?? undefined));
+      }
+      if (sub === "/runs" && method === "GET") {
+        return json({ runs: await app.manager.listRunsForProject(sess.userId, projectId) });
+      }
+      if (sub === "/export" && method === "GET") {
+        const artifact = await app.manager.projectExport(sess.userId, projectId, url.searchParams.get("format") ?? "json");
+        return new Response(artifact.content, {
+          headers: {
+            "content-type": artifact.mime,
+            "content-disposition": `attachment; filename="${artifact.filename}"`,
+          },
+        });
+      }
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      return err(msg, /not found/i.test(msg) ? 404 : 400);
+    }
   }
 
   if (path === "/api/runs" && method === "GET") {

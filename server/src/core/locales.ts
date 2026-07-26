@@ -34,7 +34,34 @@ export function extraLocaleFor(country: string): string | null {
 /** Positional field weight (spec 05.2). Re-export from assembly/place — single moat entry point. */
 export { FIELD_WEIGHTS } from "./assembly/place.ts";
 
-import { STOREFRONTS } from "@aso/shared";
+import { STOREFRONTS, type MarketSlot } from "@aso/shared";
+
+// Curated market table (spec 10 §4) — order = priority for next-best-actions. Only entries
+// whose country exists in STOREFRONTS survive the filter (the client can't fetch others anyway).
+const MARKET_TABLE: MarketSlot[] = [
+  { locale: "en-US", country: "us", language: "en", name: "United States", tier: 1, note: "the largest store" },
+  { locale: "ja-JP", country: "jp", language: "ja", name: "Japan", tier: 1, note: "2nd by revenue; low English competition" },
+  { locale: "de-DE", country: "de", language: "de", name: "Germany", tier: 1, note: "largest EU store" },
+  { locale: "en-GB", country: "gb", language: "en", name: "United Kingdom", tier: 1, note: "distinct suggest index from the US" },
+  { locale: "fr-FR", country: "fr", language: "fr", name: "France", tier: 2, note: "" },
+  { locale: "ko-KR", country: "kr", language: "ko", name: "South Korea", tier: 2, note: "" },
+  { locale: "es-MX", country: "mx", language: "es", name: "Mexico (Spanish)", tier: 2, note: "es-MX also indexes on the US storefront" },
+  { locale: "pt-BR", country: "br", language: "pt", name: "Brazil", tier: 2, note: "" },
+  { locale: "it-IT", country: "it", language: "it", name: "Italy", tier: 3, note: "" },
+  { locale: "es-ES", country: "es", language: "es", name: "Spain", tier: 3, note: "" },
+  { locale: "nl-NL", country: "nl", language: "nl", name: "Netherlands", tier: 3, note: "" },
+  { locale: "ru-RU", country: "ru", language: "ru", name: "Russia", tier: 3, note: "" },
+  { locale: "tr-TR", country: "tr", language: "tr", name: "Türkiye", tier: 3, note: "" },
+  { locale: "pl-PL", country: "pl", language: "pl", name: "Poland", tier: 3, note: "" },
+  { locale: "sv-SE", country: "se", language: "sv", name: "Sweden", tier: 3, note: "" },
+  { locale: "uk-UA", country: "ua", language: "uk", name: "Ukraine", tier: 3, note: "" },
+  { locale: "hi-IN", country: "in", language: "hi", name: "India (Hindi)", tier: 3, note: "storefront defaults to en-GB SERPs" },
+];
+export const MARKETS: MarketSlot[] = MARKET_TABLE.filter((m) => m.country in STOREFRONTS);
+
+export function marketForLocale(locale: string): MarketSlot | undefined {
+  return MARKETS.find((m) => m.locale === locale);
+}
 
 /** Combos Apple's search API rejects even though they look canonical (validated against the
  *  live API across every STOREFRONTS entry on 2026-07-19: only en_in 400s; Apple's India

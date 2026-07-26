@@ -8,7 +8,9 @@ import postgres from "postgres";
 import type {
   Store, UserRow, LicenseRow, SessionRow, WaitlistRow, AdminUserRow, AdminRunRow,
   LedgerRowDb, LlmStepRow, RunRow, RunEventRow, JobRow, AppleCacheRow,
+  ProjectRow, ProjectKeywordRow, ProjectPositionRow,
 } from "./types.ts";
+import type { MetadataVersion } from "@aso/shared";
 
 export class PostgresStore implements Store {
   private sql: postgres.Sql;
@@ -147,13 +149,13 @@ export class PostgresStore implements Store {
   }
 
   async createRun(r: RunRow) {
-    await this.sql`INSERT INTO runs (id, user_id, phase, config, brief, estimate_credits, context, final, usage, state)
-      VALUES (${r.id}, ${r.user_id}, ${r.phase}, ${this.sql.json(r.config as any)}, ${r.brief}, ${r.estimate_credits},
+    await this.sql`INSERT INTO runs (id, user_id, project_id, phase, config, brief, estimate_credits, context, final, usage, state)
+      VALUES (${r.id}, ${r.user_id}, ${r.project_id}, ${r.phase}, ${this.sql.json(r.config as any)}, ${r.brief}, ${r.estimate_credits},
         ${this.sql.json(r.context as any)}, ${this.sql.json(r.final as any)},
         ${this.sql.json(r.usage as any)}, ${this.sql.json(r.state as any)})`;
   }
   async getRun(id: string) {
-    const [r] = await this.sql<RunRow[]>`SELECT id, user_id, phase, config, brief, estimate_credits, context, final, usage, state, updated_at
+    const [r] = await this.sql<RunRow[]>`SELECT id, user_id, project_id, phase, config, brief, estimate_credits, context, final, usage, state, updated_at
       FROM runs WHERE id = ${id}`;
     return r ?? null;
   }
@@ -172,8 +174,108 @@ export class PostgresStore implements Store {
     await s`UPDATE runs SET ${s(fields as any)}, updated_at = now() WHERE id = ${patch.id}`;
   }
   async listRunsByUser(userId: string) {
-    return await this.sql<RunRow[]>`SELECT id, user_id, phase, config, brief, estimate_credits, context, final, usage, state, updated_at
+    return await this.sql<RunRow[]>`SELECT id, user_id, project_id, phase, config, brief, estimate_credits, context, final, usage, state, updated_at
       FROM runs WHERE user_id = ${userId} ORDER BY updated_at DESC`;
+  }
+  async listRunsByProject(projectId: string) {
+    return await this.sql<RunRow[]>`SELECT id, user_id, project_id, phase, config, brief, estimate_credits, context, final, usage, state, updated_at
+      FROM runs WHERE project_id = ${projectId} ORDER BY updated_at DESC`;
+  }
+
+  // ── projects (spec 10) ───────────────────────────────────────────────────
+
+  async createProject(p: ProjectRow) {
+    await this.sql`INSERT INTO projects (id, user_id, name, brand, app_store_id, context, versions, live_version, archived)
+      VALUES (${p.id}, ${p.user_id}, ${p.name}, ${p.brand}, ${p.app_store_id},
+        ${this.sql.json(p.context as any)}, ${this.sql.json(p.versions as any)}, ${p.live_version}, ${p.archived})`;
+  }
+  async getProject(id: string) {
+    const [r] = await this.sql<ProjectRow[]>`SELECT id, user_id, name, brand, app_store_id, context, versions, live_version, archived, created_at, updated_at
+      FROM projects WHERE id = ${id}`;
+    return r ?? null;
+  }
+  async listProjectsByUser(userId: string) {
+    return await this.sql<ProjectRow[]>`SELECT id, user_id, name, brand, app_store_id, context, versions, live_version, archived, created_at, updated_at
+      FROM projects WHERE user_id = ${userId} ORDER BY updated_at DESC`;
+  }
+  async updateProject(patch: Partial<ProjectRow> & { id: string }) {
+    const fields: Record<string, unknown> = {};
+    for (const k of ["name", "brand", "app_store_id", "context", "live_version", "archived"] as const) {
+      if (k in patch) fields[k] = k === "context" ? this.sql.json((patch as any)[k]) : (patch as any)[k];
+    }
+    if (Object.keys(fields).length === 0) return;
+    await this.sql`UPDATE projects SET ${this.sql(fields as any)}, updated_at = now() WHERE id = ${patch.id}`;
+  }
+  // Append-only versions: read-modify-write under FOR UPDATE (concurrent applies must not
+  // clobber each other). Cap 100 dropping the oldest non-live entry.
+  async appendProjectVersion(projectId: string, build: (prev: MetadataVersion | null, nextV: number) => MetadataVersion) {
+    return this.sql.begin(async (sql) => {
+      const [row] = await sql<{ versions: MetadataVersion[]; live_version: number | null }[]>`
+        SELECT versions, live_version FROM projects WHERE id = ${projectId} FOR UPDATE`;
+      if (!row) throw new Error(`project not found: ${projectId}`);
+      const versions = Array.isArray(row.versions) ? row.versions : [];
+      const prev = versions.length ? versions[versions.length - 1] : null;
+      const version = build(prev, (prev?.v ?? 0) + 1);
+      versions.push(version);
+      while (versions.length > 100) {
+        const idx = versions.findIndex((v) => v.v !== row.live_version);
+        if (idx < 0) break;
+        versions.splice(idx, 1);
+      }
+      await sql`UPDATE projects SET versions = ${sql.json(versions as any)}, updated_at = now() WHERE id = ${projectId}`;
+      return version;
+    });
+  }
+  async deleteProject(id: string) {
+    // project_keywords/project_positions cascade via FK; runs are orphaned on purpose.
+    await this.sql`DELETE FROM projects WHERE id = ${id}`;
+  }
+  async countProjects() {
+    const [r] = await this.sql<{ n: string }[]>`SELECT COUNT(*) AS n FROM projects`;
+    return Number(r?.n ?? 0);
+  }
+
+  async upsertProjectKeywords(projectId: string, storefront: string, language: string,
+    rows: Array<{ keyword: string; metrics: ProjectKeywordRow["metrics"] }>) {
+    for (const r of rows) {
+      await this.sql`INSERT INTO project_keywords (project_id, storefront, language, keyword, metrics)
+        VALUES (${projectId}, ${storefront}, ${language}, ${r.keyword}, ${this.sql.json(r.metrics as any)})
+        ON CONFLICT (project_id, storefront, language, keyword)
+        DO UPDATE SET metrics = EXCLUDED.metrics, updated_at = now()`;
+    }
+  }
+  async listProjectKeywords(projectId: string, filter: { storefront?: string; language?: string } = {}) {
+    return await this.sql<ProjectKeywordRow[]>`SELECT project_id, storefront, language, keyword, metrics, pinned, hidden, first_seen, updated_at
+      FROM project_keywords WHERE project_id = ${projectId}
+      ${filter.storefront ? this.sql`AND storefront = ${filter.storefront}` : this.sql``}
+      ${filter.language ? this.sql`AND language = ${filter.language}` : this.sql``}
+      ORDER BY updated_at DESC`;
+  }
+  async countProjectKeywords(projectId: string) {
+    const [r] = await this.sql<{ n: string }[]>`SELECT COUNT(*) AS n FROM project_keywords WHERE project_id = ${projectId}`;
+    return Number(r?.n ?? 0);
+  }
+  async setProjectKeywordFlags(projectId: string, storefront: string, language: string, keyword: string,
+    flags: { pinned?: boolean; hidden?: boolean }) {
+    const fields: Record<string, unknown> = {};
+    if (flags.pinned !== undefined) fields.pinned = flags.pinned;
+    if (flags.hidden !== undefined) fields.hidden = flags.hidden;
+    if (Object.keys(fields).length === 0) return;
+    await this.sql`UPDATE project_keywords SET ${this.sql(fields as any)}, updated_at = now()
+      WHERE project_id = ${projectId} AND storefront = ${storefront} AND language = ${language} AND keyword = ${keyword}`;
+  }
+
+  async insertProjectPositions(rows: ProjectPositionRow[]) {
+    for (const r of rows) {
+      await this.sql`INSERT INTO project_positions (project_id, storefront, keyword, position, serp_size)
+        VALUES (${r.project_id}, ${r.storefront}, ${r.keyword}, ${r.position}, ${r.serp_size})`;
+    }
+  }
+  async listProjectPositions(projectId: string, storefront?: string) {
+    return await this.sql<ProjectPositionRow[]>`SELECT id, project_id, storefront, keyword, position, serp_size, checked_at
+      FROM project_positions WHERE project_id = ${projectId}
+      ${storefront ? this.sql`AND storefront = ${storefront}` : this.sql``}
+      ORDER BY checked_at ASC, id ASC`;
   }
 
   async appendRunEvent(runId: string, event: RunEventRow["event"]) {
