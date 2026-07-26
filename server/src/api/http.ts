@@ -145,7 +145,7 @@ prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Pad
     // id or email. The page itself is anonymous, but the transaction in ?_ptxn= knows its
     // customer — look it up server-side. Best-effort: null → initialize without it.
     const ptxn = url.searchParams.get("_ptxn") ?? "";
-    const pwCustomerId = ptxn ? await app.payments.transactionCustomer(ptxn) : null;
+    const pwCustomerId = ptxn ? (await app.paddle?.transactionCustomer(ptxn)) ?? null : null;
     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
 <title>Checkout — ASOptimus</title></head>
@@ -254,14 +254,27 @@ prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Pad
     } catch (e: any) { return err(e?.message ?? String(e)); }
   }
 
-  if (path === "/webhooks/paddle" && method === "POST") {
+  if (path === "/webhooks/tbc" && method === "POST" && app.tbc) {
+    // TBC callback: only a nudge. The signed `ref` (query) carries userId+credits; the payId comes
+    // from the body. TbcService re-fetches the payment from TBC and grants ONLY on Succeeded, so no
+    // signature/IP gate is needed here — an attacker with a forged ref fails the HMAC, and a real
+    // payId they don't own still resolves to someone else's ref, not theirs.
+    const ref = url.searchParams.get("ref");
+    let payId: string | null = null;
+    try { const b = await req.json(); payId = b?.payId ?? b?.PayId ?? b?.paymentId ?? null; }
+    catch { payId = url.searchParams.get("payId"); }
+    const r = await app.tbc.handleCallback(ref, payId);
+    return json(r, r.ok ? 200 : 400);
+  }
+
+  if (path === "/webhooks/paddle" && method === "POST" && app.paddle) {
     // Source-IP allowlist (Paddle's published egress IPs) in FRONT of the signature check.
     // The IP is the LAST X-Forwarded-For entry — the one appended by OUR proxy (Caddy/Fly);
     // the first entry is client-supplied and spoofable. Prod always sits behind that proxy,
     // so an empty header is also rejected. Skipped in DEV (local tunnels, tests, mock);
     // if the allowlist cannot be fetched, the HMAC signature alone gates (fail-open there,
     // never on a definitive non-Paddle IP).
-    if (!IS_DEV && !app.payments.mock) {
+    if (!IS_DEV && !app.paddle.mock) {
       const xff = req.headers.get("x-forwarded-for") ?? "";
       const ip = xff.split(",").pop()?.trim() ?? "";
       if ((await isPaddleIp(ip)) === false) {
@@ -271,7 +284,7 @@ prepaid credits (1&nbsp;credit&nbsp;=&nbsp;$1). Payments are processed by <b>Pad
     }
     const raw = await req.text();
     const sig = req.headers.get("paddle-signature");
-    const r = await app.payments.handleWebhook(raw, sig);
+    const r = await app.paddle.handleWebhook(raw, sig);
     return json(r, r.ok ? 200 : 400);
   }
 

@@ -7,17 +7,32 @@ import { createStore, type Store } from "./db/index.ts";
 import { BillingService } from "./billing/service.ts";
 import { AuthService } from "./auth/service.ts";
 import { PaddleService } from "./paddle/service.ts";
+import { TbcService } from "./tbc/service.ts";
 import { createLlmClient } from "./llm-proxy/client.ts";
 import { ClientHub } from "./apple-dispatch/hub.ts";
 import { RunManager } from "./orchestrator/manager.ts";
 import { createEmailService, type EmailService } from "./email/service.ts";
-import { IS_DEV } from "./env.ts";
+import { IS_DEV, optionalEnv } from "./env.ts";
+import type { TopupRequest, TopupCustomRange } from "@aso/shared";
+
+/** The provider-agnostic slice the checkout/grant routes use. Paddle- and TBC-specific
+ *  routes (webhooks, the /buy page) reach for `app.paddle` / `app.tbc` directly, guarded. */
+export interface PaymentProvider {
+  readonly mock: boolean;
+  onGrant: ((userId: string, balance: number) => void) | null;
+  createCheckout(userId: string, email: string, selection: TopupRequest, origin: string): Promise<{ checkoutUrl: string }>;
+  customRange(): TopupCustomRange | null;
+  devComplete(userId: string, selection: TopupRequest): Promise<{ ok: boolean; note: string }>;
+}
 
 export interface App {
   store: Store;
   billing: BillingService;
   auth: AuthService;
-  payments: PaddleService;
+  /** Active provider used by /checkout (chosen by PAYMENT_PROVIDER; default paddle). */
+  payments: PaymentProvider;
+  paddle: PaddleService | null;
+  tbc: TbcService | null;
   email: EmailService;
   hub: ClientHub;
   manager: RunManager;
@@ -28,7 +43,22 @@ export function createApp(): App {
   const billing = new BillingService(store);
   const auth = new AuthService(store);
   const email = createEmailService();
-  const payments = new PaddleService(store, billing, email);
+
+  // One acquirer is constructed — the one named by PAYMENT_PROVIDER (default paddle). Building
+  // only the active provider means a TBC-only prod deploy doesn't need Paddle secrets and vice
+  // versa (each constructor hard-fails on its own missing secrets in prod).
+  const provider = optionalEnv("PAYMENT_PROVIDER", "paddle").toLowerCase();
+  let paddle: PaddleService | null = null;
+  let tbc: TbcService | null = null;
+  let payments: PaymentProvider;
+  if (provider === "tbc") {
+    tbc = new TbcService(store, billing, email);
+    payments = tbc;
+  } else {
+    paddle = new PaddleService(store, billing, email);
+    payments = paddle;
+  }
+
   const hub = new ClientHub();
   const client = createLlmClient();
 
@@ -41,5 +71,5 @@ export function createApp(): App {
   // the header ticks live instead of waiting for a tab switch.
   payments.onGrant = (userId, credits) => hub.broadcast(userId, { t: "balance", credits });
 
-  return { store, billing, auth, payments, email, hub, manager };
+  return { store, billing, auth, payments, paddle, tbc, email, hub, manager };
 }

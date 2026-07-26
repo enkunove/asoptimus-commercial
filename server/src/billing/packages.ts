@@ -13,6 +13,10 @@ export interface PackageConfig {
   credits: number;
   label: string;
   paddlePriceId?: string;
+  /** Charge amount for the TBC acquirer, in the merchant-contract currency (TBC_CURRENCY).
+   *  Only needed when that currency is NOT USD — e.g. a GEL-only contract. Falls back to
+   *  chargeUsd when unset (i.e. a USD merchant contract). */
+  tbcAmount?: number;
 }
 
 // Top-up packages (1 credit = $1; larger ones carry a bonus). Overridden by TOPUP_PACKAGES_JSON —
